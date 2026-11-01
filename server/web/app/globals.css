@@ -1,0 +1,186 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================================
+   reg-factory 面板设计令牌
+   与 lab/repos/ohlao-ops/frontend/app/globals.css 同一套：
+   shadcn/ui new-york · neutral 基色 · Geist 字体 · radius 0.625rem
+   OPS 用 Tailwind v4 + oklch；这里落成 Tailwind v3 + HSL 分量，
+   以便 bg-primary/10 这类透明度修饰可用（v4 在本仓库 pnpm 下
+   oxide 不构建，会导致 CSS 0 字节，见 UI-FIX 记录）。
+   ============================================================ */
+
+@layer base {
+  :root {
+    --ops-ease-standard: cubic-bezier(0.2, 0, 0, 1);
+    --ops-ease-emphasized: cubic-bezier(0.16, 1, 0.3, 1);
+    --ops-motion-fast: 140ms;
+    --ops-motion-medium: 220ms;
+
+    /* light（OPS 默认 theme=light） */
+    --background: 0 0% 100%;
+    --foreground: 0 0% 3.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 3.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 3.9%;
+    --primary: 0 0% 9%;
+    --primary-foreground: 0 0% 98%;
+    --secondary: 0 0% 96.1%;
+    --secondary-foreground: 0 0% 9%;
+    --muted: 0 0% 96.1%;
+    --muted-foreground: 0 0% 45.1%;
+    --accent: 0 0% 96.1%;
+    --accent-foreground: 0 0% 9%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 0 0% 89.8%;
+    --input: 0 0% 89.8%;
+    --ring: 0 0% 63.9%;
+    --radius: 0.625rem;
+    --sidebar: 0 0% 98%;
+    --sidebar-foreground: 0 0% 3.9%;
+    --sidebar-accent: 0 0% 96.1%;
+    --sidebar-accent-foreground: 0 0% 9%;
+    --sidebar-border: 0 0% 89.8%;
+    --success: 142 71% 40%;
+    --success-foreground: 0 0% 98%;
+    --warning: 38 92% 50%;
+    --warning-foreground: 0 0% 98%;
+    --brand: 221 83% 53%;
+    --brand-foreground: 0 0% 98%;
+  }
+
+  .dark {
+    --background: 240 5.7% 11%;
+    --foreground: 240 5% 96%;
+    --card: 240 5.7% 14%;
+    --card-foreground: 240 5% 96%;
+    --popover: 240 5.7% 15%;
+    --popover-foreground: 240 5% 96%;
+    --primary: 240 5% 94%;
+    --primary-foreground: 240 5.7% 12%;
+    --secondary: 240 4.9% 20%;
+    --secondary-foreground: 240 5% 95%;
+    --muted: 240 4.9% 19%;
+    --muted-foreground: 240 5% 76%;
+    --accent: 240 5% 22%;
+    --accent-foreground: 240 5% 96%;
+    --destructive: 4 74% 55%;
+    --destructive-foreground: 240 5% 98%;
+    --border: 240 4% 26%;
+    --input: 240 4% 24%;
+    --ring: 240 5% 60%;
+    --sidebar: 240 5.7% 13%;
+    --sidebar-foreground: 240 5% 96%;
+    --sidebar-accent: 240 5% 21%;
+    --sidebar-accent-foreground: 240 5% 96%;
+    --sidebar-border: 240 4% 26%;
+    --success: 160 60% 50%;
+    --success-foreground: 240 5.7% 12%;
+    --warning: 38 92% 55%;
+    --warning-foreground: 240 5.7% 12%;
+    --brand: 221 83% 60%;
+    --brand-foreground: 240 5% 98%;
+  }
+}
+
+@layer base {
+  * {
+    border-color: hsl(var(--border));
+  }
+  html,
+  body {
+    height: 100%;
+  }
+  body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-family: "Geist", "Geist Fallback", ui-sans-serif, -apple-system,
+      "Segoe UI", "Noto Sans SC", "PingFang SC", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  ::selection {
+    background: hsl(var(--brand) / 0.18);
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: hsl(var(--muted-foreground) / 0.32);
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-[var(--radius)] border border-border bg-card text-card-foreground;
+    box-shadow: 0 1px 2px 0 hsl(var(--foreground) / 0.04);
+  }
+  .card-head {
+    @apply flex items-center justify-between gap-3 border-b border-border px-4 py-3;
+  }
+  .card-title {
+    @apply text-[13px] font-semibold tracking-wide text-foreground;
+  }
+  .card-body {
+    @apply p-4;
+  }
+
+  .btn {
+    @apply inline-flex cursor-pointer items-center justify-center gap-1.5 rounded-md px-3 py-1.5
+      text-[13px] font-medium transition-colors disabled:pointer-events-none disabled:opacity-50;
+    transition-duration: var(--ops-motion-fast);
+    transition-timing-function: var(--ops-ease-standard);
+  }
+  .btn-primary {
+    @apply btn bg-primary text-primary-foreground hover:bg-primary/90;
+  }
+  .btn-ghost {
+    @apply btn border border-border bg-background text-foreground hover:bg-accent hover:text-accent-foreground;
+  }
+  .btn-danger {
+    @apply btn bg-destructive/10 text-destructive hover:bg-destructive/20;
+  }
+
+  .field {
+    @apply w-full rounded-md border border-input bg-background px-3 py-2 text-[13px]
+      text-foreground outline-none transition placeholder:text-muted-foreground
+      focus:border-ring focus:ring-2 focus:ring-ring/20 disabled:opacity-50;
+  }
+  .label {
+    @apply mb-1.5 block text-[11px] font-medium uppercase tracking-[0.06em] text-muted-foreground;
+  }
+
+  .badge {
+    @apply inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium;
+  }
+  .kv {
+    @apply flex items-baseline justify-between gap-3 border-b border-border/60 py-1.5 text-[13px] last:border-0;
+  }
+  .kv-k {
+    @apply text-muted-foreground;
+  }
+  .kv-v {
+    @apply font-mono text-foreground;
+  }
+  .nav-item {
+    @apply flex items-center gap-2.5 rounded-md px-3 py-2 text-[13px] text-muted-foreground
+      transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground;
+    transition-duration: var(--ops-motion-fast);
+  }
+  .nav-item-active {
+    @apply bg-sidebar-accent font-medium text-sidebar-accent-foreground;
+  }
+  .mono-log {
+    @apply whitespace-pre-wrap break-all font-mono text-[12px] leading-[1.55];
+  }
+}

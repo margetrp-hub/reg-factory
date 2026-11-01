@@ -1,5 +1,10 @@
 # 密钥
 .env
+# 服务器部署（deploy/）的密码与本地数据：绝不进库
+deploy/.env
+deploy/data/
+deploy/caddy-data/
+deploy/caddy-config/
 
 # 编辑器/助手本地配置
 .claude/
@@ -79,3 +84,13 @@ dist/
 build/
 screenshots_vision/
 .custom_test_domain
+
+# --- Go 控制面 / Next.js 构建产物（源码进库，产物不进） ---
+server/regd.exe
+server/regd.exe~
+server/web/node_modules/
+server/web/.next/
+server/web/out/
+server/webdist/
+*.exe
+*.tar.gz

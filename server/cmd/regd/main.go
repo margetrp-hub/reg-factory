@@ -1,0 +1,211 @@
+﻿// Command regd 是 reg-factory 的 Go 控制面：任务队列、日志流、资产与配置 API，
+// 同时托管 Next.js 静态前端。
+package main
+
+import (
+	"context"
+	"errors"
+	"io"
+	"io/fs"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"path"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/gin-gonic/gin"
+
+	"github.com/tiantianGPU/reg-factory/server"
+	"github.com/tiantianGPU/reg-factory/server/internal/api"
+	"github.com/tiantianGPU/reg-factory/server/internal/apps/icmail"
+	"github.com/tiantianGPU/reg-factory/server/internal/auth"
+	"github.com/tiantianGPU/reg-factory/server/internal/nodeserver"
+	"github.com/tiantianGPU/reg-factory/server/internal/runner"
+	"github.com/tiantianGPU/reg-factory/server/internal/settings"
+	"github.com/tiantianGPU/reg-factory/server/internal/store"
+)
+
+func main() {
+	log.SetFlags(log.LstdFlags | log.LUTC)
+
+	cfg := settings.Load()
+	// /data/.env 里可被面板编辑的配置参与启动（真实环境变量优先）
+	if n := settings.LoadEnvFile(cfg.EnvFile); n > 0 {
+		log.Printf("[regd] 从 %s 注入 %d 项配置", cfg.EnvFile, n)
+		cfg = settings.Load()
+	}
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("[regd] 配置校验失败: %v", err)
+	}
+	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
+		log.Fatalf("[regd] 数据目录不可用: %v", err)
+	}
+
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		log.Fatalf("[regd] 打开数据库失败: %v", err)
+	}
+	defer st.Close()
+
+	if recovered, err := st.RecoverInterrupted(); err == nil && recovered > 0 {
+		log.Printf("[regd] 上次退出遗留 %d 个任务已标记为 interrupted", recovered)
+	}
+
+	env := settings.NewEnv(cfg.EnvFile)
+	manager := runner.New(cfg, st)
+	authenticator := auth.New(cfg)
+
+	gin.SetMode(gin.ReleaseMode)
+	router := gin.New()
+	router.Use(gin.Recovery())
+	router.Use(requestLogger())
+
+	version := readVersion(cfg)
+	apiServer := api.New(cfg, env, st, manager, authenticator, version)
+	apiServer.Register(router)
+	if synced, syncErr := apiServer.SeedAccounts(); syncErr != nil {
+		log.Printf("[regd] 账号主数据同步失败: %v", syncErr)
+	} else {
+		log.Printf("[regd] 账号主数据已同步 %d 条", synced)
+	}
+	apiServer.StartLivenessLoop(context.Background())
+	nodeserver.New(nodeserver.Config{
+		Enabled:  cfg.NodeID != "" && len(cfg.NodeKey) >= 32,
+		NodeID:   cfg.NodeID,
+		Key:      []byte(cfg.NodeKey),
+		Platform: cfg.NodePlatform,
+	}, manager, st).Register(router)
+
+	// IC 邮箱 app（同仓同进程）：/api/apps/icmail/* 与 /apps/icmail 页面
+	icApp, err := icmail.New(icmail.NewConfigFromEnv(cfg.DataDir))
+	if err != nil {
+		log.Printf("[regd] IC 邮箱初始化失败（跳过该模块）: %v", err)
+	} else {
+		defer icApp.Close()
+		icApp.Register(router.Group("/api/apps/icmail"))
+		icApp.RegisterPublic(router.Group("/api/apps/icmail/public"))
+		icApp.Start(context.Background())
+		defer icApp.Stop()
+		log.Printf("[regd] IC 邮箱已挂载: /api/apps/icmail（db=%s）", icApp.DB.Path())
+	}
+
+	registerStatic(router)
+
+	srv := &http.Server{
+		Addr:              cfg.Addr,
+		Handler:           router,
+		ReadHeaderTimeout: 15 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+
+	log.Printf("[regd] reg-factory Go 控制面 v%s", version)
+	log.Printf("[regd] 监听 %s | 数据目录 %s | 环境文件 %s", cfg.Addr, cfg.DataDir, cfg.EnvFile)
+	log.Printf("[regd] 并发上限 %d | 内存闸门 %0.f%% | Python %s", cfg.MaxParallel, cfg.GuardPct, cfg.Python)
+	log.Printf("[regd] 内存水位 %+v", manager.Memory())
+
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("[regd] 监听失败: %v", err)
+		}
+	}()
+
+	<-stop
+	log.Printf("[regd] 收到退出信号，停止任务并关闭")
+	manager.Shutdown(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	_ = srv.Shutdown(ctx)
+}
+
+func readVersion(cfg *settings.Settings) string {
+	for _, candidate := range []string{
+		filepath.Join(cfg.AppRoot, "VERSION"),
+		filepath.Join(cfg.DataDir, "VERSION"),
+	} {
+		if raw, err := os.ReadFile(candidate); err == nil {
+			text := strings.TrimSpace(string(raw))
+			if text != "" {
+				return text
+			}
+		}
+	}
+	return "dev"
+}
+
+// requestLogger 只记录 API 与非静态请求，避免刷屏。
+func requestLogger() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
+		c.Next()
+		path := c.Request.URL.Path
+		if !strings.HasPrefix(path, "/api/") {
+			return
+		}
+		if path == "/api/health" || path == "/api/memory" {
+			return
+		}
+		log.Printf("[api] %s %s %d %dms", c.Request.Method, path, c.Writer.Status(), time.Since(start).Milliseconds())
+	}
+}
+
+// registerStatic 托管 Next.js 静态导出，并对未知路径回落 index.html。
+func registerStatic(router *gin.Engine) {
+	sub, err := fs.Sub(server.WebFS, "webdist")
+	if err != nil {
+		log.Printf("[regd] 前端资源不可用（仅 API 模式）: %v", err)
+		return
+	}
+	fileServer := http.FileServer(http.FS(sub))
+
+	router.NoRoute(func(c *gin.Context) {
+		reqPath := c.Request.URL.Path
+		if strings.HasPrefix(reqPath, "/api/") {
+			c.JSON(http.StatusNotFound, gin.H{"error": "not_found", "path": reqPath})
+			return
+		}
+		clean := strings.TrimPrefix(path.Clean(reqPath), "/")
+		for _, candidate := range []string{clean, path.Join(clean, "index.html"), clean + ".html"} {
+			if candidate == "" {
+				continue
+			}
+			info, statErr := fs.Stat(sub, candidate)
+			if statErr != nil || info.IsDir() {
+				continue
+			}
+			// http.FileServer 会把 /index.html 301 到 ./，这里直接吐内容，
+			// 保证 / 和 /tasks/ 都返回 200。
+			if strings.HasSuffix(candidate, ".html") {
+				raw, readErr := fs.ReadFile(sub, candidate)
+				if readErr != nil {
+					continue
+				}
+				c.Data(http.StatusOK, "text/html; charset=utf-8", raw)
+				return
+			}
+			c.Request.URL.Path = "/" + candidate
+			fileServer.ServeHTTP(c.Writer, c.Request)
+			return
+		}
+		// 文件确实不存在：/_next/ 下的构建产物必须返回 404。
+		// 回落成 index.html 会让浏览器把 HTML 当 JS/CSS 解析，交互全部失效且极难排查。
+		if strings.HasPrefix(reqPath, "/_next/") {
+			c.Status(http.StatusNotFound)
+			return
+		}
+		index, openErr := sub.Open("index.html")
+		if openErr != nil {
+			c.String(http.StatusNotFound, "前端未构建：webdist/index.html 缺失")
+			return
+		}
+		defer index.Close()
+		raw, _ := io.ReadAll(index)
+		c.Data(http.StatusOK, "text/html; charset=utf-8", raw)
+	})
+}

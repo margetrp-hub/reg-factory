@@ -1,0 +1,15 @@
+[Unit]
+Description=reg-factory daily maintenance (browser profiles cleanup + /data backup)
+Documentation=file:///opt/reg-factory/deploy/README-OCI-SG.md
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/reg-factory/deploy
+ExecStart=/opt/reg-factory/deploy/sg-maintenance.sh
+TimeoutStartSec=1800
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

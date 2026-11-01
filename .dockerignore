@@ -1,0 +1,44 @@
+.git
+.github
+.gitattributes
+.gitignore
+
+# 运行期数据绝不能进镜像
+runtime
+tri_register_logs
+screenshots
+screenshots_github
+screenshots_outlook
+cookies
+tokens
+outlook_accounts
+_outlook_pool
+unlock_results
+emails.txt
+.env
+.env.*
+!.env.example
+deploy/.env
+deploy/data
+deploy/caddy-data
+admin_keys.txt
+
+# 本地环境与缓存
+.venv
+venv
+node_modules
+**/node_modules
+**/__pycache__
+**/*.pyc
+**/*.pyo
+.pytest_cache
+.mypy_cache
+.tmp
+
+# 桌面端产物
+*.exe
+*.spec.bak
+packaging/dist
+packaging/build
+dist
+build

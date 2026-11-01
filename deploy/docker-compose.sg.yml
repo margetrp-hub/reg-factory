@@ -1,0 +1,77 @@
+# SG 生产机 override：与 33 个现役容器共用 4C/24G 主机时的资源与网络隔离
+#
+#   cd /opt/reg-factory/deploy
+#   sudo docker compose -f docker-compose.yml -f docker-compose.sg.yml up -d --build
+#
+# 设计依据（2026-10-31 实测）：
+#   * 主机 4 vCPU / 24GB，已用约 4.6GB，可用约 19GB
+#   * 单 Chromium 峰值 500MB-1GB，3 并发 + 面板 ≈ 4GB
+#   * 上限 8GB / 2.5 vCPU：既够 3-4 并发，又不会把现役业务挤到 OOM
+#   * memswap_limit 与 mem_limit 相等 = 容器内禁用 swap，避免整机卡死
+#
+# 为什么用 host 网络：
+#   SG 上的 sub2api(127.0.0.1:18082)、cpa-manager(18317)、new-api(3008)、
+#   grok2api(18081) 都只监听宿主回环，bridge 网络经 host.docker.internal
+#   走的是 172.17.0.1，连不上。host 网络让容器的 127.0.0.1 就是宿主回环，
+#   注册完的 token 可以直接导入这些现役服务。
+#   代价：不再有 Docker 端口隔离，所以面板显式绑 127.0.0.1（见 environment），
+#   公网入口只有 Nginx 反代。
+
+services:
+  panel:
+    network_mode: host
+    ports: []
+    mem_limit: 8g
+    memswap_limit: 8g
+    # 软限制：让内核优先回收页缓存，而不是等到 8G 硬顶触发 OOM kill
+    mem_reservation: 5g
+    cpus: "3.0"
+    pids_limit: 4096
+    environment:
+      REG_FACTORY_HOST: 127.0.0.1
+    labels:
+      - "com.reg-factory.role=panel"
+      - "com.reg-factory.host=sg"
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  # Go 控制面（Next.js + Gin + SQLite）：与 Python 面板共用 /data，独立端口 8800。
+  # 切换步骤：先 up 起来验证，再把 Nginx 的 reg.ohlao.cfd 从 8799 改到 8800，
+  # 最后 docker compose stop panel 停掉 Python 面板。
+  panel-go:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.go
+    image: "${REG_FACTORY_GO_IMAGE:-reg-factory:go}"
+    container_name: reg-factory-go
+    restart: unless-stopped
+    network_mode: host
+    mem_limit: 8g
+    memswap_limit: 8g
+    mem_reservation: 5g
+    cpus: "3.0"
+    pids_limit: 4096
+    env_file:
+      - ./.env
+    environment:
+      TZ: "${TZ:-Asia/Singapore}"
+      REGD_ADDR: "127.0.0.1:8800"
+      REGD_APP_ROOT: /app
+      REGD_DB: /data/regd.db
+      REG_FACTORY_DATA_DIR: /data
+      REG_FACTORY_ENV_FILE: /data/.env
+      REG_FACTORY_PANEL_USER: "${REG_FACTORY_PANEL_USER:-admin}"
+      REG_FACTORY_PANEL_PASSWORD: "${REG_FACTORY_PANEL_PASSWORD:?请先在 deploy/.env 设置 REG_FACTORY_PANEL_PASSWORD}"
+    volumes:
+      - rf-data:/data
+    labels:
+      - "com.reg-factory.role=panel-go"
+      - "com.reg-factory.host=sg"
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"

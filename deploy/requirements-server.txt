@@ -1,0 +1,21 @@
+# reg-factory 服务器版运行依赖（不含 Appium/Selenium/BlueStacks 等桌面模块）
+#
+# 与仓库根 requirements.txt 的差别：
+#   * 去掉 Appium-Python-Client / selenium —— 属于 gmail_android 的
+#     BlueStacks + Appium 流程，容器内无安卓模拟器，装了也只是死重量；
+#   * 去掉 cloakbrowser —— 需要 Cloak 商业指纹内核，服务器默认走
+#     Playwright Chromium（FINGERPRINT_BROWSER=bundled）；
+#     需要时用 Dockerfile 的 INSTALL_CLOAK=1 构建参数单独安装。
+#
+# 版本给下限 + 上限，避免 fastapi 大版本升级把 @app.on_event 等旧接口移除。
+
+playwright>=1.45,<2
+requests>=2.31,<3
+Pillow>=10,<12
+aiohttp>=3.9,<4
+curl_cffi>=0.6,<1
+# tls-client 在仓库里没有任何 import，属历史遗留；需要时单独 pip install
+cryptography>=42,<46
+fastapi>=0.110,<1
+uvicorn[standard]>=0.27,<1
+pydantic>=2.5,<3

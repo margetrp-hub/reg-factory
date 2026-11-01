@@ -1,0 +1,50 @@
+# reg-factory 反代样例（Caddy 2）
+#
+# 把 panel.example.com 换成你自己的域名，DNS A 记录指向甲骨文 SG 实例公网 IP。
+# Caddy 会自动申请并续期 Let's Encrypt 证书（80/443 需在 OCI 安全列表放行）。
+#
+# 注意：
+#   * SSE（/api/logs/<run_id>）必须关闭缓冲，否则运行日志会攒着不下发；
+#   * 面板会传大段账号文本（/api/authorize-outlook 上限 5MB），请求体放宽；
+#   * 上游固定 127.0.0.1:8799，不直接暴露容器端口。
+
+{
+	email you@example.com
+	admin off
+}
+
+panel.example.com {
+	encode zstd gzip
+
+	# 上传/粘贴账号、导入资产时的大请求体
+	request_body {
+		max_size 16MB
+	}
+
+	reverse_proxy 127.0.0.1:8799 {
+		# SSE 长连接不缓冲
+		flush_interval -1
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Real-IP {remote_host}
+		transport http {
+			read_timeout 1h
+			write_timeout 1h
+			dial_timeout 10s
+		}
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		-Server
+	}
+
+	log {
+		output file /var/log/caddy/reg-factory.log {
+			roll_size 20mb
+			roll_keep 5
+		}
+		format console
+	}
+}
