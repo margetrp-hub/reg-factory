@@ -515,11 +515,16 @@ func (s *Store) ListAccounts(kind, platform, status string, limit int) ([]Accoun
 // GetAccount 取单条。
 func (s *Store) GetAccount(ref string) (Account, error) {
 	var a Account
+	// 账号引用证明需要 oauth/join/liveness 与 version：这些是 Team 判定源号
+	// 是否可派单的唯一依据，漏查会让 reference 里的 liveness 恒为空，
+	// Team 只能把每个候选号判成 pending，生产单永远起不来。
 	err := s.db.QueryRow(`SELECT ref, platform, kind, identity, secret_ref, status, health_checked_at,
-		health_message, claimed, claimed_at, refresh_state, refresh_at, note, updated_at
+		health_message, claimed, claimed_at, refresh_state, refresh_at, note, version,
+		oauth_status, join_status, liveness_status, liveness_checked_at, updated_at
 		FROM accounts WHERE ref=?`, ref).Scan(&a.Ref, &a.Platform, &a.Kind, &a.Identity, &a.SecretRef,
 		&a.Status, &a.HealthCheckedAt, &a.HealthMessage, &a.Claimed, &a.ClaimedAt,
-		&a.RefreshState, &a.RefreshAt, &a.Note, &a.UpdatedAt)
+		&a.RefreshState, &a.RefreshAt, &a.Note, &a.Version,
+		&a.OAuthStatus, &a.JoinStatus, &a.LivenessStatus, &a.LivenessCheckedAt, &a.UpdatedAt)
 	return a, err
 }
 

@@ -18,7 +18,17 @@ type Config struct {
 	Enabled  bool
 	NodeID   string
 	Key      []byte
-	Platform string // account.register 默认平台：claude/chatgpt/grok/...
+	// ReceiptKey 签发回执用的密钥；为空时回退 Key（与 Team 侧 read-only 域一致）
+	ReceiptKey []byte
+	Platform   string // account.register 默认平台：claude/chatgpt/grok/...
+}
+
+// receiptKey 返回签发回执使用的密钥（未单独配置时复用请求密钥）。
+func (h *Handler) receiptKey() []byte {
+	if len(h.cfg.ReceiptKey) >= 32 {
+		return h.cfg.ReceiptKey
+	}
+	return h.cfg.Key
 }
 
 // Handler 提供 Work 协议的入站端点。
@@ -53,6 +63,23 @@ func (h *Handler) Register(r *gin.Engine) {
 			"node_id": h.cfg.NodeID,
 			"config":  h.cfg.Platform,
 			"detail":  Describe(),
+			// 节点侧自报能力：Team 按此派单，不需要为节点改协议
+			"schema": "account-node.work.v1",
+			"actions": gin.H{
+				"supported": []string{
+					"account.register", "account.authorize", "account.refresh",
+					"account.liveness", "asset.liveness", "account.quota",
+				},
+				"unsupported": []string{
+					"account.join", "account.verify_asset", "team.seat_price",
+				},
+				"notes": gin.H{
+					"account.authorize": "走本地凭据修复通道（asset_ops refresh --allow-relogin）",
+					"account.quota":     "同步返回本节点可用账号数，不落任务",
+					"account.join":      "本节点没有 workspace 概念，不实现",
+					"team.seat_price":   "席位价格属于 Team 业务事实，节点不掌握",
+				},
+			},
 		})
 	})
 }
@@ -117,6 +144,38 @@ func (h *Handler) acceptTask(c *gin.Context) {
 			"local_id": task.ID,
 			"action":   verified.Action,
 		})
+	case "account.authorize":
+		// 授权 = 重新登录/换凭据，走本地 refresh 通道（带 --allow-relogin）
+		argvTail := h.authorizeArgv(verified)
+		task := store.Task{
+			ID:       "work-" + verified.TaskID,
+			Script:   "asset_ops",
+			Title:    "节点授权 · " + verified.Subject,
+			ArgsJSON: argvTail,
+			Actor:    "work:" + h.cfg.NodeID,
+		}
+		if err := h.mgr.Submit(task); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "submit_failed", "detail": err.Error()})
+			return
+		}
+		log.Printf("[node] accept %s task=%s subject=%s", verified.Action, verified.TaskID, verified.Subject)
+		c.JSON(http.StatusAccepted, gin.H{
+			"accepted": true, "node_id": h.cfg.NodeID,
+			"task_id": verified.TaskID, "local_id": task.ID, "action": verified.Action,
+		})
+
+	case "account.quota":
+		available, err := h.st.ListAccounts("", h.cfg.Platform, "ok", 10000)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "quota_failed", "detail": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"accepted": true, "node_id": h.cfg.NodeID,
+			"task_id": verified.TaskID, "action": verified.Action,
+			"quota": gin.H{"platform": h.cfg.Platform, "available": len(available)},
+		})
+
 	case "account.liveness", "asset.liveness", "account.refresh":
 		argvTail := h.assetOpArgv(verified)
 		task := store.Task{
@@ -138,10 +197,11 @@ func (h *Handler) acceptTask(c *gin.Context) {
 
 	default:
 		// 其余动作只登记不执行
-		log.Printf("[node] note %s task=%s（v1 仅接受 account.register）", verified.Action, verified.TaskID)
+		log.Printf("[node] note %s task=%s（本节点不实现该动作，见 /node/capabilities）", verified.Action, verified.TaskID)
 		c.JSON(http.StatusAccepted, gin.H{
 			"accepted": false,
-			"reason":   "ACTION_NOT_IMPLEMENTED_IN_V1",
+			"reason":   "ACTION_NOT_SUPPORTED_BY_NODE",
+			"capabilities": "/node/capabilities",
 			"node_id":  h.cfg.NodeID,
 			"task_id":  verified.TaskID,
 			"action":   verified.Action,
@@ -162,6 +222,17 @@ func (h *Handler) registerTask(mailbox string) (string, string) {
 	}
 	args := `{"--from-pool":true,"--platforms":"` + escapeJSON(platform) + `"}`
 	return "register_three_platforms", args
+}
+
+// authorizeArgv 把 account.authorize 映射成 asset_ops refresh（允许重新登录）。
+func (h *Handler) authorizeArgv(v *Verified) string {
+	platform := strings.TrimSpace(h.cfg.Platform)
+	argv := []string{"refresh", "--ref", v.Subject, "--allow-relogin"}
+	if platform != "" {
+		argv = append(argv, "--platform", platform)
+	}
+	raw, _ := json.Marshal(argv)
+	return string(raw)
 }
 
 // assetOpArgv 把 Work 动作映射成 asset_ops.py 的参数数组。
@@ -223,7 +294,7 @@ func (h *Handler) taskReceipt(c *gin.Context) {
 		return
 	}
 	doc, err := Receipt(taskID, h.cfg.NodeID, status, task.ExitCode,
-		map[string]any{"local_id": task.ID}, h.cfg.Key, time.Now())
+		map[string]any{"local_id": task.ID}, h.receiptKey(), time.Now())
 	if err != nil {
 		writeErr(c, err)
 		return
