@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """校验 scripts.schema.json 与各脚本真实 CLI 是否一致。
 
-背景：`webui/scripts.py` 是人工维护的 schema，和 argparse 定义会漂移
+背景：`schema/scripts.py` 是人工维护的 schema，和 argparse 定义会漂移
 （例如 export_accounts 的 platforms 是位置参数，schema 却写成 --platform，
 旧面板和新面板都会把参数拼错）。构建前跑一遍，把漂移暴露出来。
 

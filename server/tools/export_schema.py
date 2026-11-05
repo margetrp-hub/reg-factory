@@ -35,11 +35,9 @@ def apply_overrides(script_id: str, arg: dict) -> dict:
 
 def main() -> int:
     out_path = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "deploy" / "scripts.schema.json"
-    try:
-        from schema import scripts as schema  # noqa: WPS433
-    except Exception:
-        # 兼容旧布局（webui 面板已退役，保留回退便于回滚）
-        from webui import scripts as schema  # noqa: WPS433
+    # schema/scripts.py 是唯一任务定义来源；旧 webui 面板已经退役，
+    # 不再静默回退到不存在的旧模块，避免生成“看似成功、实际过期”的 schema。
+    from schema import scripts as schema  # noqa: WPS433
 
     exported = []
     for item in getattr(schema, "SCRIPTS", []):

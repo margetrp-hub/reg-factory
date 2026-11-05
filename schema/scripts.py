@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-webui/scripts.py — GUI 的数据核心：把每个入口脚本的命令行参数、以及 .env 配置项
+schema/scripts.py — 控制面的任务定义：把每个入口脚本的命令行参数、以及 .env 配置项
 结构化成 schema，前端据此自动生成表单。新增脚本/配置项只改这里。
 
 参数类型(type)对应前端控件：

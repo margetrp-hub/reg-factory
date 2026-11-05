@@ -32,6 +32,7 @@ export default function SettingsPage() {
   const [proxy, setProxy] = useState("");
   const [target, setTarget] = useState("https://claude.ai");
   const [probe, setProbe] = useState<string>("");
+  const [focusNode, setFocusNode] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -45,6 +46,9 @@ export default function SettingsPage() {
   }, []);
 
   useEffect(() => {
+    if (typeof window !== "undefined") {
+      setFocusNode(new URLSearchParams(window.location.search).get("focus") === "node");
+    }
     load();
   }, [load]);
 
@@ -118,6 +122,13 @@ export default function SettingsPage() {
     () => Object.values(groups).flat().filter((entry) => isCommon(entry.key)),
     [groups],
   );
+  const nodeEntries = useMemo(
+    () => Object.values(groups).flat().filter((entry) => {
+      const key = entry.key.toUpperCase();
+      return key.startsWith("REG_FACTORY_NODE_") || key.startsWith("ACCOUNT_NODE_");
+    }),
+    [groups],
+  );
   const scopedGroups = useMemo(() => {
     const out: Record<string, Entry[]> = {};
     for (const [name, list] of Object.entries(filtered)) {
@@ -127,12 +138,15 @@ export default function SettingsPage() {
     return out;
   }, [filtered]);
   const tabItems = useMemo(() => {
-    const items = [{ id: "__common", label: "共性配置", count: commonEntries.length }];
+    const items = [
+      { id: "__common", label: "共性配置", count: commonEntries.length },
+      ...(nodeEntries.length ? [{ id: "__node", label: "节点配置", count: nodeEntries.length }] : []),
+    ];
     for (const [name, list] of Object.entries(scopedGroups)) {
       items.push({ id: name, label: name, count: list.length });
     }
     return items;
-  }, [commonEntries, scopedGroups]);
+  }, [commonEntries, nodeEntries, scopedGroups]);
 
   return (
     <div className="space-y-4">
@@ -168,7 +182,8 @@ export default function SettingsPage() {
           <div className="grid gap-3 lg:grid-cols-[196px_1fr]">
             <nav className="space-y-0.5 overflow-auto">
               {tabItems.map((item) => {
-                const active = (query.trim() ? "__all" : (activeGroup || "__common")) === item.id;
+                const activeId = activeGroup || (focusNode && nodeEntries.length ? "__node" : "__common");
+                const active = (query.trim() ? "__all" : activeId) === item.id;
                 return (
                   <button
                     key={item.id}
@@ -199,6 +214,8 @@ export default function SettingsPage() {
                 <tbody>
                   {(query.trim()
                     ? Object.entries(filtered).flatMap(([, list]) => list)
+                    : (activeGroup || (focusNode && nodeEntries.length ? "__node" : "__common")) === "__node"
+                      ? nodeEntries
                     : (activeGroup || "__common") === "__common"
                       ? commonEntries
                       : scopedGroups[activeGroup] || []

@@ -43,7 +43,7 @@ server/
 │  ├─ store/                 # SQLite：tasks / events / claims / audit
 │  ├─ runner/                # 队列、进程、日志流、内存闸门
 │  └─ api/                   # Gin handlers
-├─ tools/export_schema.py    # 把 webui/scripts.py 导成 scripts.schema.json
+├─ tools/export_schema.py    # 把 schema/scripts.py 导成 scripts.schema.json
 └─ web/                      # Next.js 15 App Router + Tailwind v4
    ├─ app/(panel)/…          # 概览、任务、资产、配置、审计
    ├─ app/login/             # 登录页
@@ -66,7 +66,7 @@ server/
 | 部署 | uvicorn 单进程 | 单个 Go 二进制（前端内嵌）+ Python 运行时 |
 | 内存 | Python 面板 ~90MB | Go 面板 **~7MB**（实测） |
 
-执行层完全复用：`/api/scripts` 的 schema 由 `webui/scripts.py` 导出，
+执行层完全复用：`/api/scripts` 的 schema 由 `schema/scripts.py` 导出，
 参数拼命令行等价于原 `_build_cmd`，任务仍在 `/data` 下读写。
 
 ## 3. API

@@ -16,6 +16,7 @@ export function LogView({ taskId, height = 420 }: { taskId: string; height?: num
   const [live, setLive] = useState(false);
   const [error, setError] = useState("");
   const [follow, setFollow] = useState(true);
+  const [reload, setReload] = useState(0);
   const boxRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
 
@@ -56,7 +57,7 @@ export function LogView({ taskId, height = 420 }: { taskId: string; height?: num
       alive = false;
       source?.close();
     };
-  }, [taskId]);
+  }, [taskId, reload]);
 
   useEffect(() => {
     const box = boxRef.current;
@@ -100,6 +101,12 @@ export function LogView({ taskId, height = 420 }: { taskId: string; height?: num
           {follow ? "跟随中" : "已暂停"}
         </button>
         <button
+          onClick={() => setReload((value) => value + 1)}
+          className="rounded px-1.5 py-0.5 font-mono text-[10px] text-white/35 hover:text-white/60"
+        >
+          重连
+        </button>
+        <button
           onClick={() => { setLines([]); stickRef.current = true; setFollow(true); }}
           className="rounded px-1.5 py-0.5 font-mono text-[10px] text-white/35 hover:text-white/60"
         >
@@ -119,6 +126,7 @@ export function LogView({ taskId, height = 420 }: { taskId: string; height?: num
           lines.map((event, index) => (
             <div key={`${index}-${event.ts ?? ""}`} className="flex gap-3">
               <span className="w-[44px] shrink-0 select-none text-right text-white/20">{index + 1}</span>
+              <span className="w-[150px] shrink-0 select-none text-white/25">{event.ts || ""}</span>
               <span className={`whitespace-pre-wrap break-words ${STREAM_COLOR[event.stream] || "text-white/70"}`}>
                 {event.line}
               </span>

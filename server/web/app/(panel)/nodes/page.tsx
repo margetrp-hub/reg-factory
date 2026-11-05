@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { api, type NodeCapabilities, type NodeReady } from "@/lib/api";
 import { Badge, Card, Empty, Stat } from "@/components/ui";
 
@@ -66,6 +67,20 @@ export default function NodesPage() {
           <div className="text-[11px] text-muted-foreground">节点不支持的动作不会伪装成可执行任务，协议能力在这里集中核对。</div>
         </Card>
       </div>
+
+      <Card
+        title="节点操作"
+        actions={
+          <div className="flex items-center gap-2">
+            <Link className="btn-ghost" href="/settings/?focus=node">节点配置</Link>
+            <Link className="btn-primary" href="/tasks/">统一终端日志</Link>
+          </div>
+        }
+      >
+        <p className="text-[12px] leading-relaxed text-muted-foreground">
+          节点执行仍由同一个任务队列和日志流记录。配置、任务输出和审计分别进入统一控制面，不再维护独立的节点面板。
+        </p>
+      </Card>
     </div>
   );
 }

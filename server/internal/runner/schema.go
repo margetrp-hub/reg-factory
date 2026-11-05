@@ -13,7 +13,7 @@ import (
 	"github.com/tiantianGPU/reg-factory/server/internal/store"
 )
 
-// Arg 是任务参数定义（由 Python 侧 webui/scripts.py 导出）。
+// Arg 是任务参数定义（由仓库根目录 schema/scripts.py 导出）。
 type Arg struct {
 	Flag       string            `json:"flag"`
 	Type       string            `json:"type"`

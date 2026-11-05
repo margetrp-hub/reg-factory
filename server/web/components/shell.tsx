@@ -37,6 +37,7 @@ const CONTEXT_LINKS: Record<NavSection, { href: string; label: string }[]> = {
   ],
   nodes: [
     { href: "/nodes/", label: "节点总览" },
+    { href: "/settings/?focus=node", label: "节点配置" },
     { href: "/tasks/", label: "节点运行日志" },
   ],
   system: [
@@ -114,14 +115,18 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const activeItem = NAV.find((item) =>
     item.href === "/" ? pathname === "/" : pathname.startsWith(item.href.replace(/\/$/, "")),
   );
-  const activeSection: NavSection = activeItem?.section ||
+  const nodeConfigFocused = pathname.startsWith("/settings") &&
+    typeof window !== "undefined" && new URLSearchParams(window.location.search).get("focus") === "node";
+  const activeSection: NavSection = nodeConfigFocused ? "nodes" : activeItem?.section ||
     (pathname.startsWith("/platform/") ? "production" :
       pathname.startsWith("/apps/icmail") || pathname.startsWith("/materials") ? "supply" :
       pathname.startsWith("/nodes") ? "nodes" :
         pathname.startsWith("/audit") ? "runtime" : "workspace");
-  const activeContext = CONTEXT_LINKS[activeSection].find((item) =>
-    item.href === "/" ? pathname === "/" : pathname.startsWith(item.href.replace(/\/$/, "")),
-  );
+  const activeContext = CONTEXT_LINKS[activeSection].find((item) => {
+    const [itemPath, itemQuery] = item.href.split("?");
+    if (itemQuery === "focus=node") return nodeConfigFocused;
+    return itemPath === "/" ? pathname === "/" : pathname.startsWith(itemPath.replace(/\/$/, ""));
+  });
   const activeLabel = activeContext?.label || activeItem?.label || "工作台";
 
   return (
