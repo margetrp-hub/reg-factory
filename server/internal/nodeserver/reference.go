@@ -44,6 +44,11 @@ func (h *Handler) subjectRef(subject string) (string, bool) {
 		return "", false
 	}
 	for _, a := range rows {
+		// Core may use the canonical account UUID directly for local intake.
+		// Keep accepting the older deterministic SubjectID(ref) projection too.
+		if a.Ref == subject {
+			return a.Ref, true
+		}
 		if SubjectID(a.Ref) == subject {
 			return a.Ref, true
 		}

@@ -1,160 +1,122 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api, type Script, type Task } from "@/lib/api";
-import { Badge, Card, Empty, StatusBadge, timeAgo } from "@/components/ui";
-import { TaskForm } from "@/components/task-form";
-import { LogView } from "@/components/log-view";
+import Link from "next/link";
+import { api, type Task } from "@/lib/api";
+import { Badge, Card, Stat } from "@/components/ui";
+import { TASK_GROUPS, groupOf } from "@/lib/task-catalog";
 
-export default function TasksPage() {
-  const [scripts, setScripts] = useState<Script[]>([]);
-  const [activeId, setActiveId] = useState("");
+export default function TaskCenterPage() {
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [selected, setSelected] = useState("");
-  const [filter, setFilter] = useState("");
   const [error, setError] = useState("");
 
-  const loadTasks = useCallback(async () => {
+  const load = useCallback(async () => {
     try {
       const data = await api.tasks(120);
       setTasks(data.tasks);
+      setError("");
     } catch (err) {
       setError((err as Error).message);
     }
   }, []);
 
   useEffect(() => {
-    api
-      .scripts()
-      .then((data) => {
-        setScripts(data.scripts);
-        if (data.scripts.length) setActiveId((prev) => prev || data.scripts[0].id);
-      })
-      .catch((err) => setError((err as Error).message));
-    loadTasks();
-    const timer = setInterval(loadTasks, 5000);
+    load();
+    const timer = setInterval(load, 5000);
     return () => clearInterval(timer);
-  }, [loadTasks]);
+  }, [load]);
 
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const id = params.get("id");
-    if (id) setSelected(id);
-  }, []);
-
-  const groups = useMemo(() => {
-    const map = new Map<string, Script[]>();
-    for (const script of scripts) {
-      const key = script.category || "其他";
-      map.set(key, [...(map.get(key) || []), script]);
+  const counts = useMemo(() => {
+    const latest = new Map<string, Task>();
+    for (const task of tasks) if (!latest.has(task.script)) latest.set(task.script, task);
+    const perGroup = new Map<string, Task>();
+    for (const [scriptId, task] of latest) {
+      const slug = groupOf(scriptId).slug;
+      if (!perGroup.has(slug)) perGroup.set(slug, task);
     }
-    return Array.from(map.entries());
-  }, [scripts]);
-
-  const active = scripts.find((item) => item.id === activeId);
-  const visible = filter ? tasks.filter((task) => task.status === filter) : tasks;
-  const selectedTask = tasks.find((task) => task.id === selected);
+    return {
+      perGroup,
+      running: tasks.filter((task) => task.status === "running").length,
+      queued: tasks.filter((task) => task.status === "queued").length,
+      succeeded: tasks.filter((task) => task.status === "succeeded").length,
+      failed: tasks.filter((task) => task.status === "failed").length,
+    };
+  }, [tasks]);
 
   return (
-    <div className="grid gap-4 xl:grid-cols-[220px_1fr_1.15fr]">
-      <Card title="任务库" bodyClass="p-2" className="h-fit xl:sticky xl:top-[56px]">
-        <div className="max-h-[calc(100vh-160px)] space-y-3 overflow-auto pr-1">
-          {groups.map(([category, list]) => (
-            <div key={category}>
-              <div className="px-2 pb-1 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">{category}</div>
-              {list.map((script) => (
-                <button
-                  key={script.id}
-                  onClick={() => setActiveId(script.id)}
-                  className={`w-full rounded-lg px-2 py-1.5 text-left text-[12.5px] transition-colors ${
-                    activeId === script.id ? "bg-brand/20 text-primary-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground"
-                  }`}
-                >
-                  {script.title || script.id}
-                </button>
-              ))}
-            </div>
-          ))}
-          {scripts.length === 0 && <Empty>未加载到任务 schema</Empty>}
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="min-w-0 flex-1">
+          <h1 className="text-[16px] font-semibold leading-tight">任务中心</h1>
+          <p className="text-[11px] text-muted-foreground">
+            选分类进入下发页；本页只做导航与统计，队列和日志在分类页里。
+          </p>
         </div>
-      </Card>
-
-      <Card title={active?.title || "选择任务"} className="h-fit">
-        {active ? (
-          <TaskForm script={active} onStarted={(id) => { setSelected(id); loadTasks(); }} />
-        ) : (
-          <Empty>左侧选择一个脚本</Empty>
-        )}
-      </Card>
-
-      <div className="space-y-4">
-        <Card
-          title="任务队列"
-          bodyClass="p-0"
-          actions={
-            <select className="field w-[130px] py-1 text-[12px]" value={filter} onChange={(e) => setFilter(e.target.value)}>
-              <option value="">全部状态</option>
-              <option value="queued">排队</option>
-              <option value="running">运行中</option>
-              <option value="succeeded">成功</option>
-              <option value="failed">失败</option>
-              <option value="stopped">已停止</option>
-            </select>
-          }
-        >
-          {error && <div className="px-4 py-2 text-[12px] text-destructive">{error}</div>}
-          <div className="max-h-[280px] overflow-auto">
-            {visible.length === 0 ? (
-              <div className="p-4">
-                <Empty>暂无任务</Empty>
-              </div>
-            ) : (
-              visible.map((task) => (
-                <div
-                  key={task.id}
-                  onClick={() => setSelected(task.id)}
-                  className={`flex cursor-pointer items-center gap-2 border-b border-border/60 px-4 py-2 text-[12.5px] last:border-0 hover:bg-accent ${
-                    selected === task.id ? "bg-accent" : ""
-                  }`}
-                >
-                  <StatusBadge status={task.status} />
-                  <span className="min-w-0 flex-1 truncate text-foreground">{task.title || task.script}</span>
-                  <span className="font-mono text-[11px] text-muted-foreground">{timeAgo(task.created_at)}</span>
-                  {(task.status === "running" || task.status === "queued") && (
-                    <button
-                      className="btn-danger px-2 py-0.5 text-[11px]"
-                      onClick={async (event) => {
-                        event.stopPropagation();
-                        await api.stopTask(task.id).catch(() => null);
-                        loadTasks();
-                      }}
-                    >
-                      停止
-                    </button>
-                  )}
-                </div>
-              ))
-            )}
-          </div>
-        </Card>
-
-        <Card
-          title={selectedTask ? `运行日志 · ${selectedTask.title}` : "运行日志"}
-          bodyClass="p-3"
-          actions={
-            selectedTask ? (
-              <>
-                <Badge tone={selectedTask.status === "failed" ? "bad" : selectedTask.status === "succeeded" ? "ok" : "info"}>
-                  {selectedTask.status}
-                </Badge>
-                <span className="font-mono text-[11px] text-muted-foreground">exit {selectedTask.exit_code}</span>
-              </>
-            ) : null
-          }
-        >
-          {selected ? <LogView taskId={selected} /> : <Empty>点上方任务查看实时日志</Empty>}
-        </Card>
+        <Badge tone={counts.running > 0 ? "warn" : "info"}>
+          运行中 {counts.running} · 排队 {counts.queued}
+        </Badge>
       </div>
+
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <Stat label="运行 / 排队" value={`${counts.running}/${counts.queued}`} tone={counts.queued > 0 ? "warn" : "neutral"} />
+        <Stat label="成功" value={counts.succeeded} />
+        <Stat label="失败" value={counts.failed} tone={counts.failed > 0 ? "bad" : "neutral"} />
+        <Stat label="任务模板" value={TASK_GROUPS.reduce((sum, group) => sum + group.ids.length, 0)} hint="4 个分类" />
+      </div>
+
+      {error && (
+        <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-[12px] text-destructive">
+          {error}
+        </div>
+      )}
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        {TASK_GROUPS.map((group) => {
+          const last = counts.perGroup.get(group.slug);
+          return (
+            <Link
+              key={group.slug}
+              href={`/tasks/group/${group.slug}/`}
+              className="group rounded-[var(--radius)] border border-border bg-card p-4 transition-colors hover:border-brand/50 hover:bg-accent/30"
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-[14px] font-semibold">{group.title}</span>
+                <span className="font-mono text-[11px] text-muted-foreground">{group.ids.length} 个</span>
+              </div>
+              <p className="mt-1 text-[11px] leading-snug text-muted-foreground">{group.desc}</p>
+              <div className="mt-3 flex items-center justify-between text-[11px]">
+                <span className="text-muted-foreground">
+                  {last ? `最近：${last.title || last.script}` : "尚未运行"}
+                </span>
+                <span className="text-brand opacity-0 transition-opacity group-hover:opacity-100">进入 →</span>
+              </div>
+            </Link>
+          );
+        })}
+      </div>
+
+      <Card title="其他入口" bodyClass="p-0">
+        <table className="tbl">
+          <tbody>
+            {[
+              { name: "Claude 协议注册", desc: "零浏览器，IC / Outlook / magic link 取码", href: "/platform/claude/" },
+              { name: "批量测活", desc: "按号池扫描缓存刷新健康状态", href: "/accounts/" },
+              { name: "IC 邮箱", desc: "IMAP 多源收件与索引", href: "/apps/icmail/" },
+              { name: "物料补给", desc: "邮箱 / 代理 / 接码 / 验证码", href: "/materials/" },
+            ].map((row) => (
+              <tr key={row.name} className="border-b border-border/60 last:border-0 hover:bg-accent/40">
+                <td className="w-[220px] px-4 py-2 text-[12.5px] font-medium">
+                  <Link href={row.href} className="hover:text-brand">{row.name}</Link>
+                </td>
+                <td className="px-2 py-2 text-[11px] text-muted-foreground">{row.desc}</td>
+                <td className="w-[80px] px-4 py-2 text-right">
+                  <Link href={row.href} className="text-[11px] text-brand">进入 →</Link>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>
     </div>
   );
 }

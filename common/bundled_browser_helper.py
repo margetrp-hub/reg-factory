@@ -39,6 +39,27 @@ async def _wait_for_cdp(profile_dir: Path) -> tuple[str, str]:
     raise RuntimeError("bundled Chromium CDP endpoint did not become ready")
 
 
+def _headless_mode() -> bool:
+    """Server deployments need headless; desktops keep the visible window.
+
+    Unset → False (unchanged legacy behaviour).  Set by the container to ``0``
+    when running under Xvfb, or ``1`` for a fully headless instance.
+    """
+    raw = os.environ.get("REG_FACTORY_BROWSER_HEADLESS", "").strip().lower()
+    if not raw:
+        return False
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _launch_args() -> list[str]:
+    """CDP flag plus optional container flags (``--no-sandbox`` etc.)."""
+    args = ["--remote-debugging-port=0"]
+    extra = os.environ.get("REG_FACTORY_BROWSER_ARGS", "").strip()
+    if extra:
+        args.extend(item for item in extra.replace(",", " ").split() if item)
+    return args
+
+
 async def run(args: argparse.Namespace) -> None:
     profile_dir = Path(args.profile_dir).resolve()
     profile_dir.mkdir(parents=True, exist_ok=True)
@@ -56,9 +77,9 @@ async def run(args: argparse.Namespace) -> None:
         context = await playwright.chromium.launch_persistent_context(
             str(profile_dir),
             executable_path=browser_path,
-            headless=False,
+            headless=_headless_mode(),
             proxy=proxy.as_playwright() if proxy else None,
-            args=["--remote-debugging-port=0"],
+            args=_launch_args(),
             viewport={"width": 1440, "height": 900},
         )
         try:

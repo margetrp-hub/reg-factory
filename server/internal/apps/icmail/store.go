@@ -12,6 +12,8 @@
 
 import (
 	"context"
+	"sort"
+	"regexp"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -241,8 +243,11 @@ func (d *DB) Query(alias, tag string, limit int) ([]Message, error) {
 	clauses := []string{}
 	args := []any{}
 	if alias != "" {
-		clauses = append(clauses, "alias_key = ?")
-		args = append(args, strings.ToLower(strings.TrimSpace(alias)))
+		// 别名既可能是 IC 的 alias_key（命中预登记别名时才有值），
+		// 也可能是实际收件人（to_header）。两者都要能查到。
+		clauses = append(clauses, "(alias_key = ? OR lower(to_header) LIKE ?)")
+		normalized := strings.ToLower(strings.TrimSpace(alias))
+		args = append(args, normalized, "%"+normalized+"%")
 	}
 	if tag != "" {
 		clauses = append(clauses, "primary_tag = ?")
@@ -552,5 +557,145 @@ INSERT INTO mail_alias_counters(alias_key, total, risk_hits, last_ts, updated_at
 SELECT alias_key, COUNT(*), SUM(CASE WHEN primary_tag IN ('banned','risk') THEN 1 ELSE 0 END),
        MAX(sort_ts), strftime('%s','now')
 FROM mail_messages WHERE alias_key IS NOT NULL AND alias_key != '' GROUP BY alias_key`)
+	return err
+}
+// --- aliases / sources management -----------------------------------------
+
+// AliasState 是别名 + 计数 + 状态的联表视图。
+type AliasState struct {
+	HME       string  `json:"hme"`
+	State     string  `json:"state"`
+	Manual    bool    `json:"manual"`
+	Total     int     `json:"total"`
+	RiskHits  int     `json:"riskHits"`
+	LastTag   string  `json:"lastTag"`
+	LastTS    float64 `json:"lastTs"`
+	UpdatedAt float64 `json:"updatedAt"`
+}
+
+// ListAliases 以「实际收件地址」为准聚合：IC 的 alias_key 只有命中预登记别名时才非空，
+// 因此这里从 to_header 提取邮箱再统计，并左连接人工状态。
+func (d *DB) ListAliases(ctx context.Context) ([]AliasState, error) {
+	rows, err := d.db.QueryContext(ctx, `SELECT COALESCE(to_header,''), COALESCE(primary_tag,''), COALESCE(sort_ts,0) FROM mail_messages`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	type agg struct {
+		total, risk int
+		lastTag     string
+		lastTS      float64
+	}
+	bucket := map[string]*agg{}
+	for rows.Next() {
+		var to, tag string
+		var ts float64
+		if err := rows.Scan(&to, &tag, &ts); err != nil {
+			return nil, err
+		}
+		for _, addr := range extractAddresses(to) {
+			item := bucket[addr]
+			if item == nil {
+				item = &agg{}
+				bucket[addr] = item
+			}
+			item.total++
+			if tag == "risk" || tag == "banned" {
+				item.risk++
+			}
+			if ts >= item.lastTS {
+				item.lastTS = ts
+				item.lastTag = tag
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	states := map[string]struct {
+		state  string
+		manual bool
+	}{}
+	stateRows, err := d.db.QueryContext(ctx, `SELECT lower(alias_hme), state, manual FROM mail_alias_state`)
+	if err == nil {
+		for stateRows.Next() {
+			var hme, state string
+			var manual bool
+			if scanErr := stateRows.Scan(&hme, &state, &manual); scanErr == nil {
+				states[strings.TrimSpace(hme)] = struct {
+					state  string
+					manual bool
+				}{state, manual}
+			}
+		}
+		stateRows.Close()
+	}
+
+	out := make([]AliasState, 0, len(bucket))
+	for addr, item := range bucket {
+		state, manual := "active", false
+		if found, ok := states[addr]; ok {
+			state, manual = found.state, found.manual
+		}
+		out = append(out, AliasState{
+			HME: addr, State: state, Manual: manual,
+			Total: item.total, RiskHits: item.risk, LastTag: item.lastTag, LastTS: item.lastTS,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Total != out[j].Total {
+			return out[i].Total > out[j].Total
+		}
+		return out[i].HME < out[j].HME
+	})
+	return out, nil
+}
+
+var addrInHeader = regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`)
+
+// extractAddresses 从 To 头里取出邮箱（兼容 "Name <a@b.com>, c@d.com"）。
+func extractAddresses(header string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, 2)
+	for _, match := range addrInHeader.FindAllString(header, -1) {
+		addr := strings.ToLower(strings.TrimSpace(match))
+		if addr != "" && !seen[addr] {
+			seen[addr] = true
+			out = append(out, addr)
+		}
+	}
+	return out
+}
+
+// SetAliasState 更新别名状态（active / paused / blocked）。
+func (d *DB) SetAliasState(ctx context.Context, hme, state string) error {
+	_, err := d.db.ExecContext(ctx, `
+INSERT INTO mail_alias_state(alias_hme, state, manual, updated_at)
+VALUES(?,?,1,?)
+ON CONFLICT(alias_hme) DO UPDATE SET state=excluded.state, manual=1, updated_at=excluded.updated_at`,
+		hme, state, float64(time.Now().UnixNano())/1e9)
+	return err
+}
+
+// SetSourceEnabled 启停一个 IMAP 源。
+func (d *DB) SetSourceEnabled(ctx context.Context, id int64, enabled bool) error {
+	_, err := d.db.ExecContext(ctx, `UPDATE mail_sources SET enabled=? WHERE id=?`, enabled, id)
+	return err
+}
+
+// DeleteSource 删除一个 IMAP 源（不动已索引的消息）。
+func (d *DB) DeleteSource(ctx context.Context, id int64) error {
+	_, err := d.db.ExecContext(ctx, `DELETE FROM mail_sources WHERE id=?`, id)
+	return err
+}
+
+// RequestSync 插入一条按需同步请求（worker 会在下一轮消费）。
+func (d *DB) RequestSync(ctx context.Context, sourceID int64, alias string) error {
+	_, err := d.db.ExecContext(ctx, `
+INSERT INTO mail_sync_requests(source_id, alias_key, state, requested_at)
+VALUES(?,?, 'pending', ?)`, sourceID, strings.ToLower(strings.TrimSpace(alias)),
+		float64(time.Now().UnixNano())/1e9)
 	return err
 }

@@ -36,10 +36,10 @@ def apply_overrides(script_id: str, arg: dict) -> dict:
 def main() -> int:
     out_path = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "deploy" / "scripts.schema.json"
     try:
+        from schema import scripts as schema  # noqa: WPS433
+    except Exception:
+        # 兼容旧布局（webui 面板已退役，保留回退便于回滚）
         from webui import scripts as schema  # noqa: WPS433
-    except Exception as exc:  # pragma: no cover
-        print(f"导入 webui.scripts 失败: {exc}", file=sys.stderr)
-        return 1
 
     exported = []
     for item in getattr(schema, "SCRIPTS", []):

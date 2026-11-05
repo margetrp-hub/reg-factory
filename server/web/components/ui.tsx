@@ -127,7 +127,7 @@ export function Toggle({
 export function Spinner({ className = "" }: { className?: string }) {
   return (
     <span
-      className={`inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-border border-t-signal-400 ${className}`}
+      className={`inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-border border-t-brand ${className}`}
     />
   );
 }

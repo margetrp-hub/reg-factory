@@ -112,15 +112,33 @@ CREATE TABLE IF NOT EXISTS accounts (
   refresh_at TEXT NOT NULL DEFAULT '',
   note TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  password_state TEXT NOT NULL DEFAULT '',
+  password_changed_at TEXT NOT NULL DEFAULT '',
+  password_message TEXT NOT NULL DEFAULT '',
+  oauth_status TEXT NOT NULL DEFAULT '',
+  join_status TEXT NOT NULL DEFAULT '',
+  liveness_status TEXT NOT NULL DEFAULT '',
+  liveness_checked_at TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_accounts_kind ON accounts(kind, platform, status);
+
+CREATE TABLE IF NOT EXISTS account_credentials (
+  ref TEXT PRIMARY KEY,
+  password TEXT NOT NULL DEFAULT '',
+  totp TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS work_operations (
   operation_id TEXT PRIMARY KEY,
   task_id TEXT NOT NULL,
   action TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL
+  input_resource_version INTEGER NOT NULL DEFAULT 0,
+  result_resource_version INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  completed_at TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS audit (
@@ -148,7 +166,15 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("初始化表结构失败: %w", err)
 	}
-	return &Store{db: db}, nil
+	st := &Store{db: db}
+	// Existing SG databases predate the operation result columns. Migrate them
+	// in place so a retry after a lost receipt cannot advance an account twice.
+	st.ensureColumns("work_operations", map[string]string{
+		"input_resource_version":  "INTEGER NOT NULL DEFAULT 0",
+		"result_resource_version": "INTEGER NOT NULL DEFAULT 0",
+		"completed_at":            "TEXT NOT NULL DEFAULT ''",
+	})
+	return st, nil
 }
 
 // Close 关闭数据库。
@@ -385,7 +411,12 @@ func (s *Store) Stats() (map[string]int, error) {
 }
 
 // ReserveOperation 幂等登记一个 Work operation_id；返回已存在的 task（若有）。
-func (s *Store) ReserveOperation(operationID, taskID, action string) (string, bool, error) {
+// inputVersion 是这次操作看到的账号版本，作为刷新结果的幂等基线。
+func (s *Store) ReserveOperation(operationID, taskID, action string, inputVersion ...int) (string, bool, error) {
+	version := 0
+	if len(inputVersion) > 0 && inputVersion[0] > 0 {
+		version = inputVersion[0]
+	}
 	var existing string
 	err := s.db.QueryRow(`SELECT task_id FROM work_operations WHERE operation_id=?`, operationID).Scan(&existing)
 	if err == nil {
@@ -395,8 +426,8 @@ func (s *Store) ReserveOperation(operationID, taskID, action string) (string, bo
 		return "", false, err
 	}
 	_, err = s.db.Exec(
-		`INSERT INTO work_operations(operation_id, task_id, action, created_at) VALUES(?,?,?,?)`,
-		operationID, taskID, action, now(),
+		`INSERT INTO work_operations(operation_id, task_id, action, input_resource_version, created_at) VALUES(?,?,?,?,?)`,
+		operationID, taskID, action, version, now(),
 	)
 	if err != nil {
 		// 并发下可能已被别的请求插入
@@ -406,6 +437,67 @@ func (s *Store) ReserveOperation(operationID, taskID, action string) (string, bo
 		return "", false, err
 	}
 	return taskID, true, nil
+}
+
+// CommitOperationResult records the durable version produced by a successful
+// account refresh/authorization. The operation row and account version are
+// updated in one transaction, so repeated receipt polls return the same
+// version without rotating the account again.
+func (s *Store) CommitOperationResult(operationID, action, accountRef string, expectedVersion int) (int, error) {
+	if operationID == "" || accountRef == "" {
+		return 0, fmt.Errorf("operation result scope missing")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	var saved, input int
+	err = tx.QueryRow(`SELECT result_resource_version, input_resource_version FROM work_operations WHERE operation_id=?`, operationID).Scan(&saved, &input)
+	if err != nil && err != sql.ErrNoRows {
+		return 0, err
+	}
+	operationFound := err == nil
+	if err == nil && saved > 0 {
+		return saved, nil
+	}
+	if expectedVersion <= 0 {
+		expectedVersion = input
+	}
+	var current int
+	if err = tx.QueryRow(`SELECT version FROM accounts WHERE ref=?`, accountRef).Scan(&current); err != nil {
+		return 0, err
+	}
+	if current < 1 {
+		current = 1
+	}
+	if expectedVersion > 0 && current != expectedVersion && current != expectedVersion+1 {
+		return 0, fmt.Errorf("account version changed: got %d want %d", current, expectedVersion)
+	}
+	resultVersion := current
+	if current == expectedVersion || expectedVersion <= 0 {
+		resultVersion = current + 1
+		updated, updateErr := tx.Exec(`UPDATE accounts SET version=?,updated_at=? WHERE ref=? AND version=?`, resultVersion, now(), accountRef, current)
+		if updateErr != nil {
+			return 0, updateErr
+		}
+		if count, _ := updated.RowsAffected(); count != 1 {
+			return 0, fmt.Errorf("account version update lost")
+		}
+	}
+	if operationFound {
+		if _, err = tx.Exec(`UPDATE work_operations SET result_resource_version=?,completed_at=? WHERE operation_id=?`, resultVersion, now(), operationID); err != nil {
+			return 0, err
+		}
+	} else if _, err = tx.Exec(`INSERT INTO work_operations(operation_id,task_id,action,input_resource_version,result_resource_version,created_at,completed_at) VALUES(?,?,?,?,?,?,?)`,
+		operationID, "", action, expectedVersion, resultVersion, now(), now()); err != nil {
+		return 0, err
+	}
+	if err = tx.Commit(); err != nil {
+		return 0, err
+	}
+	return resultVersion, nil
 }
 
 // AccountSeed 是从数据目录扫出来的一条资产，用于同步进 accounts 表。
@@ -433,6 +525,17 @@ type Account struct {
 	RefreshAt       string `json:"refresh_at"`
 	Note            string `json:"note"`
 	UpdatedAt       string `json:"updated_at"`
+
+	// Team 参考协议需要的判定字段（源号是否可派单）
+	Version           int    `json:"version"`
+	OAuthStatus       string `json:"oauth_status"`
+	JoinStatus        string `json:"join_status"`
+	LivenessStatus    string `json:"liveness_status"`
+	LivenessCheckedAt string `json:"liveness_checked_at"`
+
+	PasswordState     string `json:"password_state"`
+	PasswordChangedAt string `json:"password_changed_at"`
+	PasswordMessage   string `json:"password_message"`
 }
 
 // SyncAccounts 把扫描结果 upsert 进 accounts（保留已有健康/领取/刷新状态）。
@@ -464,11 +567,36 @@ func (s *Store) SyncAccounts(seeds []AccountSeed) (int, error) {
 		}
 		count++
 	}
-	// 源文件已删除的条目一并清掉（本次未被 upsert 的 updated_at 仍为旧值）
-	if _, err := tx.Exec(`DELETE FROM accounts WHERE updated_at < ?`, ts); err != nil {
+	// 源文件已删除的条目一并清掉（本次未被 upsert 的 updated_at 仍为旧值）；
+	// 人工导入（imported/creds）不参与文件同步清理。
+	if _, err := tx.Exec(`DELETE FROM accounts WHERE updated_at < ? AND kind NOT IN ('imported','creds')`, ts); err != nil {
 		return count, err
 	}
 	return count, tx.Commit()
+}
+
+// ensureColumns 按需补列（SQLite 没有 ADD COLUMN IF NOT EXISTS）。
+func (s *Store) ensureColumns(table string, cols map[string]string) {
+	rows, err := s.db.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return
+	}
+	have := map[string]bool{}
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, ctype string
+		var dflt any
+		if scanErr := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); scanErr == nil {
+			have[name] = true
+		}
+	}
+	rows.Close()
+	for name, def := range cols {
+		if have[name] {
+			continue
+		}
+		_, _ = s.db.Exec("ALTER TABLE " + table + " ADD COLUMN " + name + " " + def)
+	}
 }
 
 // ListAccounts 按条件列出账号。
@@ -579,4 +707,125 @@ func (s *Store) DueForLiveness(platform string, limit int) ([]Account, error) {
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+// UpsertAccounts 只插入/更新账号，不清理未出现的条目（人工导入用）。
+func (s *Store) UpsertAccounts(seeds []AccountSeed) (int, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`INSERT INTO accounts(ref, platform, kind, identity, secret_ref, status, created_at, updated_at)
+		VALUES(?,?,?,?,?,'unknown',?,?)
+		ON CONFLICT(ref) DO UPDATE SET
+		  platform=excluded.platform, kind=excluded.kind, identity=excluded.identity,
+		  secret_ref=excluded.secret_ref, updated_at=excluded.updated_at`)
+	if err != nil {
+		return 0, err
+	}
+	defer stmt.Close()
+
+	ts := now()
+	count := 0
+	for _, seed := range seeds {
+		if seed.Ref == "" {
+			continue
+		}
+		if _, err := stmt.Exec(seed.Ref, seed.Platform, seed.Kind, seed.Identity, seed.SecretRef, ts, ts); err != nil {
+			return count, err
+		}
+		count++
+	}
+	return count, tx.Commit()
+}
+
+// LibraryAccounts 分页返回账号库投影（Team 参考协议用），跨平台不过滤 NodePlatform。
+func (s *Store) LibraryAccounts(query, status, platform string, page, pageSize int) ([]Account, int, error) {
+	where := []string{"1=1"}
+	args := []any{}
+	if q := strings.TrimSpace(query); q != "" {
+		where = append(where, "(identity LIKE ? OR ref LIKE ?)")
+		like := "%" + q + "%"
+		args = append(args, like, like)
+	}
+	if st := strings.TrimSpace(status); st != "" {
+		where = append(where, "status = ?")
+		args = append(args, st)
+	}
+	if p := strings.TrimSpace(platform); p != "" {
+		where = append(where, "platform = ?")
+		args = append(args, p)
+	}
+	cond := strings.Join(where, " AND ")
+
+	var total int
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM accounts WHERE "+cond, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 200 {
+		pageSize = 50
+	}
+	offset := (page - 1) * pageSize
+
+	rows, err := s.db.Query(`SELECT ref, platform, kind, identity, secret_ref, status, health_checked_at,
+		health_message, claimed, claimed_at, refresh_state, refresh_at, note, version,
+		oauth_status, join_status, liveness_status, liveness_checked_at, updated_at
+		FROM accounts WHERE `+cond+` ORDER BY updated_at DESC LIMIT ? OFFSET ?`,
+		append(args, pageSize, offset)...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	out := make([]Account, 0, pageSize)
+	for rows.Next() {
+		var a Account
+		if err := rows.Scan(&a.Ref, &a.Platform, &a.Kind, &a.Identity, &a.SecretRef, &a.Status,
+			&a.HealthCheckedAt, &a.HealthMessage, &a.Claimed, &a.ClaimedAt,
+			&a.RefreshState, &a.RefreshAt, &a.Note, &a.Version,
+			&a.OAuthStatus, &a.JoinStatus, &a.LivenessStatus, &a.LivenessCheckedAt, &a.UpdatedAt); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, a)
+	}
+	return out, total, rows.Err()
+}
+
+// MarkPassword 记录改密码结果（能力化：账号状态的一部分）。
+func (s *Store) MarkPassword(ref, state, message string) error {
+	_, err := s.db.Exec(`UPDATE accounts SET password_state=?, password_changed_at=?, password_message=?, updated_at=? WHERE ref=?`,
+		state, now(), message, now(), ref)
+	return err
+}
+
+// SaveCredential 保存账号的登录凭据（改密码能力需要旧密码 + TOTP）。
+func (s *Store) SaveCredential(ref, password, totp string) error {
+	if password == "" && totp == "" {
+		return nil
+	}
+	_, err := s.db.Exec(`INSERT INTO account_credentials(ref, password, totp, updated_at)
+		VALUES(?,?,?,?)
+		ON CONFLICT(ref) DO UPDATE SET
+		  password=CASE WHEN excluded.password != '' THEN excluded.password ELSE password END,
+		  totp=CASE WHEN excluded.totp != '' THEN excluded.totp ELSE totp END,
+		  updated_at=excluded.updated_at`, ref, password, totp, now())
+	return err
+}
+
+// GetCredential 读取账号凭据。
+func (s *Store) GetCredential(ref string) (password, totp string, err error) {
+	err = s.db.QueryRow(`SELECT password, totp FROM account_credentials WHERE ref=?`, ref).Scan(&password, &totp)
+	return password, totp, err
+}
+
+// OperationTask 由 operation_id 反查本地 task_id（Team 凭 operation 取任务用）。
+func (s *Store) OperationTask(operationID string) (string, error) {
+	var taskID string
+	err := s.db.QueryRow(`SELECT task_id FROM work_operations WHERE operation_id=?`, operationID).Scan(&taskID)
+	return taskID, err
 }

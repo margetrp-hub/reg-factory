@@ -19,8 +19,13 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/tiantianGPU/reg-factory/server/internal/apps/icmail"
 	"github.com/tiantianGPU/reg-factory/server/internal/assets"
+	"github.com/tiantianGPU/reg-factory/server/internal/assetstore"
 	"github.com/tiantianGPU/reg-factory/server/internal/auth"
+	"github.com/tiantianGPU/reg-factory/server/internal/claudehttp"
+	"github.com/tiantianGPU/reg-factory/server/internal/exporter"
+	"github.com/tiantianGPU/reg-factory/server/internal/probe"
 	"github.com/tiantianGPU/reg-factory/server/internal/runner"
 	"github.com/tiantianGPU/reg-factory/server/internal/settings"
 	"github.com/tiantianGPU/reg-factory/server/internal/store"
@@ -34,23 +39,32 @@ type Server struct {
 	run     *runner.Manager
 	auth    *auth.Manager
 	scanner *assets.Scanner
+	assets  *assetstore.Store
 	version string
 
 	schemaMu   sync.Mutex
 	schemaAt   time.Time
 	schemaList []runner.Script
+
+	// 协议注册（Go 原生）并发槽，避免一次点 10 个把出口打死
+	webRegisterSlot chan struct{}
+	// IC 邮箱 app（同进程），协议注册可直接从这里取 magic link
+	icApp *icmail.App
 }
 
 // New 构造 API。
-func New(cfg *settings.Settings, env *settings.Env, st *store.Store, run *runner.Manager, a *auth.Manager, version string) *Server {
+func New(cfg *settings.Settings, env *settings.Env, st *store.Store, run *runner.Manager, a *auth.Manager, version string, icApp *icmail.App) *Server {
 	return &Server{
-		cfg:     cfg,
-		env:     env,
-		st:      st,
-		run:     run,
-		auth:    a,
-		scanner: assets.New(cfg.DataDir),
-		version: version,
+		cfg:             cfg,
+		env:             env,
+		st:              st,
+		run:             run,
+		auth:            a,
+		scanner:         assets.New(cfg.DataDir),
+		assets:          assetstore.New(cfg.DataDir),
+		version:         version,
+		webRegisterSlot: make(chan struct{}, 3),
+		icApp:           icApp,
 	}
 }
 
@@ -79,6 +93,8 @@ func (s *Server) Register(r *gin.Engine) {
 	r.GET("/api/tasks/:id/logs", s.taskLogs)
 	r.GET("/api/tasks/:id/stream", s.taskStream)
 
+	r.GET("/api/assets/export", s.assetExport)
+	r.GET("/api/assets/tree", s.assetTree)
 	r.GET("/api/assets", s.assetSummary)
 	r.GET("/api/assets/:kind", s.assetList)
 	r.POST("/api/assets/:kind/claim", s.assetClaim)
@@ -89,7 +105,13 @@ func (s *Server) Register(r *gin.Engine) {
 	r.GET("/api/config/raw", s.configRaw)
 	r.PUT("/api/config/raw", s.configRawPut)
 
+	r.GET("/api/export/accounts", s.exportAccounts)
+	r.POST("/api/registry/claude-http", s.claudeHTTPRegister)
 	r.POST("/api/outlook/authorize", s.outlookAuthorize)
+	r.POST("/api/accounts/import", s.importAccounts)
+	r.POST("/api/accounts/change-password", s.changePasswords)
+	r.POST("/api/accounts/convert", s.convertAccounts)
+	r.GET("/api/accounts/detail", s.accountDetail)
 	r.GET("/api/accounts", s.listAccounts)
 	r.POST("/api/accounts/sync", s.syncAccountsHandler)
 	r.POST("/api/accounts/liveness", s.accountLiveness)
@@ -180,7 +202,7 @@ func (s *Server) createTask(c *gin.Context) {
 	if s.run.Guarded() {
 		mem := s.run.Memory()
 		c.JSON(http.StatusTooManyRequests, gin.H{
-			"error":  "memory_guard",
+			"error": "memory_guard",
 			"detail": fmt.Sprintf("容器内存已用 %.1f%%（%dMB/%dMB），超过 %.0f%% 阈值，暂不接新任务",
 				mem.UsedPct, mem.CurrentMB, mem.MaxMB, s.cfg.GuardPct),
 			"memory": mem,
@@ -339,8 +361,105 @@ func writeSSE(c *gin.Context, event string, payload any) {
 
 // ---------------------------------------------------------------- 资产
 
+// assetExport 导出「下游可直接导入」的标准凭据 JSON。
+// chatgpt/oauth -> SUB2API / CPA / Codex 认的字段集；不带资产库元数据。
+func (s *Server) assetExport(c *gin.Context) {
+	platform := strings.TrimSpace(c.DefaultQuery("platform", "chatgpt"))
+	kind := strings.TrimSpace(c.DefaultQuery("kind", ""))
+
+	list, err := s.assets.List()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	out := make([]map[string]any, 0, len(list))
+	for _, asset := range list {
+		if platform != "" && asset.Platform != platform {
+			continue
+		}
+		if kind != "" && asset.Kind != kind {
+			continue
+		}
+		payload := asset.Payload
+		if payload == nil {
+			continue
+		}
+		switch asset.Kind {
+		case "oauth":
+			// 标准 OAuth 凭据（与 creds/*.json 同构）
+			record := map[string]any{
+				"email":         firstNonEmptyStr(str(payload["email"]), asset.Email),
+				"access_token":  str(payload["access_token"]),
+				"refresh_token": str(payload["refresh_token"]),
+				"id_token":      str(payload["id_token"]),
+				"client_id":     firstNonEmptyStr(str(payload["client_id"]), "app_EMoamEEZ73f0CkXaXp7hrann"),
+				"token_type":    firstNonEmptyStr(str(payload["token_type"]), "Bearer"),
+				"expires_in":    payload["expires_in"],
+				"source_ref":    asset.Ref,
+			}
+			out = append(out, record)
+		case "imported":
+			// 邮箱 + 密码 + 2FA（登录用，不是 token）
+			out = append(out, map[string]any{
+				"email":      firstNonEmptyStr(str(payload["email"]), asset.Email),
+				"password":   str(payload["password"]),
+				"totp":       str(payload["totp"]),
+				"platform":   asset.Platform,
+				"source_ref": asset.Ref,
+			})
+		}
+	}
+
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, gin.H{
+		"platform": platform, "kind": kind, "count": len(out), "accounts": out,
+	})
+}
+
+func str(value any) string {
+	text, _ := value.(string)
+	return text
+}
+
+// assetTree 返回统一资产库的「平台 → 类型」统计与明细。
+func (s *Server) assetTree(c *gin.Context) {
+	list, err := s.assets.List()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	type node struct {
+		Platform string             `json:"platform"`
+		Kind     string             `json:"kind"`
+		Count    int                `json:"count"`
+		Items    []assetstore.Asset `json:"items"`
+	}
+	buckets := map[string]*node{}
+	for _, asset := range list {
+		key := asset.Platform + "/" + asset.Kind
+		if buckets[key] == nil {
+			buckets[key] = &node{Platform: asset.Platform, Kind: asset.Kind}
+		}
+		buckets[key].Count++
+		if len(buckets[key].Items) < 50 {
+			// 凭据内容不进列表响应（token 只在专用导出/取用接口出现）
+			asset.Payload = nil
+			buckets[key].Items = append(buckets[key].Items, asset)
+		}
+	}
+	out := make([]*node, 0, len(buckets))
+	for _, item := range buckets {
+		out = append(out, item)
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"root": s.assets.Root(), "total": len(list), "groups": out,
+	})
+}
+
 func (s *Server) assetSummary(c *gin.Context) {
 	out := make([]gin.H, 0, len(assets.Kinds))
+
 	for _, kind := range assets.Kinds {
 		items, err := s.scanner.Scan(kind)
 		if err != nil {
@@ -416,11 +535,161 @@ func (s *Server) claimReset(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"ok": true, "removed": n})
 }
 
+// ---------------------------------------------------------------- 账号导出（Go 原生）
+
+// exportAccounts 输出浏览器扩展可直接导入的 accounts.json 结构。
+func (s *Server) exportAccounts(c *gin.Context) {
+	platform := c.DefaultQuery("platform", "claude")
+	entries, err := exporter.Export(s.cfg.DataDir, platform)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported_platform", "platforms": exporter.Platforms()})
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, gin.H{
+		"platform": platform,
+		"count":    len(entries),
+		"entries":  entries,
+	})
+}
+
+// ---------------------------------------------------------------- 协议注册（Go 原生，无浏览器）
+
+// icMailbox 让协议注册直接从 IC 的 SQLite 取信（同进程，零网络、零鉴权）。
+type icMailbox struct {
+	app   *icmail.App
+	email string
+}
+
+// Address 返回邮箱地址。
+func (m *icMailbox) Address() string { return m.email }
+
+// WaitForMagicLink 轮询 IC 的索引库，找主题/正文里的 Claude magic link。
+func (m *icMailbox) WaitForMagicLink(ctx context.Context, timeout time.Duration) (string, error) {
+	if m.app == nil || m.app.DB == nil {
+		return "", &claudehttp.Error{Kind: claudehttp.ErrMailbox, Detail: "IC 邮箱未初始化"}
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		messages, err := m.app.DB.Query(m.email, "", 10)
+		if err == nil {
+			for _, message := range messages {
+				text := message.Subject + "\n" + message.BodyText + "\n" + message.Snippet
+				if link := claudehttp.ExtractMagicLink(text); link != "" {
+					return link, nil
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			return "", &claudehttp.Error{Kind: claudehttp.ErrMailbox, Detail: "IC 等 magic link 超时"}
+		}
+		select {
+		case <-ctx.Done():
+			return "", &claudehttp.Error{Kind: claudehttp.ErrMailbox, Detail: "已取消"}
+		case <-time.After(3 * time.Second):
+		}
+	}
+}
+
+type claudeHTTPRequest struct {
+	Email        string `json:"email"`
+	RefreshToken string `json:"refresh_token"`
+	ClientID     string `json:"client_id"`
+	Proxy        string `json:"proxy"`
+	Seed         string `json:"seed"`
+	MagicLink    string `json:"magic_link"`
+	Mailbox      string `json:"mailbox"`
+	Timeout      int    `json:"timeout"`
+}
+
+// claudeHTTPRegister 用 Go 协议流程注册 Claude（零浏览器）。
+func (s *Server) claudeHTTPRegister(c *gin.Context) {
+	var req claudeHTTPRequest
+	if err := c.ShouldBindJSON(&req); err != nil || strings.TrimSpace(req.Email) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_body", "detail": "需要 email"})
+		return
+	}
+	var mailbox claudehttp.Mailbox
+	switch {
+	case strings.TrimSpace(req.MagicLink) != "":
+		mailbox = &claudehttp.StaticMailbox{Addr: req.Email, Link: strings.TrimSpace(req.MagicLink)}
+	case s.icApp != nil && (strings.EqualFold(strings.TrimSpace(req.Mailbox), "icloud") ||
+		strings.HasSuffix(strings.ToLower(strings.TrimSpace(req.Email)), "@icloud.com")):
+		// IC 与 regd 同进程：直接读它的 SQLite，零网络、零鉴权
+		mailbox = &icMailbox{app: s.icApp, email: strings.TrimSpace(req.Email)}
+	case strings.TrimSpace(req.RefreshToken) != "":
+		mailbox = claudehttp.NewOutlookMailbox(req.Email, req.RefreshToken, req.ClientID)
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":  "mailbox_required",
+			"detail": "需要 mailbox=icloud（IC 同进程取码）、refresh_token（Outlook）或 magic_link（人工粘贴）",
+		})
+		return
+	}
+
+	select {
+	case s.webRegisterSlot <- struct{}{}:
+		defer func() { <-s.webRegisterSlot }()
+	default:
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": "busy", "detail": "协议注册并发已满，请稍后重试"})
+		return
+	}
+
+	timeout := req.Timeout
+	if timeout < 30 || timeout > 600 {
+		timeout = 180
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), time.Duration(timeout+30)*time.Second)
+	defer cancel()
+
+	result, err := claudehttp.Register(ctx, claudehttp.Options{
+		Email: req.Email, Seed: req.Seed, ProxyURL: req.Proxy,
+		Timeout: time.Duration(timeout) * time.Second, Mailbox: mailbox,
+	})
+	if err != nil {
+		kind := claudehttp.KindOf(err)
+		actor, _ := c.Get("actor")
+		s.st.Audit(toString(actor), "claude.protocol_failed", req.Email+" "+string(kind), c.ClientIP())
+		status := http.StatusBadGateway
+		if kind == claudehttp.ErrRateLimit {
+			status = http.StatusTooManyRequests
+		}
+		c.JSON(status, gin.H{"error": string(kind), "detail": err.Error()})
+		return
+	}
+	path, saveErr := claudehttp.SaveSession(s.cfg.DataDir, result)
+	if saveErr != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "save_failed", "detail": saveErr.Error()})
+		return
+	}
+	if _, syncErr := s.SeedAccounts(); syncErr != nil {
+		log.Printf("[claude-http] accounts 同步失败: %v", syncErr)
+	}
+	actor, _ := c.Get("actor")
+	s.st.Audit(toString(actor), "claude.protocol_ok", req.Email+" -> "+path, c.ClientIP())
+	c.JSON(http.StatusOK, gin.H{
+		"ok": true, "email": result.Email,
+		"session_key_len": len(result.SessionKey),
+		"saved_to":        path, "proxy": req.Proxy != "",
+	})
+}
+
 // ---------------------------------------------------------------- 账号主数据
 
 // SeedAccounts 把数据目录里的资产同步进 accounts 表（保留健康/领取状态）。
 func (s *Server) SeedAccounts() (int, error) {
 	seeds := make([]store.AccountSeed, 0, 256)
+
+	// 统一资产库：/data/assets/<platform>/<kind>/<ref>.json
+	if stored, listErr := s.assets.List(); listErr == nil {
+		for _, asset := range stored {
+			seeds = append(seeds, store.AccountSeed{
+				Ref: asset.Ref, Platform: asset.Platform, Kind: asset.Kind,
+				Identity: asset.Email, SecretRef: "assets/" + asset.Path,
+			})
+		}
+	}
+
 	for _, kind := range assets.Kinds {
 		items, scanErr := s.scanner.Scan(kind)
 		if scanErr != nil {
@@ -454,6 +723,295 @@ func (s *Server) syncAccountsHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"ok": true, "synced": n})
 }
 
+type importRequest struct {
+	Accounts           string `json:"accounts"`
+	Platform           string `json:"platform"`
+	Kind               string `json:"kind"`
+	AutoChangePassword bool   `json:"auto_change_password"`
+	NewPassword        string `json:"new_password"`
+	Concurrency        int    `json:"concurrency"`
+}
+
+// importAccounts 导入「已接码」账号（人工拿到、已经过短信验证的号）。
+// 每行支持：email----password / email password / email
+func (s *Server) importAccounts(c *gin.Context) {
+	var req importRequest
+	if err := c.ShouldBindJSON(&req); err != nil || strings.TrimSpace(req.Accounts) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_body", "detail": "需要 accounts"})
+		return
+	}
+	platform := strings.TrimSpace(req.Platform)
+	if platform == "" {
+		platform = "chatgpt"
+	}
+	kind := strings.TrimSpace(req.Kind)
+	if kind == "" {
+		kind = "imported"
+	}
+
+	batch := "imp-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	seeds := make([]store.AccountSeed, 0, 64)
+	type parsed struct{ email, password, totp string }
+	rows := make([]parsed, 0, 64)
+
+	for _, line := range strings.Split(req.Accounts, "\n") {
+		text := strings.TrimSpace(line)
+		if text == "" || strings.HasPrefix(text, "#") {
+			continue
+		}
+		parts := strings.Split(text, "----")
+		if len(parts) == 1 {
+			parts = strings.Fields(text)
+		}
+		email := strings.TrimSpace(parts[0])
+		if !strings.Contains(email, "@") {
+			continue
+		}
+		password := ""
+		if len(parts) > 1 {
+			password = strings.TrimSpace(parts[1])
+		}
+		totp := ""
+		if len(parts) > 2 {
+			totp = strings.TrimSpace(parts[2])
+		}
+		seeds = append(seeds, store.AccountSeed{
+			Ref: "import:" + strings.ToLower(email), Platform: platform, Kind: kind,
+			Identity: email, SecretRef: batch,
+		})
+		rows = append(rows, parsed{email: email, password: password, totp: totp})
+	}
+	if len(seeds) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no_valid_rows", "detail": "没有识别到邮箱"})
+		return
+	}
+	for _, row := range rows {
+		ref := "import:" + strings.ToLower(row.email)
+		_ = s.st.SaveCredential(ref, row.password, row.totp)
+		_ = s.assets.Put(assetstore.Asset{
+			Ref: ref, Platform: platform, Kind: kind, Email: row.email, Source: "import",
+			Payload: map[string]any{"password": row.password, "totp": row.totp},
+		})
+	}
+	imported, err := s.st.UpsertAccounts(seeds)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	taskIDs := make([]string, 0, len(rows))
+	if req.AutoChangePassword && strings.TrimSpace(req.NewPassword) != "" {
+		for _, row := range rows {
+			argv := []string{"--platform", platform, "--email", row.email,
+				"--ref", "import:" + strings.ToLower(row.email), "--new-password", req.NewPassword}
+			if row.password != "" {
+				argv = append(argv, "--old-password", row.password)
+			}
+			if row.totp != "" {
+				argv = append(argv, "--totp-secret", row.totp)
+			}
+			raw, _ := json.Marshal(argv)
+			task := store.Task{
+				ID:       "pwd-" + strconv.FormatInt(time.Now().UnixNano(), 36) + "-" + strconv.Itoa(len(taskIDs)),
+				Script:   "change_password",
+				Title:    "改密码 · " + row.email,
+				ArgsJSON: string(raw),
+				Actor:    "panel",
+			}
+			if err := s.run.Submit(task); err == nil {
+				taskIDs = append(taskIDs, task.ID)
+			}
+		}
+	}
+
+	actor, _ := c.Get("actor")
+	s.st.Audit(toString(actor), "accounts.import", fmt.Sprintf("%s platform=%s count=%d auto_pwd=%v", batch, platform, imported, req.AutoChangePassword), c.ClientIP())
+	c.JSON(http.StatusOK, gin.H{
+		"ok": true, "batch": batch, "imported": imported,
+		"tasks": taskIDs, "auto_change_password": len(taskIDs) > 0,
+	})
+}
+
+// proxyPoolFor 从环境变量取代理池（PROXY_POOL 优先，其次 PROXY_URL）。
+func proxyPoolFor() []string {
+	raw := strings.TrimSpace(os.Getenv("REG_FACTORY_PROXY_POOL"))
+	if raw == "" {
+		raw = strings.TrimSpace(os.Getenv("REG_FACTORY_PROXY_URL"))
+	}
+	if raw == "" {
+		return nil
+	}
+	out := make([]string, 0, 8)
+	for _, item := range strings.Split(raw, ",") {
+		if trimmed := strings.TrimSpace(item); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
+type changePasswordRequest struct {
+	Refs        []string `json:"refs"`
+	NewPassword string   `json:"new_password"`
+	Platform    string   `json:"platform"`
+}
+
+// changePasswords 批量改密码（能力入口：账号列表多选 → 改密码）。
+func (s *Server) changePasswords(c *gin.Context) {
+	var req changePasswordRequest
+	if err := c.ShouldBindJSON(&req); err != nil || len(req.Refs) == 0 || strings.TrimSpace(req.NewPassword) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_body", "detail": "需要 refs 与 new_password"})
+		return
+	}
+	if len(req.Refs) > 200 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "too_many", "detail": "单次最多 200 个"})
+		return
+	}
+
+	queued := make([]gin.H, 0, len(req.Refs))
+	skipped := make([]gin.H, 0)
+	for _, refValue := range req.Refs {
+		account, err := s.st.GetAccount(refValue)
+		if err != nil {
+			skipped = append(skipped, gin.H{"ref": refValue, "reason": "not_found"})
+			continue
+		}
+		if account.Claimed {
+			skipped = append(skipped, gin.H{"ref": refValue, "reason": "claimed"})
+			continue
+		}
+		email := account.Identity
+		if email == "" {
+			email = strings.TrimPrefix(strings.TrimPrefix(refValue, "import:"), "emails:")
+		}
+		password, totp, credErr := s.st.GetCredential(refValue)
+		if credErr == nil && password == "" && totp == "" {
+			skipped = append(skipped, gin.H{"ref": refValue, "reason": "no_credential"})
+			continue
+		}
+
+		platform := strings.TrimSpace(req.Platform)
+		if platform == "" {
+			platform = account.Platform
+		}
+		if platform == "" || platform == "*" {
+			platform = "chatgpt"
+		}
+		argv := []string{"--platform", platform, "--email", email, "--ref", refValue, "--new-password", req.NewPassword}
+		if password != "" {
+			argv = append(argv, "--old-password", password)
+		}
+		if totp != "" {
+			argv = append(argv, "--totp-secret", totp)
+		}
+		if pool := proxyPoolFor(); len(pool) > 0 {
+			argv = append(argv, "--proxy", pool[len(queued)%len(pool)])
+		}
+		raw, _ := json.Marshal(argv)
+		taskID := "pwd-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+		task := store.Task{
+			ID: taskID, Script: "change_password",
+			Title: "改密码 · " + email, ArgsJSON: string(raw), Actor: "panel",
+		}
+		if err := s.run.Submit(task); err != nil {
+			skipped = append(skipped, gin.H{"ref": refValue, "reason": "submit_failed"})
+			continue
+		}
+		_ = s.st.MarkPassword(refValue, "pending", "已排队")
+		queued = append(queued, gin.H{"ref": refValue, "task_id": taskID})
+	}
+
+	actor, _ := c.Get("actor")
+	s.st.Audit(toString(actor), "accounts.change_password",
+		fmt.Sprintf("queued=%d skipped=%d", len(queued), len(skipped)), c.ClientIP())
+	c.JSON(http.StatusAccepted, gin.H{"ok": true, "queued": queued, "skipped": skipped})
+}
+
+type convertRequest struct {
+	Refs     []string `json:"refs"`
+	Platform string   `json:"platform"`
+}
+
+// convertAccounts 把「邮箱+密码+2FA」账号登录成标准 Free 凭据 JSON。
+// 产物落 /data/assets/<platform>/free/，同时把账号状态刷成 ok，Team 即可拉到 available。
+func (s *Server) convertAccounts(c *gin.Context) {
+	var req convertRequest
+	if err := c.ShouldBindJSON(&req); err != nil || len(req.Refs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_body", "detail": "需要 refs"})
+		return
+	}
+	if len(req.Refs) > 100 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "too_many", "detail": "单次最多 100 个"})
+		return
+	}
+
+	pool := proxyPoolFor()
+	queued := make([]gin.H, 0, len(req.Refs))
+	skipped := make([]gin.H, 0)
+
+	for index, refValue := range req.Refs {
+		account, err := s.st.GetAccount(refValue)
+		if err != nil {
+			skipped = append(skipped, gin.H{"ref": refValue, "reason": "not_found"})
+			continue
+		}
+		password, totp, credErr := s.st.GetCredential(refValue)
+		if credErr != nil || password == "" {
+			skipped = append(skipped, gin.H{"ref": refValue, "reason": "no_password"})
+			continue
+		}
+		platform := strings.TrimSpace(req.Platform)
+		if platform == "" {
+			platform = account.Platform
+		}
+		if platform == "" || platform == "*" {
+			platform = "chatgpt"
+		}
+		email := account.Identity
+		if email == "" {
+			email = strings.TrimPrefix(refValue, "import:")
+		}
+
+		argv := []string{"--platform", platform, "--ref", refValue, "--email", email, "--password", password}
+		if totp != "" {
+			argv = append(argv, "--totp-secret", totp)
+		}
+		if len(pool) > 0 {
+			argv = append(argv, "--proxy", pool[index%len(pool)])
+		}
+		raw, _ := json.Marshal(argv)
+		taskID := "free-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+		if err := s.run.Submit(store.Task{
+			ID: taskID, Script: "import_free_json",
+			Title: "转 Free JSON · " + email, ArgsJSON: string(raw), Actor: "panel",
+		}); err != nil {
+			skipped = append(skipped, gin.H{"ref": refValue, "reason": "submit_failed"})
+			continue
+		}
+		queued = append(queued, gin.H{"ref": refValue, "task_id": taskID, "email": email})
+	}
+
+	actor, _ := c.Get("actor")
+	s.st.Audit(toString(actor), "accounts.convert_free",
+		fmt.Sprintf("queued=%d skipped=%d", len(queued), len(skipped)), c.ClientIP())
+	c.JSON(http.StatusAccepted, gin.H{"ok": true, "queued": queued, "skipped": skipped})
+}
+
+// accountDetail 返回单个账号的完整状态（抽屉用）。
+func (s *Server) accountDetail(c *gin.Context) {
+	ref := strings.TrimSpace(c.Query("ref"))
+	if ref == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_ref"})
+		return
+	}
+	account, err := s.st.GetAccount(ref)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not_found", "detail": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"account": account})
+}
+
 func (s *Server) listAccounts(c *gin.Context) {
 	list, err := s.st.ListAccounts(c.Query("kind"), c.Query("platform"), c.Query("status"),
 		atoi(c.DefaultQuery("limit", "200"), 200))
@@ -465,10 +1023,10 @@ func (s *Server) listAccounts(c *gin.Context) {
 }
 
 type accountOpRequest struct {
-	Ref         string `json:"ref"`
-	Platform    string `json:"platform"`
-	RefreshScan bool   `json:"refresh_scan"`
-	AllowRelogin bool  `json:"allow_relogin"`
+	Ref          string `json:"ref"`
+	Platform     string `json:"platform"`
+	RefreshScan  bool   `json:"refresh_scan"`
+	AllowRelogin bool   `json:"allow_relogin"`
 }
 
 // submitAssetOp 以 raw 任务形式跑 tools/asset_ops.py。
@@ -487,6 +1045,39 @@ func (s *Server) submitAssetOp(op, ref, platform string, flags ...string) (strin
 	return id, s.run.Submit(task)
 }
 
+// probeOAuthAccount 对 OAuth 类账号直接用 refresh_token 验证（不启浏览器）。
+// 返回 (handled, error)：handled=true 表示已同步处理完，不再排任务。
+func (s *Server) probeOAuthAccount(ref string) (bool, error) {
+	asset, err := s.assets.Get(ref)
+	if err != nil || asset.Kind != "oauth" {
+		return false, nil
+	}
+	refresh, _ := asset.Payload["refresh_token"].(string)
+	if strings.TrimSpace(refresh) == "" {
+		return false, nil
+	}
+
+	proxy := ""
+	if pool := proxyPoolFor(); len(pool) > 0 {
+		proxy = pool[0]
+	}
+	result := probe.OAuth(asset.Payload, proxy, 30*time.Second)
+
+	message := result.Message
+	if result.AccessToken != "" {
+		asset.Payload["access_token"] = result.AccessToken
+		if result.RefreshToken != "" {
+			asset.Payload["refresh_token"] = result.RefreshToken
+		}
+		asset.Payload["expires_in"] = result.ExpiresIn
+		_ = s.assets.Put(asset)
+	}
+	if err := s.st.MarkHealth(ref, result.Status, message); err != nil {
+		return true, err
+	}
+	return true, nil
+}
+
 func (s *Server) accountLiveness(c *gin.Context) {
 	var req accountOpRequest
 	if err := c.ShouldBindJSON(&req); err != nil || req.Ref == "" {
@@ -497,6 +1088,17 @@ func (s *Server) accountLiveness(c *gin.Context) {
 	if req.RefreshScan {
 		flags = append(flags, "--refresh-scan")
 	}
+	// OAuth 类账号：直接用 token 验证，同步返回结果
+	if handled, probeErr := s.probeOAuthAccount(req.Ref); handled {
+		if probeErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": probeErr.Error()})
+			return
+		}
+		account, _ := s.st.GetAccount(req.Ref)
+		c.JSON(http.StatusOK, gin.H{"ok": true, "probe": "oauth", "status": account.Status, "message": account.HealthMessage})
+		return
+	}
+
 	id, err := s.submitAssetOp("liveness", req.Ref, req.Platform, flags...)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -509,13 +1111,6 @@ func (s *Server) accountRefresh(c *gin.Context) {
 	var req accountOpRequest
 	if err := c.ShouldBindJSON(&req); err != nil || req.Ref == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_body", "detail": "需要 ref"})
-		return
-	}
-	// 治理：已领取/已售账号禁止自动修复
-	if account, err := s.st.GetAccount(req.Ref); err == nil && account.Claimed {
-		c.JSON(http.StatusConflict, gin.H{
-			"error": "ACCOUNT_CLAIMED", "detail": "该账号已被下游领取，禁止自动刷新",
-		})
 		return
 	}
 	flags := []string{}
@@ -607,7 +1202,26 @@ func (s *Server) StartLivenessLoop(ctx context.Context) {
 		accountConcurrency = "1"
 	}
 	log.Printf("[liveness] 巡检开启：每 %s，平台 %v，账号并发 %s", interval, platforms, accountConcurrency)
+	submitScan := func(platform string) {
+		argv := []string{"scan", "--platform", platform, "--account-concurrency", accountConcurrency}
+		raw, _ := json.Marshal(argv)
+		task := store.Task{
+			ID:       "liveness-" + strconv.FormatInt(time.Now().UnixNano(), 36),
+			Script:   "asset_ops",
+			Title:    "巡检 · " + platform,
+			ArgsJSON: string(raw),
+			Actor:    "scheduler",
+		}
+		if err := s.run.Submit(task); err != nil {
+			log.Printf("[liveness] 提交失败 %s: %v", platform, err)
+		}
+	}
 	go func() {
+		// 首扫：账号从未测活过就先跑一轮，避免面板一直是 unknown
+		if accounts, err := s.st.ListAccounts("", "", "unknown", 1); err == nil && len(accounts) > 0 {
+			log.Printf("[liveness] 检测到未测活账号，先执行首轮巡检")
+			submitScan(platforms[0])
+		}
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -616,18 +1230,7 @@ func (s *Server) StartLivenessLoop(ctx context.Context) {
 				return
 			case <-ticker.C:
 				for _, platform := range platforms {
-					argv := []string{"scan", "--platform", platform, "--account-concurrency", accountConcurrency}
-					raw, _ := json.Marshal(argv)
-					task := store.Task{
-						ID:       "liveness-" + strconv.FormatInt(time.Now().UnixNano(), 36),
-						Script:   "asset_ops",
-						Title:    "巡检 · " + platform,
-						ArgsJSON: string(raw),
-						Actor:    "scheduler",
-					}
-					if err := s.run.Submit(task); err != nil {
-						log.Printf("[liveness] 提交失败 %s: %v", platform, err)
-					}
+					submitScan(platform)
 				}
 			}
 		}
@@ -900,4 +1503,13 @@ func envList(name string, fallback []string) []string {
 		return fallback
 	}
 	return out
+}
+
+func firstNonEmptyStr(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }

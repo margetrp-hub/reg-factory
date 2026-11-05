@@ -120,7 +120,7 @@ export default function AssetsPage() {
           </div>
         ) : (
           <div className="max-h-[560px] overflow-auto">
-            <table className="w-full text-[12px]">
+            <table className="tbl">
               <thead className="sticky top-0 bg-card/95 text-[11px] uppercase tracking-[0.08em] text-muted-foreground">
                 <tr className="border-b border-border">
                   <th className="px-4 py-2 text-left font-medium">来源</th>

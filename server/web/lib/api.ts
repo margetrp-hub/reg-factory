@@ -75,6 +75,9 @@ export type AccountRow = {
   refresh_at: string;
   note: string;
   updated_at: string;
+  password_state?: string;
+  password_changed_at?: string;
+  password_message?: string;
 };
 
 export type AssetItem = {
@@ -172,6 +175,18 @@ export const api = {
     request<{ ok: boolean; changed: string[] }>("/api/config", { method: "PUT", body: JSON.stringify({ updates }) }),
   configRaw: () => request<{ path: string; content: string }>("/api/config/raw"),
   saveRaw: (content: string) => request<{ ok: boolean }>("/api/config/raw", { method: "PUT", body: JSON.stringify({ content }) }),
+  claudeHTTPRegister: (body: {
+    email: string;
+    refresh_token?: string;
+    client_id?: string;
+    proxy?: string;
+    magic_link?: string;
+    mailbox?: string;
+  }) =>
+    request<{ ok: boolean; email: string; session_key_len: number; saved_to: string }>(
+      "/api/registry/claude-http",
+      { method: "POST", body: JSON.stringify(body) },
+    ),
   outlookAuthorize: (accounts: string, concurrency = 3) =>
     request<{ ok: boolean; task_id: string }>("/api/outlook/authorize", {
       method: "POST",
@@ -185,6 +200,34 @@ export const api = {
     params.set("limit", String(q.limit ?? 200));
     return request<{ accounts: AccountRow[]; count: number }>(`/api/accounts?${params.toString()}`);
   },
+  convertAccounts: (body: { refs: string[]; platform?: string }) =>
+    request<{ ok: boolean; queued: { ref: string; task_id: string; email: string }[]; skipped: { ref: string; reason: string }[] }>(
+      "/api/accounts/convert",
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  changePasswords: (body: { refs: string[]; new_password: string; platform?: string }) =>
+    request<{ ok: boolean; queued: { ref: string; task_id: string }[]; skipped: { ref: string; reason: string }[] }>(
+      "/api/accounts/change-password",
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  importAccounts: (body: {
+    accounts: string;
+    platform: string;
+    auto_change_password?: boolean;
+    new_password?: string;
+  }) =>
+    request<{ ok: boolean; batch: string; imported: number; tasks: string[] }>("/api/accounts/import", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  assetsTree: () =>
+    request<{
+      root: string;
+      total: number;
+      groups: { platform: string; kind: string; count: number; items: { ref: string; email: string; source: string }[] }[];
+    }>("/api/assets/tree"),
+  accountDetail: (ref: string) =>
+    request<{ account: AccountRow }>(`/api/accounts/detail?ref=${encodeURIComponent(ref)}`),
   syncAccounts: () => request<{ ok: boolean; synced: number }>("/api/accounts/sync", { method: "POST" }),
   accountLiveness: (ref: string, platform: string, refreshScan = false) =>
     request<{ ok: boolean; task_id: string }>("/api/accounts/liveness", {

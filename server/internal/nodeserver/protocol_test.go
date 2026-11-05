@@ -44,6 +44,28 @@ func TestSignVerifyRoundTrip(t *testing.T) {
 	}
 }
 
+func TestVerifyAcceptsRefreshCustodyGrant(t *testing.T) {
+	key := bytes.Repeat([]byte("k"), 32)
+	now := time.Now()
+	payload := testPayload(now)
+	payload["action"] = "account.refresh"
+	payload["subject_kind"] = "account"
+	payload["subject_id"] = "account-0001"
+	payload["parameters"] = map[string]any{
+		"custody_grant": map[string]any{
+			"payload":   map[string]any{"purpose": "intake"},
+			"signature": strings.Repeat("a", 64),
+		},
+	}
+	sig, err := Sign(payload, key, false)
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	if _, err := Verify(Document{Payload: payload, Signature: sig}, key, "node-sg-1", now); err != nil {
+		t.Fatalf("refresh custody grant should be accepted by the Work envelope: %v", err)
+	}
+}
+
 func TestVerifyRejects(t *testing.T) {
 	key := bytes.Repeat([]byte("k"), 32)
 	now := time.Now()
@@ -66,7 +88,7 @@ func TestVerifyRejects(t *testing.T) {
 			nodeID: "node-sg-1", verKey: key, wantErr: "WORK_AUTHORIZATION_EXPIRED",
 		},
 		{
-			name:   "unknown param",
+			name: "unknown param",
 			mutate: func(p map[string]any) map[string]any {
 				p["parameters"] = map[string]any{"goal": "register", "evil": true}
 				return p

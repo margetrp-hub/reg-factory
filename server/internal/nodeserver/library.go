@@ -158,8 +158,8 @@ func (h *Handler) accountLibrary(c *gin.Context) {
 		items = append(items, map[string]any{
 			"id": "account_center:" + subject, "source": "account_center", "source_id": subject,
 			"email": a.Identity, "status": st, "resource_version": ver, "updated_at": a.UpdatedAt,
-			"sources":         map[string]string{"account_center": subject},
-			"oauth_status":    a.OAuthStatus, "join_status": a.JoinStatus,
+			"sources":      map[string]string{"account_center": subject},
+			"oauth_status": a.OAuthStatus, "join_status": a.JoinStatus,
 			"liveness_status": a.LivenessStatus,
 		})
 	}

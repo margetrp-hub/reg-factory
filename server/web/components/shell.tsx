@@ -5,19 +5,40 @@ import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { api, type SystemInfo } from "@/lib/api";
 
-const NAV = [
-  { href: "/", label: "概览", hint: "overview" },
-  { href: "/platform/claude/", label: "Claude", hint: "claude" },
-  { href: "/platform/chatgpt/", label: "ChatGPT", hint: "chatgpt" },
-  { href: "/platform/grok/", label: "Grok", hint: "grok" },
-  { href: "/platform/outlook/", label: "Outlook", hint: "outlook" },
-  { href: "/tasks/", label: "全部任务", hint: "tasks" },
-  { href: "/assets/", label: "资产", hint: "assets" },
-  { href: "/apps/icmail/", label: "IC 邮箱", hint: "icmail" },
-  { href: "/accounts/", label: "账号", hint: "accounts" },
-  { href: "/settings/", label: "配置", hint: "settings" },
-  { href: "/audit/", label: "审计", hint: "audit" },
+type NavSection = "workspace" | "production" | "runtime" | "assets" | "supply" | "system";
+
+const NAV: { href: string; label: string; section: NavSection }[] = [
+  { href: "/", label: "工作台", section: "workspace" },
+  { href: "/production/", label: "生产", section: "production" },
+  { href: "/tasks/", label: "运行", section: "runtime" },
+  { href: "/accounts/", label: "资产", section: "assets" },
+  { href: "/materials/", label: "供给", section: "supply" },
+  { href: "/settings/", label: "系统", section: "system" },
 ];
+
+const CONTEXT_LINKS: Record<NavSection, { href: string; label: string }[]> = {
+  workspace: [],
+  production: [
+    { href: "/production/", label: "生产总览" },
+    { href: "/platform/claude/", label: "Claude" },
+    { href: "/platform/chatgpt/", label: "ChatGPT" },
+    { href: "/platform/grok/", label: "Grok" },
+    { href: "/platform/outlook/", label: "Outlook" },
+  ],
+  runtime: [
+    { href: "/tasks/", label: "任务队列" },
+    { href: "/audit/", label: "操作审计" },
+  ],
+  assets: [{ href: "/accounts/", label: "账号主数据" }],
+  supply: [
+    { href: "/materials/", label: "物料总览" },
+    { href: "/apps/icmail/", label: "IC 邮箱" },
+  ],
+  system: [
+    { href: "/settings/", label: "配置" },
+    { href: "/audit/", label: "审计" },
+  ],
+};
 
 type Theme = "light" | "dark";
 
@@ -85,11 +106,17 @@ export function Shell({ children }: { children: React.ReactNode }) {
     router.replace("/login/");
   };
 
-  const memPct = sys?.memory.used_pct ?? 0;
-  const activeLabel =
-    NAV.find((item) =>
-      item.href === "/" ? pathname === "/" : pathname.startsWith(item.href.replace(/\/$/, "")),
-    )?.label || "概览";
+  const activeItem = NAV.find((item) =>
+    item.href === "/" ? pathname === "/" : pathname.startsWith(item.href.replace(/\/$/, "")),
+  );
+  const activeSection: NavSection = activeItem?.section ||
+    (pathname.startsWith("/platform/") ? "production" :
+      pathname.startsWith("/apps/icmail") || pathname.startsWith("/materials") ? "supply" :
+        pathname.startsWith("/audit") ? "runtime" : "workspace");
+  const activeContext = CONTEXT_LINKS[activeSection].find((item) =>
+    item.href === "/" ? pathname === "/" : pathname.startsWith(item.href.replace(/\/$/, "")),
+  );
+  const activeLabel = activeContext?.label || activeItem?.label || "工作台";
 
   return (
     <div className="flex min-h-screen bg-background text-foreground">
@@ -110,20 +137,37 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
         <nav className="flex-1 space-y-1 overflow-y-auto p-3">
           {NAV.map((item) => {
-            const active =
-              item.href === "/" ? pathname === "/" : pathname.startsWith(item.href.replace(/\/$/, ""));
+            const active = item.section === activeSection;
             return (
-              <Link
-                key={item.href}
-                href={item.href}
-                onClick={() => setOpen(false)}
-                className={`nav-item ${active ? "nav-item-active" : ""}`}
-              >
-                <span className="min-w-0 flex-1 truncate">{item.label}</span>
-                <span className="shrink-0 font-mono text-[10px] lowercase tracking-wide text-muted-foreground/60">
-                  {item.hint}
-                </span>
-              </Link>
+              <div key={item.href}>
+                <Link
+                  href={item.href}
+                  onClick={() => setOpen(false)}
+                  className={`nav-item ${active ? "nav-item-active" : ""}`}
+                >
+                  <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                  {active && item.section !== "workspace" && <span className="h-1.5 w-1.5 rounded-full bg-brand" />}
+                </Link>
+                {active && CONTEXT_LINKS[item.section].length > 0 && (
+                  <div className="ml-3 mt-1 space-y-0.5 border-l border-sidebar-border pl-3">
+                    {CONTEXT_LINKS[item.section].map((link) => {
+                      const selected = pathname === link.href || pathname.startsWith(link.href);
+                      return (
+                        <Link
+                          key={link.href}
+                          href={link.href}
+                          onClick={() => setOpen(false)}
+                          className={`block rounded-md px-2.5 py-1.5 text-[12px] transition-colors ${
+                            selected ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground" : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                          }`}
+                        >
+                          {link.label}
+                        </Link>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             );
           })}
         </nav>
@@ -143,56 +187,29 @@ export function Shell({ children }: { children: React.ReactNode }) {
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-20 flex h-14 flex-wrap items-center gap-x-4 gap-y-1 border-b border-border bg-background/90 px-4 backdrop-blur">
+        <header className="sticky top-0 z-20 flex h-14 items-center gap-3 border-b border-border bg-background/90 px-4 backdrop-blur lg:px-6">
           <button className="btn-ghost md:hidden" onClick={() => setOpen((v) => !v)}>
-            菜单
+            导航
           </button>
           <div className="flex items-center gap-2 text-[13px]">
-            <span className="text-muted-foreground">控制面</span>
+            <span className="text-muted-foreground">SG REG</span>
             <span className="text-muted-foreground/40">/</span>
             <span className="font-medium">{activeLabel}</span>
           </div>
 
-          <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-            <span className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-foreground">
-              {sys?.running ?? 0}/{sys?.max_parallel ?? "-"}
-            </span>
+          <Link href="/tasks/" className="hidden items-center gap-1.5 rounded-full border border-border bg-muted/50 px-2.5 py-1 text-[11px] text-muted-foreground transition-colors hover:border-brand/40 hover:text-foreground sm:flex">
+            <span className="font-mono text-foreground">{sys?.running ?? 0}/{sys?.max_parallel ?? "-"}</span>
             <span>运行</span>
             {!!sys?.queued && (
-              <span className="rounded-md bg-warning/15 px-1.5 py-0.5 font-mono text-warning">
-                排队 {sys.queued}
-              </span>
+              <span className="text-warning">· 排队 {sys.queued}</span>
             )}
             {sys?.guarded && (
-              <span className="rounded-md bg-destructive/10 px-1.5 py-0.5 font-mono text-destructive">
-                内存闸门
-              </span>
+              <span className="text-destructive">· 资源受限</span>
             )}
-          </div>
-
-          <div className="hidden min-w-[180px] flex-1 items-center gap-2 text-[11px] text-muted-foreground sm:flex">
-            <span className="shrink-0 font-mono">
-              {sys?.memory.current_mb ?? 0}/{sys?.memory.max_mb ?? 0}MB
-            </span>
-            <div className="h-1.5 w-full max-w-[190px] overflow-hidden rounded-full bg-muted">
-              <div
-                className={`h-full rounded-full transition-all ${
-                  sys?.guarded ? "bg-destructive" : memPct > 70 ? "bg-warning" : "bg-success"
-                }`}
-                style={{ width: `${Math.min(100, memPct)}%` }}
-              />
-            </div>
-            <span className="shrink-0 font-mono">{memPct}%</span>
-            <span className="shrink-0 font-mono text-muted-foreground">CPU {sys?.cpu_pct ?? 0}%</span>
-          </div>
+          </Link>
 
           <div className="ml-auto flex items-center gap-2 text-[11px] text-muted-foreground">
-            <span className="hidden md:inline">
-              版本 <span className="font-mono text-foreground">{sys?.version ?? "-"}</span>
-            </span>
-            <span className="hidden md:inline">
-              磁盘 <span className="font-mono text-foreground">{sys?.disk_free_gb?.toFixed(0) ?? "-"}G</span>
-            </span>
+            <span className="hidden lg:inline">{user || "管理员"}</span>
             <button
               onClick={toggleTheme}
               className="btn-ghost px-2 py-1"
@@ -204,7 +221,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
           </div>
         </header>
 
-        <main className="flex-1 p-4 lg:p-6">
+        <main className="flex-1 p-4 lg:px-8 lg:py-6">
           {ready ? children : <div className="text-[13px] text-muted-foreground">正在验证会话…</div>}
         </main>
       </div>

@@ -31,6 +31,11 @@ type Settings struct {
 	NodeID      string
 	NodeKey     string
 	NodePlatform string
+	NodeReceiptKey string
+	NodeBusinessKey string
+	NodeArtifactKey string
+	ICloudBotURL string
+	ICloudBotKey string
 	TZ          string
 }
 
@@ -54,6 +59,11 @@ func Load() *Settings {
 		NodeID:      os.Getenv("REG_FACTORY_NODE_ID"),
 		NodeKey:     os.Getenv("REG_FACTORY_NODE_KEY"),
 		NodePlatform: firstNonEmpty(os.Getenv("REG_FACTORY_NODE_PLATFORM"), "claude"),
+		NodeReceiptKey: strings.TrimSpace(os.Getenv("REG_FACTORY_NODE_RECEIPT_KEY")),
+		NodeBusinessKey: strings.TrimSpace(os.Getenv("REG_FACTORY_NODE_BUSINESS_KEY")),
+		NodeArtifactKey: strings.TrimSpace(os.Getenv("REG_FACTORY_NODE_ARTIFACT_KEY")),
+		ICloudBotURL: firstNonEmpty(os.Getenv("ICLOUD_BOT_URL"), os.Getenv("ICLOUD_MAIL_API_BASE")),
+		ICloudBotKey: firstNonEmpty(os.Getenv("ICLOUD_BOT_KEY"), os.Getenv("ICLOUD_MAIL_API_KEY")),
 		TZ:          firstNonEmpty(os.Getenv("TZ"), "Asia/Singapore"),
 	}
 	if s.MaxParallel < 1 {

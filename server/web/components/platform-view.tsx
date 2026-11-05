@@ -2,127 +2,118 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { api, type AccountRow, type Script, type Task } from "@/lib/api";
-import { Badge, Card, Empty, Stat, StatusBadge, timeAgo } from "@/components/ui";
-import { TaskForm } from "@/components/task-form";
+import { api, type AccountRow, type Task } from "@/lib/api";
+import { Badge, Card, Empty, Stat } from "@/components/ui";
+import { TaskTable } from "@/components/task-table";
+
+type FlowStep = {
+  id: string;
+  title: string;
+  desc: string;
+  /** 该步依赖的数据（用于自动判断就绪） */
+  needs?: "mail" | "proxy" | "sms" | "accounts" | "tasks" | "none";
+  href?: string;
+  cta?: string;
+  /** 该步要做的事（任务 id 提示） */
+  tasks?: string[];
+};
 
 type PlatformSpec = {
   name: string;
   slug: string;
-  platform: string;
   accent: string;
   summary: string;
-  /** 主流程脚本（排在前面、默认选中） */
-  primary: string[];
-  /** 该平台特有的动作按钮 */
-  actions: { id: string; label: string; hint: string }[];
-  /** 该平台真正需要关注的指标 */
-  metrics: { id: string; label: string; hint?: string; tone?: "neutral" | "warn" | "bad" }[];
+  flow: FlowStep[];
 };
 
 const SPECS: Record<string, PlatformSpec> = {
   claude: {
     name: "Claude",
     slug: "claude",
-    platform: "claude",
     accent: "bg-[#d97757]",
-    summary: "浏览器流程重（单页约 1.3GB，hCaptcha 需视觉 API）；批量优先走 ClaudeX HTTP 协议，不启浏览器、并发可到 20+。",
-    primary: ["register_claude"],
-    actions: [
-      { id: "liveness", label: "批量测活", hint: "按号池扫描缓存判定 session 状态" },
-    ],
-    metrics: [
-      { id: "ok", label: "可用 session" },
-      { id: "expired", label: "过期/受限", tone: "warn" },
-      { id: "unknown", label: "未测活" },
+    summary: "邮箱取码 → 注册（浏览器或协议）→ sessionKey 入库 → 测活/刷新。协议路径不启浏览器。",
+    flow: [
+      { id: "supply", title: "① 供给就绪", desc: "IC 索引可收信 / Outlook RT 可用 / 代理已配", needs: "mail" },
+      { id: "register", title: "② 下发注册", desc: "浏览器流程（hCaptcha 视觉）或协议注册（零浏览器）", needs: "none", href: "/platform/claude/tasks/", cta: "去下单", tasks: ["register_claude"] },
+      { id: "code", title: "③ 取码 / 验证", desc: "IC 按别名查码；Outlook 走 Graph 取信", needs: "mail", href: "/apps/icmail/", cta: "IC 工作台" },
+      { id: "asset", title: "④ 资产入库", desc: "sessionKey 落到 cookies/claude/，同步进 accounts 表", needs: "accounts", href: "/platform/claude/accounts/", cta: "看账号" },
+      { id: "ops", title: "⑤ 测活 / 刷新", desc: "按扫描缓存判 ok/expired/banned；已领取账号禁止自动刷新", needs: "accounts", href: "/platform/claude/accounts/", cta: "批量测活" },
     ],
   },
   chatgpt: {
     name: "ChatGPT",
     slug: "chatgpt",
-    platform: "chatgpt",
     accent: "bg-[#10a37f]",
-    summary: "注册后用 Codex OAuth 拿 refresh_token 导入 SUB2API；add-phone 需要接码，Plus 试用资格走号池扫描。",
-    primary: ["register_chatgpt", "oauth_codex", "plus_codex_import"],
-    actions: [
-      { id: "liveness", label: "批量测活", hint: "校验 session 与 Plus 试用资格" },
-    ],
-    metrics: [
-      { id: "ok", label: "可用账号" },
-      { id: "expired", label: "过期/受限", tone: "warn" },
-      { id: "unknown", label: "未测活" },
+    summary: "注册 → Codex OAuth 拿 refresh_token → 导入 SUB2API（add-phone 需接码）→ 测活。",
+    flow: [
+      { id: "supply", title: "① 供给就绪", desc: "邮箱池 + 接码供应商（add-phone 需要）", needs: "sms" },
+      { id: "register", title: "② 下发注册", desc: "register_chatgpt：可开 2FA、可选直接导入", needs: "none", href: "/platform/chatgpt/tasks/", cta: "去下单", tasks: ["register_chatgpt"] },
+      { id: "authorize", title: "③ Codex 授权", desc: "oauth_codex 换 refresh_token，或 plus_codex_import 批量导入 Plus", needs: "none", href: "/platform/chatgpt/tasks/", cta: "去授权", tasks: ["oauth_codex", "plus_codex_import"] },
+      { id: "asset", title: "④ 资产入库", desc: "tokens/ 与 SUB2API/CPA 记录；本地面板可导出", needs: "accounts", href: "/platform/chatgpt/accounts/", cta: "看账号" },
+      { id: "ops", title: "⑤ 测活", desc: "校验 session 与 Plus 试用资格", needs: "accounts", href: "/platform/chatgpt/accounts/", cta: "批量测活" },
     ],
   },
   grok: {
     name: "Grok",
     slug: "grok",
-    platform: "grok",
     accent: "bg-foreground",
-    summary: "直连会被 Cloudflare Turnstile 拦，必须住宅代理；注册成功可直接导入 SUB2API Grok 渠道。",
-    primary: ["register_grok"],
-    actions: [
-      { id: "liveness", label: "批量测活", hint: "校验 SSO 与 OAuth 授权状态" },
-    ],
-    metrics: [
-      { id: "ok", label: "可用 SSO" },
-      { id: "expired", label: "受限", tone: "warn" },
-      { id: "unknown", label: "未测活" },
+    summary: "住宅代理 → 注册（Turnstile）→ SSO 入库 → 导入 SUB2API Grok 渠道。",
+    flow: [
+      { id: "supply", title: "① 供给就绪", desc: "必须住宅代理，否则 Turnstile 直接拦", needs: "proxy" },
+      { id: "register", title: "② 下发注册", desc: "register_grok：--sub2api 可直接导入", needs: "none", href: "/platform/grok/tasks/", cta: "去下单", tasks: ["register_grok"] },
+      { id: "asset", title: "③ 资产入库", desc: "SSO 落到 cookies/grok/，OAuth 落 tokens/", needs: "accounts", href: "/platform/grok/accounts/", cta: "看账号" },
+      { id: "ops", title: "④ 测活", desc: "校验 SSO 与授权状态", needs: "accounts", href: "/platform/grok/accounts/", cta: "批量测活" },
     ],
   },
   outlook: {
     name: "Outlook",
     slug: "outlook",
-    platform: "outlook",
     accent: "bg-[#0078d4]",
-    summary: "注册是常驻循环（成功率低于阈值会自动停）；Graph 授权是独立步骤，需要辅助邮箱接码，授权后才有 refresh_token。",
-    primary: ["outlook_reg_loop", "unlock_outlook"],
-    actions: [
-      { id: "authorize", label: "批量 Graph 授权", hint: "粘贴 email----password，逐号授权并回写 RT" },
-      { id: "liveness", label: "批量测活", hint: "用 refresh_token 校验 Graph 可用性" },
-    ],
-    metrics: [
-      { id: "ok", label: "可用邮箱" },
-      { id: "expired", label: "RT 失效", tone: "warn" },
-      { id: "unknown", label: "未测活" },
+    summary: "常驻注册 → Graph 授权（辅助邮箱接码）→ RT 入库 → 解锁/恢复。",
+    flow: [
+      { id: "supply", title: "① 供给就绪", desc: "辅助邮箱（iCloud/YYDS/自有）用于接码", needs: "mail" },
+      { id: "register", title: "② 常驻注册", desc: "outlook_reg_loop：成功率低于阈值自动停", needs: "none", href: "/platform/outlook/tasks/", cta: "去下单", tasks: ["outlook_reg_loop"] },
+      { id: "authorize", title: "③ Graph 授权", desc: "unlock_outlook：逐号授权并回写 refresh_token", needs: "none", href: "/platform/outlook/tasks/", cta: "批量授权", tasks: ["unlock_outlook"] },
+      { id: "asset", title: "④ 资产入库", desc: "emails.txt 的 RT 字段 + accounts 表", needs: "accounts", href: "/platform/outlook/accounts/", cta: "看账号" },
+      { id: "ops", title: "⑤ 测活 / 续期", desc: "Graph token 续期；RT 失效标记 relogin_required", needs: "accounts", href: "/platform/outlook/accounts/", cta: "批量测活" },
     ],
   },
 };
 
+export const PLATFORM_SLUGS = Object.keys(SPECS);
+
 export function PlatformView({ slug }: { slug: string }) {
   const spec = SPECS[slug] || SPECS.claude;
-  const [scripts, setScripts] = useState<Script[]>([]);
-  const [activeId, setActiveId] = useState("");
-  const [tasks, setTasks] = useState<Task[]>([]);
   const [accounts, setAccounts] = useState<AccountRow[]>([]);
-  const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
-  const [busy, setBusy] = useState("");
-  const [authText, setAuthText] = useState("");
-  const [showAuth, setShowAuth] = useState(false);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [ic, setIc] = useState<{ indexed: number; sources: number } | null>(null);
+  const [envReady, setEnvReady] = useState<{ mail: boolean; proxy: boolean; sms: boolean }>({
+    mail: false, proxy: false, sms: false,
+  });
 
   const load = useCallback(async () => {
     try {
-      const [scriptData, taskData, accountData] = await Promise.all([
-        api.scripts(),
+      const [accountData, taskData, config, health] = await Promise.all([
+        api.accounts({ platform: spec.slug, limit: 300 }),
         api.tasks(80),
-        api.accounts({ platform: spec.platform, limit: 200 }),
+        api.config(),
+        fetch("/api/apps/icmail/health", { credentials: "same-origin" }).then((r) => r.json()).catch(() => null),
       ]);
-      const byId = new Map(scriptData.scripts.map((item) => [item.id, item]));
-      const mine = spec.primary
-        .map((id) => byId.get(id))
-        .filter((item): item is Script => Boolean(item));
-      setScripts(mine);
-      setActiveId((prev) => (mine.some((item) => item.id === prev) ? prev : mine[0]?.id || ""));
-      setTasks(taskData.tasks.filter((task) => {
-        if (spec.primary.includes(task.script)) return true;
-        return (byId.get(task.script)?.platform || "").toLowerCase() === spec.platform;
-      }));
       setAccounts(accountData.accounts);
-      setError("");
-    } catch (err) {
-      setError((err as Error).message);
+      setTasks(taskData.tasks);
+      if (health?.ok) setIc(health.data.stats);
+      const entries = Object.values(config.groups).flat();
+      const has = (prefixes: string[]) =>
+        entries.some((entry) => prefixes.some((p) => entry.key.toUpperCase().startsWith(p)) && entry.value.trim() !== "");
+      setEnvReady({
+        mail: has(["ICMAIL", "ICLOUD", "YYDS", "GPTMAIL", "CFMAIL", "MOEMAIL", "CUSTOM_MAIL"]),
+        proxy: has(["PROXY", "CLASH"]),
+        sms: has(["SMS", "HERO"]),
+      });
+    } catch {
+      /* 下个轮询重试 */
     }
-  }, [spec.platform, spec.primary]);
+  }, [spec.slug]);
 
   useEffect(() => {
     load();
@@ -130,54 +121,34 @@ export function PlatformView({ slug }: { slug: string }) {
     return () => clearInterval(timer);
   }, [load]);
 
-  const active = scripts.find((item) => item.id === activeId);
-  const counts = useMemo(() => {
+  const stats = useMemo(() => {
     const ok = accounts.filter((row) => row.status === "ok").length;
-    const expired = accounts.filter((row) => row.status === "expired").length;
     const bad = accounts.filter((row) => row.status === "banned" || row.status === "invalid").length;
-    const unknown = accounts.filter((row) => row.status === "unknown").length;
+    const wanted = new Set(spec.flow.flatMap((step) => step.tasks || []));
+    const mine = tasks.filter((task) => wanted.has(task.script));
     return {
-      ok, expired, bad, unknown,
-      succeeded: tasks.filter((t) => t.status === "succeeded").length,
-      failed: tasks.filter((t) => t.status === "failed").length,
-      running: tasks.filter((t) => t.status === "running" || t.status === "queued").length,
+      ok, bad,
+      running: mine.filter((task) => task.status === "running" || task.status === "queued").length,
+      last: mine[0],
     };
-  }, [accounts, tasks]);
+  }, [accounts, tasks, spec.flow]);
 
-  const runLiveness = async () => {
-    const targets = accounts.filter((row) => row.status !== "ok").slice(0, 5);
-    if (targets.length === 0) {
-      setNotice("没有待测活的账号");
-      return;
-    }
-    setBusy("liveness");
-    try {
-      for (const row of targets) {
-        await api.accountLiveness(row.ref, row.platform || spec.platform, false);
-      }
-      setNotice(`已提交 ${targets.length} 个测活任务`);
-      await load();
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setBusy("");
-    }
-  };
-
-  const submitAuthorize = async () => {
-    if (!authText.trim()) return;
-    setBusy("authorize");
-    setError("");
-    try {
-      const data = await api.outlookAuthorize(authText, 3);
-      setNotice(`已提交 Graph 授权任务 ${data.task_id}`);
-      setShowAuth(false);
-      setAuthText("");
-      await load();
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setBusy("");
+  const readiness = (step: FlowStep): { tone: "ok" | "warn" | "neutral"; text: string } => {
+    switch (step.needs) {
+      case "mail":
+        return envReady.mail || ic
+          ? { tone: "ok", text: ic ? `IC ${ic.indexed} 封 / ${ic.sources} 源` : "邮箱已配" }
+          : { tone: "warn", text: "邮箱未配" };
+      case "proxy":
+        return envReady.proxy ? { tone: "ok", text: "代理已配" } : { tone: "warn", text: "缺代理" };
+      case "sms":
+        return envReady.sms ? { tone: "ok", text: "接码已配" } : { tone: "warn", text: "无接码" };
+      case "accounts":
+        return accounts.length ? { tone: "ok", text: `${accounts.length} 个账号` } : { tone: "neutral", text: "暂无账号" };
+      case "tasks":
+        return stats.last ? { tone: "ok", text: stats.last.status } : { tone: "neutral", text: "未运行" };
+      default:
+        return { tone: "neutral", text: "" };
     }
   };
 
@@ -188,125 +159,102 @@ export function PlatformView({ slug }: { slug: string }) {
           {spec.name.slice(0, 1)}
         </span>
         <div className="min-w-0 flex-1">
-          <h1 className="text-[16px] font-semibold leading-tight">{spec.name} 工作台</h1>
+          <h1 className="text-[16px] font-semibold leading-tight">{spec.name} 流程</h1>
           <p className="text-[11px] leading-relaxed text-muted-foreground">{spec.summary}</p>
         </div>
-        <div className="flex items-center gap-2">
-          {spec.actions.map((action) =>
-            action.id === "authorize" ? (
-              <button key={action.id} className="btn-ghost" onClick={() => setShowAuth((v) => !v)} title={action.hint}>
-                {action.label}
-              </button>
-            ) : (
-              <button key={action.id} className="btn-ghost" onClick={runLiveness} disabled={busy === "liveness"} title={action.hint}>
-                {busy === "liveness" ? "提交中…" : action.label}
-              </button>
-            ),
-          )}
+        <div className="flex gap-2">
+          <Link href={`/platform/${spec.slug}/tasks/`} className="btn-ghost text-[11px]">任务</Link>
+          <Link href={`/platform/${spec.slug}/accounts/`} className="btn-ghost text-[11px]">账号</Link>
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
-        {spec.metrics.map((metric) => (
-          <Stat
-            key={metric.id}
-            label={metric.label}
-            value={counts[metric.id as keyof typeof counts] ?? 0}
-            tone={metric.tone}
-          />
-        ))}
-        <Stat label="任务" value={`${counts.succeeded}/${counts.failed}`} hint={`运行中 ${counts.running}`} />
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <Stat label="账号总数" value={accounts.length} />
+        <Stat label="可用" value={stats.ok} />
+        <Stat label="封禁/失效" value={stats.bad} tone={stats.bad > 0 ? "bad" : "neutral"} />
+        <Stat
+          label="运行中"
+          value={stats.running}
+          tone={stats.running > 0 ? "warn" : "neutral"}
+          hint={stats.last ? `最近 ${stats.last.status}` : "未运行"}
+        />
       </div>
 
-      {showAuth && (
-        <Card
-          title="批量 Graph 授权（Outlook）"
-          actions={
-            <>
-              <button className="btn-ghost" onClick={() => setShowAuth(false)}>取消</button>
-              <button className="btn-primary" onClick={submitAuthorize} disabled={busy === "authorize"}>
-                提交授权
-              </button>
-            </>
-          }
-        >
-          <p className="mb-2 text-[11px] text-muted-foreground">
-            每行 <span className="font-mono">email----password</span>；需要配置可接码的辅助邮箱（YYDS / iCloud / 自有 Outlook）。
-          </p>
-          <textarea
-            className="field h-[160px] font-mono text-[12px]"
-            placeholder="user@outlook.com----password&#10;user2@outlook.com----password"
-            value={authText}
-            onChange={(e) => setAuthText(e.target.value)}
-          />
-        </Card>
-      )}
-
-      {error && <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-[12px] text-destructive">{error}</div>}
-      {notice && <div className="rounded-lg border border-success/30 bg-success/10 px-3 py-2 text-[12px] text-success">{notice}</div>}
-
-      <div className="grid gap-4 xl:grid-cols-[1.05fr_1fr]">
-        <Card
-          title="启动任务"
-          actions={
-            scripts.length > 1 ? (
-              <select className="field w-[210px] py-1 text-[12px]" value={activeId} onChange={(e) => setActiveId(e.target.value)}>
-                {scripts.map((item) => (
-                  <option key={item.id} value={item.id}>{item.title}</option>
-                ))}
-              </select>
-            ) : null
-          }
-        >
-          {active ? <TaskForm script={active} onStarted={() => load()} /> : <Empty>该平台暂无可用脚本</Empty>}
-        </Card>
-
-        <div className="space-y-4">
-          <Card title="最近任务" bodyClass="p-0">
-            <div className="max-h-[230px] overflow-auto">
-              {tasks.length === 0 ? (
-                <div className="p-4"><Empty>该平台还没有任务</Empty></div>
-              ) : (
-                tasks.map((task) => (
-                  <Link
-                    key={task.id}
-                    href={`/tasks/?id=${task.id}`}
-                    className="flex items-center gap-2 border-b border-border/60 px-4 py-2 text-[12.5px] last:border-0 hover:bg-accent/40"
-                  >
-                    <StatusBadge status={task.status} />
-                    <span className="min-w-0 flex-1 truncate">{task.title}</span>
-                    <span className="font-mono text-[11px] text-muted-foreground">{timeAgo(task.created_at)}</span>
-                  </Link>
-                ))
-              )}
-            </div>
-          </Card>
-
-          <Card
-            title={`${spec.name} 账号`}
-            actions={<Link href="/accounts/" className="btn-ghost px-2 py-1 text-[11px]">全部账号</Link>}
-            bodyClass="p-0"
-          >
-            <div className="max-h-[260px] overflow-auto">
-              {accounts.length === 0 ? (
-                <div className="p-4"><Empty>该平台暂无账号，先跑一轮注册</Empty></div>
-              ) : (
-                accounts.slice(0, 40).map((row) => (
-                  <div key={row.ref} className="flex items-center gap-2 border-b border-border/60 px-4 py-1.5 text-[12px] last:border-0">
-                    <span className="min-w-0 flex-1 truncate font-mono text-[11px]" title={row.ref}>{row.identity || row.ref}</span>
-                    <Badge tone={row.status === "ok" ? "ok" : row.status === "unknown" ? "neutral" : "bad"}>{row.status}</Badge>
-                    <span className="w-[64px] text-right text-[11px] text-muted-foreground">
-                      {row.health_checked_at ? timeAgo(row.health_checked_at) : "从未"}
-                    </span>
+      <Card title="流程步骤" bodyClass="p-0">
+        <div className="divide-y divide-border">
+          {spec.flow.map((step, index) => {
+            const state = readiness(step);
+            return (
+              <div key={step.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
+                <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full border border-border text-[11px] font-medium text-muted-foreground">
+                  {index + 1}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[13px] font-medium">{step.title}</span>
+                    {state.text && <Badge tone={state.tone}>{state.text}</Badge>}
                   </div>
-                ))
-              )}
-            </div>
-          </Card>
+                  <div className="mt-0.5 text-[11px] leading-snug text-muted-foreground">{step.desc}</div>
+                </div>
+                {step.href && (
+                  <Link href={step.href} className="btn-ghost shrink-0 px-2 py-1 text-[11px]">
+                    {step.cta || "进入"} →
+                  </Link>
+                )}
+              </div>
+            );
+          })}
         </div>
+      </Card>
+
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Card
+          title="最近任务"
+          bodyClass="p-0"
+          actions={<Link href={`/platform/${spec.slug}/tasks/`} className="btn-ghost px-2 py-1 text-[11px]">全部</Link>}
+        >
+          <div className="max-h-[280px] overflow-auto">
+            <TaskTable tasks={tasks} limit={12} showScript emptyText="还没有任务" />
+          </div>
+        </Card>
+
+        <Card
+          title={`${spec.name} 账号`}
+          bodyClass="p-0"
+          actions={<Link href={`/platform/${spec.slug}/accounts/`} className="btn-ghost px-2 py-1 text-[11px]">全部</Link>}
+        >
+          <div className="max-h-[280px] overflow-auto">
+            {accounts.length === 0 ? (
+              <div className="p-4"><Empty>暂无账号，从第 ② 步开始跑</Empty></div>
+            ) : (
+              <table className="tbl">
+                <thead>
+                  <tr className="border-b border-border">
+                    <th className="px-3 py-1.5 text-left font-medium">账号</th>
+                    <th className="px-2 py-1.5 text-left font-medium">状态</th>
+                    <th className="px-3 py-1.5 text-right font-medium">测活</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {accounts.slice(0, 15).map((row) => (
+                    <tr key={row.ref} className="border-b border-border/60 last:border-0">
+                      <td className="max-w-[220px] truncate px-3 py-1.5 font-mono text-[11px]" title={row.ref}>
+                        {row.identity || row.ref}
+                      </td>
+                      <td className="px-2 py-1.5">
+                        <Badge tone={row.status === "ok" ? "ok" : row.status === "unknown" ? "neutral" : "bad"}>{row.status}</Badge>
+                      </td>
+                      <td className="px-3 py-1.5 text-right text-[11px] text-muted-foreground">
+                        {row.health_checked_at ? new Date(row.health_checked_at).toLocaleDateString() : "从未"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </Card>
       </div>
     </div>
   );
 }
-
-export const PLATFORM_SLUGS = Object.keys(SPECS);

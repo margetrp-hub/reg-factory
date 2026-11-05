@@ -47,6 +47,8 @@ COPY --from=api /out/regd /usr/local/bin/regd
 # 业务代码必须与源码一致：base 镜像是旧快照，新增的 Python 脚本（如 tools/asset_ops.py）
 # 不会自动进镜像，这里用当前构建上下文覆盖 /app（.dockerignore 已排除运行数据）
 COPY . /app
+# 退役目录清理：COPY 只覆盖不删除，base 镜像里残留的旧面板要显式移除
+RUN rm -rf /app/webui /app/scripts
 COPY deploy/entrypoint-go.sh /app/deploy/entrypoint-go.sh
 COPY deploy/scripts.schema.json /app/deploy/scripts.schema.json
 

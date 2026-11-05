@@ -8,6 +8,7 @@ package icmail
 
 import (
 	"context"
+	"strconv"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -67,6 +68,7 @@ func NewConfigFromEnv(dataDir string) Config {
 		TurnstileSecret:    get("ICMAIL_TURNSTILE_SECRET_KEY", get("TURNSTILE_SECRET_KEY", "")),
 		ExpectedHost:       get("ICMAIL_TURNSTILE_EXPECTED_HOSTNAME", get("TURNSTILE_EXPECTED_HOSTNAME", "")),
 		TurnstileVerifyURL: get("ICMAIL_TURNSTILE_VERIFY_URL", ""),
+		RetentionDays:      atoiDefault(get("ICMAIL_RETENTION_DAYS", "90"), 90),
 		BootstrapLimit:     300,
 		FetchChunk:         40,
 		IMAPHost:           get("ICMAIL_IMAP_HOST", get("MAIL_IMAP_HOST", "")),
@@ -123,6 +125,16 @@ func (a *App) Register(rg *gin.RouterGroup) {
 	rg.GET("/messages", a.requireAdmin(), a.handleMessages)
 	rg.GET("/stats", a.requireAdmin(), a.handleStats)
 	rg.GET("/sources", a.requireAdmin(), a.handleSources)
+	// 管理端查码：面板/协议注册用，不需要 Turnstile（外层已有登录保护）
+	rg.GET("/code", a.requireAdmin(), a.handleAdminCode)
+	rg.GET("/aliases", a.requireAdmin(), a.handleAliases)
+	rg.POST("/aliases/state", a.requireAdmin(), a.handleAliasState)
+	rg.POST("/sources", a.requireAdmin(), a.handleUpsertSource)
+	rg.POST("/sources/:id/toggle", a.requireAdmin(), a.handleSourceToggle)
+	rg.DELETE("/sources/:id", a.requireAdmin(), a.handleSourceDelete)
+	rg.POST("/sync", a.requireAdmin(), a.handleSync)
+	rg.GET("/prune", a.requireAdmin(), a.handlePrune)
+	rg.GET("/config", a.requireAdmin(), a.handleAdminConfig)
 }
 
 // RegisterPublic mounts the unauthenticated surface: the widget config and the
@@ -196,6 +208,183 @@ func (a *App) handleCode(c *gin.Context) {
 		default:
 			failJSON(c, http.StatusUnauthorized, "TURNSTILE_FAILED", "human verification failed")
 		}
+		return
+	}
+	result, err := a.LookupCode(email, 20)
+	if err != nil {
+		failJSON(c, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	okJSON(c, result)
+}
+
+// --- 管理端：别名 / 源 / 同步 / 清理 / 配置 ---------------------------------
+
+func (a *App) handleAliases(c *gin.Context) {
+	list, err := a.DB.ListAliases(c.Request.Context())
+	if err != nil {
+		failJSON(c, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	okJSON(c, gin.H{"aliases": list, "count": len(list)})
+}
+
+func (a *App) handleAliasState(c *gin.Context) {
+	var body struct {
+		HME   string `json:"hme"`
+		State string `json:"state"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || strings.TrimSpace(body.HME) == "" {
+		failJSON(c, http.StatusBadRequest, "BAD_REQUEST", "hme is required")
+		return
+	}
+	state := strings.ToLower(strings.TrimSpace(body.State))
+	switch state {
+	case "active", "paused", "blocked":
+	default:
+		failJSON(c, http.StatusBadRequest, "BAD_REQUEST", "state must be active/paused/blocked")
+		return
+	}
+	if err := a.DB.SetAliasState(c.Request.Context(), strings.ToLower(strings.TrimSpace(body.HME)), state); err != nil {
+		failJSON(c, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	okJSON(c, gin.H{"hme": body.HME, "state": state})
+}
+
+func (a *App) handleUpsertSource(c *gin.Context) {
+	var src Source
+	if err := c.ShouldBindJSON(&src); err != nil || strings.TrimSpace(src.Name) == "" || strings.TrimSpace(src.Host) == "" {
+		failJSON(c, http.StatusBadRequest, "BAD_REQUEST", "name and host are required")
+		return
+	}
+	if src.Port == 0 {
+		src.Port = 993
+	}
+	if strings.TrimSpace(src.Folder) == "" {
+		src.Folder = "INBOX"
+	}
+	// 编辑时密码留空 = 保留原密码（避免前端回填明文）
+	if strings.TrimSpace(src.Password) == "" {
+		if existing, listErr := a.DB.ListSources(false); listErr == nil {
+			for _, item := range existing {
+				if item.Name == src.Name && item.Password != "" {
+					src.Password = item.Password
+					break
+				}
+			}
+		}
+	}
+	saved, err := a.DB.UpsertSource(src)
+	if err != nil {
+		failJSON(c, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	okJSON(c, gin.H{"source": gin.H{
+		"id": saved.ID, "name": saved.Name, "host": saved.Host, "port": saved.Port,
+		"username": saved.Username, "folder": saved.Folder, "enabled": saved.Enabled,
+	}})
+}
+
+func (a *App) handleSourceToggle(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		failJSON(c, http.StatusBadRequest, "BAD_REQUEST", "invalid id")
+		return
+	}
+	var body struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		failJSON(c, http.StatusBadRequest, "BAD_REQUEST", "enabled is required")
+		return
+	}
+	if err := a.DB.SetSourceEnabled(c.Request.Context(), id, body.Enabled); err != nil {
+		failJSON(c, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	okJSON(c, gin.H{"id": id, "enabled": body.Enabled})
+}
+
+func (a *App) handleSourceDelete(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		failJSON(c, http.StatusBadRequest, "BAD_REQUEST", "invalid id")
+		return
+	}
+	if err := a.DB.DeleteSource(c.Request.Context(), id); err != nil {
+		failJSON(c, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	okJSON(c, gin.H{"id": id, "deleted": true})
+}
+
+func (a *App) handleSync(c *gin.Context) {
+	var body struct {
+		SourceID int64  `json:"source_id"`
+		Alias    string `json:"alias"`
+	}
+	_ = c.ShouldBindJSON(&body)
+	if err := a.DB.RequestSync(c.Request.Context(), body.SourceID, body.Alias); err != nil {
+		failJSON(c, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	okJSON(c, gin.H{"queued": true, "source_id": body.SourceID, "alias": body.Alias})
+}
+
+func (a *App) handlePrune(c *gin.Context) {
+	days := atoiDefault(c.Query("days"), a.Cfg.RetentionDays)
+	if days <= 0 {
+		days = 90
+	}
+	if err := a.DB.PruneOlderThan(days); err != nil {
+		failJSON(c, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		return
+	}
+	okJSON(c, gin.H{"prunedOlderThanDays": days})
+}
+
+// handleAdminConfig 暴露可调配置（密码脱敏），供工作台展示与排障。
+func (a *App) handleAdminConfig(c *gin.Context) {
+	sources, _ := a.DB.ListSources(false)
+	out := make([]gin.H, 0, len(sources))
+	for _, s := range sources {
+		out = append(out, gin.H{
+			"id": s.ID, "name": s.Name, "host": s.Host, "port": s.Port,
+			"username": s.Username, "folder": s.Folder, "enabled": s.Enabled,
+			"idle": s.Idle, "intervalSeconds": s.IntervalSeconds, "heartbeatSeconds": s.HeartbeatSeconds,
+			"lastUID": s.LastUID, "passwordSet": strings.TrimSpace(s.Password) != "",
+		})
+	}
+	okJSON(c, gin.H{
+		"dbPath":         a.Cfg.DBPath,
+		"retentionDays":  a.Cfg.RetentionDays,
+		"bootstrapLimit": a.Cfg.BootstrapLimit,
+		"fetchChunk":     a.Cfg.FetchChunk,
+		"adminKeySet":    a.Cfg.AdminKey != "",
+		"turnstile": gin.H{
+			"siteKey":          a.Cfg.TurnstileSiteKey,
+			"secretSet":        a.Cfg.TurnstileSecret != "",
+			"expectedHostname": a.Cfg.ExpectedHost,
+			"verifyURL":        a.Cfg.TurnstileVerifyURL,
+		},
+		"imap": gin.H{
+			"hostEnvSet":   a.Cfg.IMAPHost != "",
+			"userEnvSet":   a.Cfg.IMAPUser != "",
+			"passEnvSet":   a.Cfg.IMAPPass != "",
+			"folder":       a.Cfg.IMAPFolder,
+			"intervalSec":  a.Cfg.IMAPInterval,
+			"heartbeatSec": a.Cfg.IMAPHeartbeat,
+		},
+		"sources": out,
+	})
+}
+
+// handleAdminCode 管理端按邮箱查验证码（不带 Turnstile，靠外层登录保护）。
+func (a *App) handleAdminCode(c *gin.Context) {
+	email := strings.ToLower(strings.TrimSpace(c.Query("email")))
+	if !looksLikeEmail(email) {
+		failJSON(c, http.StatusBadRequest, "BAD_REQUEST", "valid email is required")
 		return
 	}
 	result, err := a.LookupCode(email, 20)

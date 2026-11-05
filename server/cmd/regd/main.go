@@ -1,4 +1,4 @@
-﻿// Command regd 是 reg-factory 的 Go 控制面：任务队列、日志流、资产与配置 API，
+// Command regd 是 reg-factory 的 Go 控制面：任务队列、日志流、资产与配置 API，
 // 同时托管 Next.js 静态前端。
 package main
 
@@ -22,6 +22,7 @@ import (
 	"github.com/tiantianGPU/reg-factory/server"
 	"github.com/tiantianGPU/reg-factory/server/internal/api"
 	"github.com/tiantianGPU/reg-factory/server/internal/apps/icmail"
+	"github.com/tiantianGPU/reg-factory/server/internal/assetstore"
 	"github.com/tiantianGPU/reg-factory/server/internal/auth"
 	"github.com/tiantianGPU/reg-factory/server/internal/nodeserver"
 	"github.com/tiantianGPU/reg-factory/server/internal/runner"
@@ -50,6 +51,11 @@ func main() {
 		log.Fatalf("[regd] 打开数据库失败: %v", err)
 	}
 	defer st.Close()
+	// Inventory relay needs the version/status projection even when this is an
+	// existing SG database created before the relay was introduced.
+	if err := st.EnsureInventoryRelay(); err != nil {
+		log.Fatalf("[regd] 账号库 relay 迁移失败: %v", err)
+	}
 
 	if recovered, err := st.RecoverInterrupted(); err == nil && recovered > 0 {
 		log.Printf("[regd] 上次退出遗留 %d 个任务已标记为 interrupted", recovered)
@@ -64,22 +70,16 @@ func main() {
 	router.Use(gin.Recovery())
 	router.Use(requestLogger())
 
-	version := readVersion(cfg)
-	apiServer := api.New(cfg, env, st, manager, authenticator, version)
-	apiServer.Register(router)
-	if synced, syncErr := apiServer.SeedAccounts(); syncErr != nil {
-		log.Printf("[regd] 账号主数据同步失败: %v", syncErr)
-	} else {
-		log.Printf("[regd] 账号主数据已同步 %d 条", synced)
+	// 统一资产库：把旧路径（creds/ cookies/ tokens/）搬进 /data/assets/
+	if moved, err := assetstore.New(cfg.DataDir).Migrate(cfg.DataDir); err != nil {
+		log.Printf("[regd] 资产迁移失败: %v", err)
+	} else if moved > 0 {
+		log.Printf("[regd] 已迁移 %d 个资产到 /data/assets/", moved)
 	}
-	apiServer.StartLivenessLoop(context.Background())
-	nodeserver.New(nodeserver.Config{
-		Enabled:  cfg.NodeID != "" && len(cfg.NodeKey) >= 32,
-		NodeID:   cfg.NodeID,
-		Key:      []byte(cfg.NodeKey),
-		Platform: cfg.NodePlatform,
-	}, manager, st).Register(router)
 
+	assetSyncLoop(cfg.DataDir)
+
+	version := readVersion(cfg)
 	// IC 邮箱 app（同仓同进程）：/api/apps/icmail/* 与 /apps/icmail 页面
 	icApp, err := icmail.New(icmail.NewConfigFromEnv(cfg.DataDir))
 	if err != nil {
@@ -92,6 +92,24 @@ func main() {
 		defer icApp.Stop()
 		log.Printf("[regd] IC 邮箱已挂载: /api/apps/icmail（db=%s）", icApp.DB.Path())
 	}
+
+	apiServer := api.New(cfg, env, st, manager, authenticator, version, icApp)
+	apiServer.Register(router)
+	if synced, syncErr := apiServer.SeedAccounts(); syncErr != nil {
+		log.Printf("[regd] 账号主数据同步失败: %v", syncErr)
+	} else {
+		log.Printf("[regd] 账号主数据已同步 %d 条", synced)
+	}
+	apiServer.StartLivenessLoop(context.Background())
+	nodeserver.New(nodeserver.Config{
+		Enabled:     cfg.NodeID != "" && len(cfg.NodeKey) >= 32,
+		NodeID:      cfg.NodeID,
+		Key:         []byte(cfg.NodeKey),
+		ReceiptKey:  []byte(cfg.NodeReceiptKey),
+		BusinessKey: []byte(cfg.NodeBusinessKey),
+		ArtifactKey: []byte(cfg.NodeArtifactKey),
+		Platform:    cfg.NodePlatform,
+	}, manager, st).Register(router)
 
 	registerStatic(router)
 
@@ -208,4 +226,19 @@ func registerStatic(router *gin.Engine) {
 		raw, _ := io.ReadAll(index)
 		c.Data(http.StatusOK, "text/html; charset=utf-8", raw)
 	})
+}
+
+// assetSyncLoop 每 60s 把旧路径新产出的资产增量搬进 /data/assets/。
+// Python 执行器仍按老路径落盘，这里负责收敛，避免两边各写一份。
+func assetSyncLoop(dataDir string) {
+	store := assetstore.New(dataDir)
+	go func() {
+		ticker := time.NewTicker(60 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			if moved, err := store.Migrate(dataDir); err == nil && moved > 0 {
+				log.Printf("[regd] 增量迁移 %d 个资产到 /data/assets/", moved)
+			}
+		}
+	}()
 }

@@ -40,8 +40,8 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="grid min-h-screen place-items-center px-4">
-      <form onSubmit={submit} className="card w-full max-w-[380px] px-7 py-8">
+    <div className="grid min-h-screen place-items-center bg-muted/20 px-4">
+      <form onSubmit={submit} className="card w-full max-w-[420px] px-7 py-8 shadow-sm">
         <div className="mb-1 flex items-center gap-2">
           <div className="grid h-9 w-9 place-items-center rounded-lg bg-brand/20 text-brand">⌬</div>
           <div>
@@ -49,7 +49,9 @@ export default function LoginPage() {
             <p className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">Go 控制面 · 登录</p>
           </div>
         </div>
-        <p className="mb-5 mt-3 text-[12px] text-muted-foreground">任务、资产与密钥都在此面板内，请使用独立强口令。</p>
+        <div className="mb-5 mt-4 rounded-lg border border-border/70 bg-muted/40 px-3 py-2.5 text-[12px] leading-relaxed text-muted-foreground">
+          统一管理生产任务、账号资产和运行审计。登录后按工作域继续操作。
+        </div>
 
         {error && <div className="mb-4 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-[12px] text-destructive">{error}</div>}
 
@@ -70,7 +72,7 @@ export default function LoginPage() {
         <button type="submit" className="btn-primary mt-6 w-full py-2" disabled={busy || !password}>
           {busy ? "验证中…" : "进入控制台"}
         </button>
-        <p className="mt-4 text-center text-[11px] text-muted-foreground/70">密码来自部署目录 deploy/.env 的 REG_FACTORY_PANEL_PASSWORD</p>
+        <p className="mt-4 text-center text-[11px] text-muted-foreground/70">使用部署方提供的独立面板口令</p>
       </form>
     </div>
   );

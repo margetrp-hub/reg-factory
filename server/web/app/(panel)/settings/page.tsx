@@ -3,11 +3,23 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import { Badge, Card, Empty, ErrorNote } from "@/components/ui";
+import { Tabs } from "@/components/tabs";
 
 type Entry = { key: string; value: string; secret: boolean; line: number };
 
+/** 跨平台共用的配置：代理 / 邮箱 / 接码 / 打码。集中到「共性配置」一组。 */
+const COMMON_PREFIXES = [
+  "PROXY_", "CLASH",
+  "ICMAIL_", "ICLOUD_", "YYDS_", "GPTMAIL_", "CFMAIL_", "MOEMAIL_", "REMAIL_", "CUSTOM_MAIL_",
+  "SMS_", "HERO_",
+  "CAPSOLVER_", "EZCAPTCHA_", "YESCAPTCHA_", "VISION_", "VOTE_", "GEMMA_",
+  "BROWSER_PROVIDER", "BITBROWSER_", "ADSPOWER_",
+];
+const isCommon = (key: string) => COMMON_PREFIXES.some((prefix) => key.toUpperCase().startsWith(prefix));
+
 export default function SettingsPage() {
   const [groups, setGroups] = useState<Record<string, Entry[]>>({});
+  const [activeGroup, setActiveGroup] = useState("");
   const [path, setPath] = useState("");
   const [dirty, setDirty] = useState<Record<string, string>>({});
   const [query, setQuery] = useState("");
@@ -102,6 +114,26 @@ export default function SettingsPage() {
     }
   };
 
+  const commonEntries = useMemo(
+    () => Object.values(groups).flat().filter((entry) => isCommon(entry.key)),
+    [groups],
+  );
+  const scopedGroups = useMemo(() => {
+    const out: Record<string, Entry[]> = {};
+    for (const [name, list] of Object.entries(filtered)) {
+      const rest = list.filter((entry) => !isCommon(entry.key));
+      if (rest.length > 0) out[name] = rest;
+    }
+    return out;
+  }, [filtered]);
+  const tabItems = useMemo(() => {
+    const items = [{ id: "__common", label: "共性配置", count: commonEntries.length }];
+    for (const [name, list] of Object.entries(scopedGroups)) {
+      items.push({ id: name, label: name, count: list.length });
+    }
+    return items;
+  }, [commonEntries, scopedGroups]);
+
   return (
     <div className="space-y-4">
       <div className="grid gap-4 lg:grid-cols-[1.5fr_1fr]">
@@ -133,35 +165,67 @@ export default function SettingsPage() {
           <ErrorNote message={error} />
           {notice && <div className="mb-2 rounded border border-success/30 bg-success/10 px-2 py-1 text-[11px] text-success">{notice}</div>}
           {Object.keys(filtered).length === 0 && <Empty>没有匹配的配置项</Empty>}
-          <div className="max-h-[calc(100vh-260px)] space-y-4 overflow-auto pr-1">
-            {Object.entries(filtered).map(([group, list]) => (
-              <section key={group}>
-                <div className="mb-1.5 flex items-center gap-2">
-                  <span className="text-[12px] font-medium text-foreground/85">{group}</span>
-                  <Badge tone="neutral">{list.length}</Badge>
-                </div>
-                <div className="space-y-1.5">
-                  {list.map((entry) => {
+          <div className="grid gap-3 lg:grid-cols-[196px_1fr]">
+            <nav className="space-y-0.5 overflow-auto">
+              {tabItems.map((item) => {
+                const active = (query.trim() ? "__all" : (activeGroup || "__common")) === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    onClick={() => setActiveGroup(item.id)}
+                    className={`flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[12.5px] transition-colors ${
+                      active ? "bg-brand/15 font-medium text-brand" : "text-muted-foreground hover:bg-accent/60 hover:text-foreground"
+                    }`}
+                  >
+                    <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                    <span className="font-mono text-[10.5px] opacity-70">{item.count}</span>
+                  </button>
+                );
+              })}
+            </nav>
+
+            <div className="max-h-[calc(100vh-260px)] overflow-auto">
+              {query.trim() && (
+                <div className="mb-1.5 px-1 text-[11px] text-muted-foreground">搜索结果（跨分组）</div>
+              )}
+              <table className="tbl">
+                <thead>
+                  <tr>
+                    <th>键</th>
+                    <th>值</th>
+                    <th className="w-[42px] text-right">改</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(query.trim()
+                    ? Object.entries(filtered).flatMap(([, list]) => list)
+                    : (activeGroup || "__common") === "__common"
+                      ? commonEntries
+                      : scopedGroups[activeGroup] || []
+                  ).map((entry) => {
                     const value = dirty[entry.key] ?? entry.value;
                     const changed = entry.key in dirty;
                     return (
-                      <div key={entry.key} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)] items-center gap-2">
-                        <div className="truncate font-mono text-[11px] text-muted-foreground" title={entry.key}>
+                      <tr key={entry.key}>
+                        <td className="max-w-[240px] truncate font-mono text-[11px] text-muted-foreground" title={entry.key}>
                           {entry.key}
-                          {changed && <span className="ml-1 text-warning">*</span>}
-                        </div>
-                        <input
-                          className={`field py-1 text-[12px] ${changed ? "border-warning/50" : ""}`}
-                          type={entry.secret && !reveal ? "password" : "text"}
-                          value={value}
-                          onChange={(e) => setDirty((prev) => ({ ...prev, [entry.key]: e.target.value }))}
-                        />
-                      </div>
+                        </td>
+                        <td>
+                          <input
+                            className={`field py-1 text-[12px] ${changed ? "border-warning/50" : ""}`}
+                            type={entry.secret && !reveal ? "password" : "text"}
+                            value={value}
+                            onChange={(e) => setDirty((prev) => ({ ...prev, [entry.key]: e.target.value }))}
+                          />
+                        </td>
+                        <td className="text-right text-[11px] text-warning">{changed ? "●" : ""}</td>
+                      </tr>
                     );
                   })}
-                </div>
-              </section>
-            ))}
+                </tbody>
+              </table>
+              {tabItems.length === 0 && <Empty>没有匹配的配置项</Empty>}
+            </div>
           </div>
         </Card>
 

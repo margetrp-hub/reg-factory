@@ -3,11 +3,12 @@
 // 的签名算法把结果回执推回编排侧。
 //
 // 协议对齐 team-platform 的 services/account-node/account_node/work_protocol.py：
-//   schema      account-node.work.v1
-//   receipt     account-node.receipt.v1
-//   domain      "account-node-work-v1\n"（结果回执用 "account-node-work-read-v1\n"）
-//   canonical   JSON sort_keys / 无空格 / 全 ASCII
-//   HMAC-SHA256(key, domain + canonical(payload))，key 至少 32 字节
+//
+//	schema      account-node.work.v1
+//	receipt     account-node.receipt.v1
+//	domain      "account-node-work-v1\n"（结果回执用 "account-node-work-read-v1\n"）
+//	canonical   JSON sort_keys / 无空格 / 全 ASCII
+//	HMAC-SHA256(key, domain + canonical(payload))，key 至少 32 字节
 package nodeserver
 
 import (
@@ -49,11 +50,15 @@ var workFields = []string{
 var workActions = map[string]map[string]bool{
 	"account.register":  {"goal": true, "sms_allowance": true},
 	"account.authorize": {"sms_allowance": true, "custody_grant": true},
-	"account.refresh":   {},
-	"account.liveness":  {},
-	"account.quota":     {},
-	"asset.liveness":    {},
-	"team.seat_price":   {},
+	// A refresh issued by Team carries the signed custody grant that binds the
+	// node operation to the original account/asset authority.  The node does
+	// not need a Core connection; Work authenticates the envelope and the
+	// execution path consumes the grant as part of the task material.
+	"account.refresh":  {"custody_grant": true},
+	"account.liveness": {},
+	"account.quota":    {},
+	"asset.liveness":   {},
+	"team.seat_price":  {},
 	"account.join": {"target_account_id": true, "target_version": true, "team_ref": true,
 		"workspace_type": true, "reservation_ref": true, "custody_grant": true},
 	"account.verify_asset": {"target_account_id": true, "target_version": true, "team_ref": true,
@@ -266,10 +271,10 @@ func Describe() map[string]any {
 		actions = append(actions, name)
 	}
 	return map[string]any{
-		"schema":     WorkSchema,
-		"receipt":    ReceiptSchema,
-		"actions":    actions,
-		"subject":    map[string]string{"account.register": "mailbox", "default": "account"},
+		"schema":      WorkSchema,
+		"receipt":     ReceiptSchema,
+		"actions":     actions,
+		"subject":     map[string]string{"account.register": "mailbox", "default": "account"},
 		"receipt_key": fmt.Sprintf("hmac-sha256/%s", "account-node-work-read-v1"),
 	}
 }

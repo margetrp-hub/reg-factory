@@ -458,7 +458,6 @@ SCRIPTS = [
             {"flag": "--input", "type": "str", "default": "", "help": "账号文件，每行 email----password"},
             {"flag": "--concurrency", "type": "int", "default": 3, "help": "并发授权数量，范围 1-10"},
             {"flag": "--no-update-pool", "type": "bool", "default": False, "help": "仅授权并输出结果，不回写 emails.txt"},
-            {"flag": "--statuses", "type": "multi", "choices": ["unlock", "expired", "unknown", "banned"], "default": ["unlock", "expired", "unknown"], "hidden": True, "help": "兼容旧配置，不参与授权执行"},
         ],
     },
     {

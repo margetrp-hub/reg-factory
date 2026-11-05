@@ -459,6 +459,7 @@ func (m *Manager) launch(task store.Task, weight int) error {
 			}
 		}
 		_ = m.st.Finish(task.ID, status, code, message)
+		m.afterFinish(task, status, code)
 		m.broadcast(task.ID, Line{TS: time.Now().Format(time.RFC3339), Stream: "system",
 			Line: fmt.Sprintf("[regd] 任务结束 status=%s exit=%d", status, code)})
 		m.Wake()
@@ -533,15 +534,15 @@ func round1(value float64) float64 {
 // ---------------------------------------------------------------- 环境
 
 func (m *Manager) buildArgv(task store.Task) ([]string, string, []string, error) {
-	// raw 任务：ArgsJSON 直接是参数数组，脚本固定为 tools/asset_ops.py
-	if task.Script == "asset_ops" {
+	// raw 任务：ArgsJSON 直接是参数数组，脚本为 tools/<script>.py
+	if task.Script == "asset_ops" || task.Script == "change_password" || task.Script == "import_free_json" {
 		var argvTail []string
 		if err := json.Unmarshal([]byte(task.ArgsJSON), &argvTail); err != nil {
 			return nil, "", nil, fmt.Errorf("raw 参数无效: %w", err)
 		}
-		script := filepath.Join(m.cfg.AppRoot, "tools", "asset_ops.py")
+		script := filepath.Join(m.cfg.AppRoot, "tools", task.Script+".py")
 		if _, err := os.Stat(script); err != nil {
-			return nil, "", nil, fmt.Errorf("asset_ops.py 不存在")
+			return nil, "", nil, fmt.Errorf("%s.py 不存在", task.Script)
 		}
 		argv := append([]string{m.cfg.Python, "-u", script}, argvTail...)
 		env := append(os.Environ(),
@@ -578,4 +579,38 @@ func (m *Manager) Shutdown(ctx context.Context) {
 	close(m.stop)
 	m.StopAll()
 	_ = ctx
+}
+
+// afterFinish 任务收尾的副作用：改密码结果回写到账号状态。
+func (m *Manager) afterFinish(task store.Task, status string, code int) {
+	if task.Script != "change_password" {
+		return
+	}
+	var argv []string
+	if err := json.Unmarshal([]byte(task.ArgsJSON), &argv); err != nil {
+		return
+	}
+	ref := ""
+	email := ""
+	for index, item := range argv {
+		if item == "--ref" && index+1 < len(argv) {
+			ref = argv[index+1]
+		}
+		if item == "--email" && index+1 < len(argv) {
+			email = argv[index+1]
+		}
+	}
+	if ref == "" && email != "" {
+		ref = "import:" + email
+	}
+	if ref == "" {
+		return
+	}
+	state := "failed"
+	message := fmt.Sprintf("exit=%d", code)
+	if status == "succeeded" {
+		state = "changed"
+		message = "密码已更新"
+	}
+	_ = m.st.MarkPassword(ref, state, message)
 }

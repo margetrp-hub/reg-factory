@@ -88,6 +88,8 @@ type Options struct {
 	ProxyURL        string
 	UTCOffset       int // 默认 -480（UTC+8）
 	Timeout         time.Duration
+	// BaseURL 仅测试用；默认 https://claude.ai
+	BaseURL string
 	// Mailbox 负责取 magic link
 	Mailbox Mailbox
 }
@@ -150,7 +152,7 @@ func NewClient(opts Options) (*Client, error) {
 	}
 	return &Client{
 		http:     &http.Client{Transport: transport, Timeout: timeout},
-		baseURL:  baseURL,
+		baseURL:  firstNonEmpty(opts.BaseURL, baseURL),
 		seed:     seed,
 		version:  version,
 		cookies:  map[string]string{},
@@ -355,4 +357,13 @@ func truncate(text string, limit int) string {
 		return text
 	}
 	return text[:limit]
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }

@@ -172,8 +172,45 @@
   .kv-v {
     @apply font-mono text-foreground;
   }
+  /* 统一表格：所有列表页共用，避免每处各写一套 class 串 */
+  .tbl {
+    @apply w-full text-[12.5px];
+  }
+  .tbl thead {
+    @apply sticky top-0 z-10 bg-card/95 text-[11px] uppercase tracking-[0.06em] text-muted-foreground;
+  }
+  .tbl thead tr {
+    @apply border-b border-border;
+  }
+  .tbl tbody tr {
+    @apply border-b border-border/60 transition-colors last:border-0;
+  }
+  .tbl tbody tr:hover {
+    @apply bg-accent/40;
+  }
+  .tbl th {
+    @apply px-3 py-1.5 text-left font-medium;
+  }
+  .tbl td {
+    @apply px-3 py-1.5 align-middle;
+  }
+
+  /* 统一页头：标题 + 描述 + 右侧操作 */
+  .page-head {
+    @apply flex flex-wrap items-end gap-3;
+  }
+  .page-title {
+    @apply text-[19px] font-semibold leading-tight tracking-tight;
+  }
+  .page-desc {
+    @apply mt-1 text-[12px] leading-relaxed text-muted-foreground;
+  }
+  .section-kicker {
+    @apply mb-1 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground/70;
+  }
+
   .nav-item {
-    @apply flex items-center gap-2.5 rounded-md px-3 py-2 text-[13px] text-muted-foreground
+    @apply flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-[13px] text-muted-foreground
       transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground;
     transition-duration: var(--ops-motion-fast);
   }
