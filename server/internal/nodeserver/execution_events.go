@@ -1,6 +1,7 @@
 package nodeserver
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -41,10 +42,15 @@ func signWorkEvents(payload map[string]any, key []byte) (string, error) {
 	if len(key) < 32 {
 		return "", perr("WORK_KEY_UNCONFIGURED", 503)
 	}
-	raw, err := Canonical(payload)
-	if err != nil {
+	// Execution output may contain Unicode. Match Work's UTF-8 canonical JSON;
+	// the older task protocol's ASCII-only Canonical must remain unchanged.
+	var buffer bytes.Buffer
+	encoder := json.NewEncoder(&buffer)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(payload); err != nil {
 		return "", err
 	}
+	raw := bytes.TrimSuffix(buffer.Bytes(), []byte("\n"))
 	mac := hmac.New(sha256.New, key)
 	mac.Write([]byte(workEventsDomain))
 	mac.Write(raw)

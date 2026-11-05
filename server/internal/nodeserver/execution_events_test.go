@@ -25,7 +25,7 @@ func TestExecutionLogsSignedBoundedAndRedacted(t *testing.T) {
 	if err = st.CreateTask(store.Task{ID: "work-task-test", Script: "asset_ops"}); err != nil {
 		t.Fatal(err)
 	}
-	for _, line := range []string{"starting original refresh", "OAuth HTTP 401 password=never-show email=secret@example.test otp=123456", `{"refresh_token":"do-not-show","message":"retry unavailable"}`, "last persisted line"} {
+	for _, line := range []string{"正在刷新原账号 🚀 <ready> & starting original refresh", "OAuth HTTP 401 password=never-show email=secret@example.test otp=123456", `{"refresh_token":"do-not-show","message":"retry unavailable"}`, "last persisted line"} {
 		if err = st.AppendEvent("work-task-test", "stdout", line); err != nil {
 			t.Fatal(err)
 		}
@@ -69,6 +69,9 @@ func TestExecutionLogsSignedBoundedAndRedacted(t *testing.T) {
 	if !strings.Contains(string(raw), "OAuth HTTP 401") {
 		t.Fatal("real execution detail discarded")
 	}
+	if !strings.Contains(string(raw), "正在刷新原账号 🚀") {
+		t.Fatal("Unicode execution output was discarded")
+	}
 	p["page"] = 2
 	second := call(p, "", 200)
 	raw, _ = json.Marshal(second)
@@ -103,5 +106,21 @@ func TestExecutionLogSanitizerLimitsAndSensitiveForms(t *testing.T) {
 	}
 	if len([]rune(safeExecutionText(strings.Repeat("输出 ", 1000)))) > 2049 {
 		t.Fatal("unbounded output")
+	}
+}
+
+func TestExecutionLogsUTF8SignatureMatchesWorkCanonical(t *testing.T) {
+	payload := map[string]any{"page": 1, "items": []map[string]any{{"text": "正在刷新 🚀 <ready> &"}}}
+	signature, err := signWorkEvents(payload, bytes.Repeat([]byte("k"), 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Independently calculated HMAC for sorted compact UTF-8 JSON, without
+	// ASCII or HTML escaping, under account-node-work-events-v1.
+	if signature != "0110eb70345de712138cf8c483d49361d95d49b4e00e3d0d506888fa642094ef" {
+		t.Fatalf("UTF-8 canonical signature mismatch: %s", signature)
+	}
+	if _, err := Canonical(payload); err == nil {
+		t.Fatal("legacy task protocol ASCII restriction changed")
 	}
 }
