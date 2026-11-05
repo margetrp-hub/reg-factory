@@ -129,23 +129,19 @@ Go 二进制，所以几乎不增加体积。
 
 ```bash
 cd deploy
-# 先确保基础镜像存在
-sudo docker compose -f docker-compose.yml -f docker-compose.sg.yml build panel
-# 构建 Go 控制面
-sudo docker build -f Dockerfile.go -t reg-factory:go ..
-# 启动（host 网络，只绑 127.0.0.1:8800，与旧面板共用 /data）
-sudo docker compose -f docker-compose.yml -f docker-compose.sg.yml up -d panel-go
+# 构建并启动统一控制面（Go + 内置 Python worker）
+sudo docker compose -f docker-compose.yml -f docker-compose.sg.yml up -d --build panel
 ```
 
-两个面板可以并存：旧的 8799（Python）、新的 8800（Go），共用 `/data` 与
-`/data/.env`，SQLite 独立为 `/data/regd.db`。
+生产只运行一个 `reg-factory` 控制面容器：Go 负责状态、界面和调度，镜像内复用
+Python worker；共用 `/data` 与 `/data/.env`，SQLite 使用 `/data/regd.db`。
 
 ### 4.3 切换
 
 1. 用 SSH 隧道或临时端口验证 8800 一切正常；
 2. Nginx 把 `reg.yhoo.lol` 的 upstream 从 `127.0.0.1:8799` 改成 `127.0.0.1:8800`；
-3. `docker compose stop panel`（旧的 Python 面板）；
-4. 需要回滚：反向改 upstream + `docker compose start panel`。
+3. 确认 `/api/health`、`/ready` 和 `/node/capabilities` 后继续使用同一容器；
+4. 需要回滚：恢复旧镜像标签和源码备份，再执行同一个 `panel` 服务启动命令。
 
 ## 5. 运维
 
@@ -155,10 +151,10 @@ curl -s http://127.0.0.1:8800/api/health
 curl -s http://127.0.0.1:8800/api/memory
 
 # 日志（容器）
-sudo docker logs -f reg-factory-go --tail 100
+sudo docker logs -f reg-factory --tail 100
 
 # 数据库（SQLite，可随时拷走）
-sudo docker exec reg-factory-go sqlite3 /data/regd.db \
+sudo docker exec reg-factory sqlite3 /data/regd.db \
   "select id,script,status,exit_code,created_at from tasks order by created_at desc limit 10;"
 
 # 备份：/data 卷里含 regd.db、.env、号池、Cookie、Token
@@ -177,7 +173,7 @@ sudo ./sg-maintenance.sh
 ## 6. 已知边界
 
 * 执行层仍是 Python，`/app` 里的脚本需要 `REG_FACTORY_DATA_DIR`、`PYTHONPATH=/app`（entrypoint 已设）；
-* `scripts.schema.json` 由 `webui/scripts.py` 生成，新增任务需要重新导出并重跑构建；
+* `scripts.schema.json` 由 `schema/scripts.py` 生成，新增任务需要重新导出并重跑构建；
 * 单实例单进程（SQLite + 内存订阅表），不要开多副本；需要多机请换 Postgres + Redis Stream；
 * 面板只绑 `127.0.0.1`，公网入口必须走 Nginx/Caddy 反代（与旧面板一致）；
 * `--single-process` 等 Chromium 参数在容器里会崩，内存优化见 `README-OCI-SG.md` 第 10 节。

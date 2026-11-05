@@ -5,15 +5,19 @@ import Link from "next/link";
 import { api, type Task } from "@/lib/api";
 import { Badge, Card, Stat } from "@/components/ui";
 import { TASK_GROUPS, groupOf } from "@/lib/task-catalog";
+import { TaskTable } from "@/components/task-table";
+import { LogView } from "@/components/log-view";
 
 export default function TaskCenterPage() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [error, setError] = useState("");
+  const [selected, setSelected] = useState("");
 
   const load = useCallback(async () => {
     try {
       const data = await api.tasks(120);
       setTasks(data.tasks);
+      setSelected((prev) => (data.tasks.some((task) => task.id === prev) ? prev : data.tasks[0]?.id || ""));
       setError("");
     } catch (err) {
       setError((err as Error).message);
@@ -49,7 +53,7 @@ export default function TaskCenterPage() {
         <div className="min-w-0 flex-1">
           <h1 className="text-[16px] font-semibold leading-tight">任务中心</h1>
           <p className="text-[11px] text-muted-foreground">
-            选分类进入下发页；本页只做导航与统计，队列和日志在分类页里。
+            所有任务、历史输出和实时流统一在这里查看；分类页只负责发起业务流程。
           </p>
         </div>
         <Badge tone={counts.running > 0 ? "warn" : "info"}>
@@ -69,6 +73,17 @@ export default function TaskCenterPage() {
           {error}
         </div>
       )}
+
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_minmax(420px,1fr)]">
+        <Card title="全局任务流" bodyClass="p-0">
+          <div className="max-h-[520px] overflow-auto">
+            <TaskTable tasks={tasks} onSelect={setSelected} activeId={selected} onStop={async (id) => { await api.stopTask(id).catch(() => null); await load(); }} showScript />
+          </div>
+        </Card>
+        <Card title={selected ? `终端日志 · ${selected}` : "终端日志"} bodyClass="p-2">
+          {selected ? <LogView taskId={selected} height={480} /> : <div className="p-8 text-center text-[12px] text-muted-foreground">选择一个任务查看持久化输出和实时日志</div>}
+        </Card>
+      </div>
 
       <div className="grid gap-3 sm:grid-cols-2">
         {TASK_GROUPS.map((group) => {

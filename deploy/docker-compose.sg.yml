@@ -19,6 +19,11 @@
 
 services:
   panel:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.go
+    image: "${REG_FACTORY_IMAGE:-reg-factory:unified}"
+    container_name: reg-factory
     network_mode: host
     ports: []
     mem_limit: 8g
@@ -28,48 +33,24 @@ services:
     cpus: "3.0"
     pids_limit: 4096
     environment:
-      REG_FACTORY_HOST: 127.0.0.1
-    labels:
-      - "com.reg-factory.role=panel"
-      - "com.reg-factory.host=sg"
-    logging:
-      driver: json-file
-      options:
-        max-size: "20m"
-        max-file: "5"
-
-  # Go 控制面（Next.js + Gin + SQLite）：与 Python 面板共用 /data，独立端口 8800。
-  # 切换步骤：先 up 起来验证，再把 Nginx 的 reg.ohlao.cfd 从 8799 改到 8800，
-  # 最后 docker compose stop panel 停掉 Python 面板。
-  panel-go:
-    build:
-      context: ..
-      dockerfile: deploy/Dockerfile.go
-    image: "${REG_FACTORY_GO_IMAGE:-reg-factory:go}"
-    container_name: reg-factory-go
-    restart: unless-stopped
-    network_mode: host
-    mem_limit: 8g
-    memswap_limit: 8g
-    mem_reservation: 5g
-    cpus: "3.0"
-    pids_limit: 4096
-    env_file:
-      - ./.env
-    environment:
       TZ: "${TZ:-Asia/Singapore}"
+      REG_FACTORY_HOST: 127.0.0.1
       REGD_ADDR: "127.0.0.1:8800"
       REGD_APP_ROOT: /app
       REGD_DB: /data/regd.db
       REG_FACTORY_DATA_DIR: /data
       REG_FACTORY_ENV_FILE: /data/.env
-      REG_FACTORY_PANEL_USER: "${REG_FACTORY_PANEL_USER:-admin}"
-      REG_FACTORY_PANEL_PASSWORD: "${REG_FACTORY_PANEL_PASSWORD:?请先在 deploy/.env 设置 REG_FACTORY_PANEL_PASSWORD}"
-    volumes:
-      - rf-data:/data
+      REG_FACTORY_NODE_ARTIFACT_KEY: "${ACCOUNT_NODE_TEAM_ARTIFACT_KEY:?需在 deploy/.env 配置}"
+      REG_FACTORY_NODE_PLATFORM: chatgpt
     labels:
-      - "com.reg-factory.role=panel-go"
+      - "com.reg-factory.role=control-plane"
       - "com.reg-factory.host=sg"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8800/api/health >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     logging:
       driver: json-file
       options:

@@ -5,7 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { api, type SystemInfo } from "@/lib/api";
 
-type NavSection = "workspace" | "production" | "runtime" | "assets" | "supply" | "system";
+type NavSection = "workspace" | "production" | "runtime" | "assets" | "supply" | "nodes" | "system";
 
 const NAV: { href: string; label: string; section: NavSection }[] = [
   { href: "/", label: "工作台", section: "workspace" },
@@ -13,6 +13,7 @@ const NAV: { href: string; label: string; section: NavSection }[] = [
   { href: "/tasks/", label: "运行", section: "runtime" },
   { href: "/accounts/", label: "资产", section: "assets" },
   { href: "/materials/", label: "供给", section: "supply" },
+  { href: "/nodes/", label: "节点", section: "nodes" },
   { href: "/settings/", label: "系统", section: "system" },
 ];
 
@@ -33,6 +34,10 @@ const CONTEXT_LINKS: Record<NavSection, { href: string; label: string }[]> = {
   supply: [
     { href: "/materials/", label: "物料总览" },
     { href: "/apps/icmail/", label: "IC 邮箱" },
+  ],
+  nodes: [
+    { href: "/nodes/", label: "节点总览" },
+    { href: "/tasks/", label: "节点运行日志" },
   ],
   system: [
     { href: "/settings/", label: "配置" },
@@ -112,6 +117,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const activeSection: NavSection = activeItem?.section ||
     (pathname.startsWith("/platform/") ? "production" :
       pathname.startsWith("/apps/icmail") || pathname.startsWith("/materials") ? "supply" :
+      pathname.startsWith("/nodes") ? "nodes" :
         pathname.startsWith("/audit") ? "runtime" : "workspace");
   const activeContext = CONTEXT_LINKS[activeSection].find((item) =>
     item.href === "/" ? pathname === "/" : pathname.startsWith(item.href.replace(/\/$/, "")),

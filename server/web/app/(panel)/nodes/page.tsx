@@ -1,0 +1,71 @@
+"use client";
+
+import { useCallback, useEffect, useState } from "react";
+import { api, type NodeCapabilities, type NodeReady } from "@/lib/api";
+import { Badge, Card, Empty, Stat } from "@/components/ui";
+
+export default function NodesPage() {
+  const [ready, setReady] = useState<NodeReady | null>(null);
+  const [node, setNode] = useState<NodeCapabilities | null>(null);
+  const [error, setError] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const [readyState, capabilities] = await Promise.all([api.nodeReady(), api.nodeCapabilities()]);
+      setReady(readyState);
+      setNode(capabilities);
+      setError("");
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+    const timer = setInterval(load, 10000);
+    return () => clearInterval(timer);
+  }, [load]);
+
+  return (
+    <div className="space-y-4">
+      <div className="page-head">
+        <div className="min-w-0 flex-1">
+          <h1 className="page-title">节点</h1>
+          <p className="page-desc">运行时身份、协议能力和密钥指纹统一从当前控制面读取。</p>
+        </div>
+        <Badge tone={ready?.execution_ready ? "ok" : "bad"}>{ready?.execution_ready ? "执行就绪" : "不可用"}</Badge>
+      </div>
+
+      {error && <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-[12px] text-destructive">{error}</div>}
+
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <Stat label="节点" value={node?.node_id || "-"} />
+        <Stat label="平台" value={node?.config || "-"} />
+        <Stat label="支持动作" value={node?.actions.supported.length ?? 0} />
+        <Stat label="协议" value={node?.detail?.receipt ? "v1" : "-"} />
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Card title="运行状态">
+          {ready ? (
+            <div className="space-y-1">
+              <div className="kv"><span className="kv-k">ready</span><span className="kv-v">{String(ready.ready)}</span></div>
+              <div className="kv"><span className="kv-k">execution_ready</span><span className="kv-v">{String(ready.execution_ready)}</span></div>
+              <div className="kv"><span className="kv-k">schema</span><span className="kv-v">{node?.schema || "-"}</span></div>
+              <div className="kv"><span className="kv-k">工作密钥指纹</span><span className="kv-v">{node?.work_key_fp || "-"}</span></div>
+              <div className="kv"><span className="kv-k">回执密钥指纹</span><span className="kv-v">{node?.receipt_key_fp || "-"}</span></div>
+              <div className="kv"><span className="kv-k">业务密钥指纹</span><span className="kv-v">{node?.business_key_fp || "-"}</span></div>
+            </div>
+          ) : <Empty>正在读取节点状态</Empty>}
+        </Card>
+
+        <Card title="能力清单">
+          <div className="mb-3 flex flex-wrap gap-1.5">
+            {(node?.actions.supported || []).map((action) => <Badge key={action} tone="ok">{action}</Badge>)}
+          </div>
+          <div className="text-[11px] text-muted-foreground">节点不支持的动作不会伪装成可执行任务，协议能力在这里集中核对。</div>
+        </Card>
+      </div>
+    </div>
+  );
+}

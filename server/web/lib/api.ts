@@ -60,6 +60,24 @@ export type SystemInfo = {
   server_time: string;
 };
 
+export type NodeCapabilities = {
+  ok: boolean;
+  node_id: string;
+  config: string;
+  schema: string;
+  business_key_fp: string;
+  receipt_key_fp: string;
+  work_key_fp: string;
+  actions: { supported: string[]; unsupported: string[]; notes: Record<string, string> };
+  detail: Record<string, unknown>;
+};
+
+export type NodeReady = {
+  ready: boolean;
+  execution_ready: boolean;
+  runtime: { supported_actions: string[]; protocol_capabilities: string[] };
+};
+
 export type AccountRow = {
   ref: string;
   platform: string;
@@ -146,6 +164,8 @@ export const api = {
     request<{ ok: boolean }>("/api/login", { method: "POST", body: JSON.stringify({ username, password }) }),
   logout: () => request<{ ok: boolean }>("/api/logout", { method: "POST" }),
   system: () => request<SystemInfo>("/api/system"),
+  nodeReady: () => request<NodeReady>("/ready"),
+  nodeCapabilities: () => request<NodeCapabilities>("/node/capabilities"),
   memory: () => request<{ current_mb: number; max_mb: number; used_pct: number }>("/api/memory"),
   scripts: () => request<{ scripts: Script[]; count: number }>("/api/scripts"),
   tasks: (limit = 100) => request<{ tasks: Task[]; count: number }>(`/api/tasks?limit=${limit}`),
