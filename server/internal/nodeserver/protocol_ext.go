@@ -98,10 +98,15 @@ func (h *Handler) ReceiptFor(verified *Verified, nodeTaskID, nodeStatus string, 
 	var resultAccountID any
 	var resultResourceVersion any
 	versionError := ""
-	if workStatus == "completed" && verified.Action != "account.quota" {
+	if workStatus == "completed" {
 		resultAccountID = verified.Payload["subject_id"]
 		if v, ok := toInt64(verified.Payload["resource_version"]); ok {
 			resultVersion := v + 1
+			if verified.Action == "account.quota" {
+				// Work's completed observation carries the observed source version.
+				// A read-only quota snapshot never advances that version.
+				resultVersion = v
+			}
 			if verified.Action == "account.refresh" || verified.Action == "account.authorize" {
 				ref, found := h.subjectRef(verified.Subject)
 				if !found {

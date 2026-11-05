@@ -71,7 +71,7 @@ func TestQuotaSnapshotSurvivesReplayInventoryChangeAndRestart(t *testing.T) {
 	}
 	first := quotaCall(t, st, p, "/tasks/op-0001/result")
 	value := first["payload"].(map[string]any)
-	if value["status"] != "completed" || value["artifact_available"] != false || value["result_resource_version"] != nil || value["result_account_id"] != nil {
+	if value["status"] != "completed" || value["artifact_available"] != false || value["result_resource_version"] != float64(1) || value["result_account_id"] != p["subject_id"] {
 		t.Fatalf("quota invented account side effect: %v", value)
 	}
 	if value["result"].(map[string]any)["observation"].(map[string]any)["available"] != float64(1) {
