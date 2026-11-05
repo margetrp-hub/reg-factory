@@ -37,6 +37,10 @@ OPENAI_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 
 def _emit(payload: dict) -> int:
     print(json.dumps(payload, ensure_ascii=False))
+    if payload.get("result") == "unknown":
+        # Distinguish an uncertain provider result from a confirmed rejection.
+        # Work must reconcile it instead of authorizing another fresh login.
+        return 75
     # The runner maps the process exit code to the Work receipt.  Returning
     # zero for relogin/unknown made a refresh look successful even though no
     # new credential document was written.

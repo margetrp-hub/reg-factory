@@ -52,6 +52,39 @@ func TestReceiptForRefreshUsesDurableVersionOnReplay(t *testing.T) {
 	}
 }
 
+func TestRefreshUnknownExitPreservesUnknownWithoutAdvancingSource(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := st.UpsertAccounts([]store.AccountSeed{{Ref: "creds:test", Identity: "test@example.com"}}); err != nil {
+		t.Fatal(err)
+	}
+	h := New(Config{NodeID: "node-sg-1"}, nil, st)
+	verified := &Verified{Action: "account.authorize", Subject: SubjectID("creds:test"), Payload: map[string]any{
+		"subject_id": SubjectID("creds:test"), "resource_version": int64(1), "task_id": "unknown-task",
+		"operation_id": "unknown-operation", "action": "account.authorize",
+	}}
+	for _, sample := range []struct {
+		exit     int
+		expected string
+	}{{75, "unknown"}, {1, "failed"}} {
+		doc, err := h.ReceiptFor(verified, "unknown-task", "failed", sample.exit, bytes.Repeat([]byte("k"), 32), time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload := doc["payload"].(map[string]any)
+		if payload["status"] != sample.expected || payload["artifact_available"] != false || payload["result_resource_version"] != nil {
+			t.Fatalf("unexpected uncertain result: %v", payload)
+		}
+	}
+	account, err := st.GetAccount("creds:test")
+	if err != nil || account.Version != 1 {
+		t.Fatalf("unknown changed source version: %v %v", account, err)
+	}
+}
+
 func TestReceiptForVersionConflictReturnsTerminalEvidence(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {

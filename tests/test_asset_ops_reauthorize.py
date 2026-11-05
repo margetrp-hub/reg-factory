@@ -23,6 +23,11 @@ def test_authorize_does_not_replay_old_refresh_grant():
         authorize.assert_called_once_with('original', '', 60)
 
 
+def test_unknown_provider_result_has_distinct_exit_code():
+    assert asset_ops._emit({'result': 'unknown'}) == 75
+    assert asset_ops._emit({'result': 'relogin_required'}) == 1
+
+
 def test_icloud_login_does_not_reuse_openai_refresh_token():
     record = login_record({'payload': {'email': 'original@icloud.com', 'refresh_token': 'old-openai', 'session_token': 'old-session', 'chatgpt_password': 'password'}})
     assert record['source_type'] == 'mailbox'
