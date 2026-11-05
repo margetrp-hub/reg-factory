@@ -3,7 +3,10 @@ package nodeserver
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -109,18 +112,66 @@ func TestExecutionLogSanitizerLimitsAndSensitiveForms(t *testing.T) {
 	}
 }
 
-func TestExecutionLogsUTF8SignatureMatchesWorkCanonical(t *testing.T) {
-	payload := map[string]any{"page": 1, "items": []map[string]any{{"text": "正在刷新 🚀 <ready> &"}}}
+func TestExecutionLogsUnicodeSignatureMatchesWorkCanonical(t *testing.T) {
+	payload := map[string]any{"page": 1, "items": []map[string]any{{"text": "正在刷新 🚀 <ready> &\nnext"}}}
 	signature, err := signWorkEvents(payload, bytes.Repeat([]byte("k"), 32))
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Independently calculated HMAC for sorted compact UTF-8 JSON, without
-	// ASCII or HTML escaping, under account-node-work-events-v1.
-	if signature != "0110eb70345de712138cf8c483d49361d95d49b4e00e3d0d506888fa642094ef" {
-		t.Fatalf("UTF-8 canonical signature mismatch: %s", signature)
+	// Independently calculated HMAC for sorted compact ASCII-escaped JSON,
+	// without HTML escaping, under account-node-work-events-v1.
+	if signature != "b85214f4b12145d0c405cc41baedc3d4e18529aed860bc7484b0823c58f262f5" {
+		t.Fatalf("Unicode canonical signature mismatch: %s", signature)
 	}
 	if _, err := Canonical(payload); err == nil {
 		t.Fatal("legacy task protocol ASCII restriction changed")
+	}
+}
+
+// Optional cross-repository fixture: Work's actual executionEvents handler
+// sends its signed reads here and verifies these actual SG handler responses.
+func TestExecutionLogsInteropServer(t *testing.T) {
+	addr := os.Getenv("SG_WORK_EVENTS_FIXTURE_ADDR")
+	if addr == "" {
+		t.Skip("cross-repository fixture not requested")
+	}
+	st, err := store.Open(filepath.Join(t.TempDir(), "interop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	operation := "11111111-1111-4111-8111-111111111111"
+	task := "work-22222222-2222-4222-8222-222222222222"
+	if _, _, err = st.ReserveOperation(operation, task, "account.refresh", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.CreateTask(store.Task{ID: task, Script: "asset_ops"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range []string{"正在刷新 🚀 <ready> &\nnext", "password=never-show token=hidden-value", "已完成"} {
+		if err = st.AppendEvent(task, "stdout", line); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h := New(Config{NodeID: "account-1", Key: bytes.Repeat([]byte("x"), 32), ReceiptKey: bytes.Repeat([]byte("y"), 32)}, nil, st)
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.POST("/internal/work/v1/tasks/:task_id/events", h.executionEvents)
+	stopped := make(chan struct{})
+	r.POST("/fixture/stop", func(c *gin.Context) { c.Status(204); close(stopped) })
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewUnstartedServer(r)
+	server.Listener.Close()
+	server.Listener = listener
+	server.StartTLS()
+	defer server.Close()
+	fmt.Println("SG_INTEROP_READY", server.URL)
+	select {
+	case <-stopped:
+	case <-time.After(120 * time.Second):
+		t.Fatal("interop caller did not finish")
 	}
 }

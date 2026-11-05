@@ -6,10 +6,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf16"
 
 	"github.com/gin-gonic/gin"
 )
@@ -42,7 +44,7 @@ func signWorkEvents(payload map[string]any, key []byte) (string, error) {
 	if len(key) < 32 {
 		return "", perr("WORK_KEY_UNCONFIGURED", 503)
 	}
-	// Execution output may contain Unicode. Match Work's UTF-8 canonical JSON;
+	// Execution output may contain Unicode. Match Work's ASCII-escaped JSON;
 	// the older task protocol's ASCII-only Canonical must remain unchanged.
 	var buffer bytes.Buffer
 	encoder := json.NewEncoder(&buffer)
@@ -50,7 +52,20 @@ func signWorkEvents(payload map[string]any, key []byte) (string, error) {
 	if err := encoder.Encode(payload); err != nil {
 		return "", err
 	}
-	raw := bytes.TrimSuffix(buffer.Bytes(), []byte("\n"))
+	var escaped strings.Builder
+	for _, r := range string(bytes.TrimSuffix(buffer.Bytes(), []byte("\n"))) {
+		if r > 126 {
+			if r > 0xffff {
+				a, b := utf16.EncodeRune(r)
+				fmt.Fprintf(&escaped, `\u%04x\u%04x`, a, b)
+			} else {
+				fmt.Fprintf(&escaped, `\u%04x`, r)
+			}
+		} else {
+			escaped.WriteRune(r)
+		}
+	}
+	raw := []byte(escaped.String())
 	mac := hmac.New(sha256.New, key)
 	mac.Write([]byte(workEventsDomain))
 	mac.Write(raw)
