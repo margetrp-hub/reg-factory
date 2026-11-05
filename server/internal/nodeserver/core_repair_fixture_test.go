@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -45,22 +46,32 @@ func TestCoreRepairFixture(t *testing.T) {
 	defer st.Close()
 	subject := ls(input.Request.Payload["subject_id"])
 	email := emailFromDocument(input.Original)
-	if _, err := st.UpsertAccounts([]store.AccountSeed{{Ref: subject, Platform: "chatgpt", Kind: "oauth", Identity: email}}); err != nil {
+	ref, decoyRef := "import:"+email, "creds:"+email
+	if _, err := st.UpsertAccounts([]store.AccountSeed{{Ref: ref, Platform: "chatgpt", Kind: "oauth", Identity: email}, {Ref: decoyRef, Platform: "chatgpt", Kind: "oauth", Identity: email}}); err != nil {
 		t.Fatal(err)
 	}
+	if err := st.BindAccountSubject(subject, ref, strings.Repeat("a", 64)); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.BindAccountSubject(subject, decoyRef, strings.Repeat("b", 64)); err == nil {
+		t.Fatal("alias repoint accepted")
+	}
 	for version := 1; version < int(li(input.Request.Payload["resource_version"])); version++ {
-		if err := st.AdvanceAccountVersion(subject, version); err != nil {
+		if err := st.AdvanceAccountVersion(ref, version); err != nil {
 			t.Fatal(err)
 		}
 	}
 	assets := assetstore.New(root)
 	put := func(doc map[string]any) {
 		t.Helper()
-		if err := assets.Put(assetstore.Asset{Ref: subject, Platform: "chatgpt", Kind: "oauth", Email: email, Payload: doc}); err != nil {
+		if err := assets.Put(assetstore.Asset{Ref: ref, Platform: "chatgpt", Kind: "oauth", Email: email, Payload: doc}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	put(input.Original)
+	if err := assets.Put(assetstore.Asset{Ref: decoyRef, Platform: "chatgpt", Kind: "oauth", Email: email, Payload: map[string]any{"email": email, "refresh_token": "decoy-other-workspace", "workspace_account_id": "other-workspace"}}); err != nil {
+		t.Fatal(err)
+	}
 	// A historical producer file must not win over the rotated canonical asset.
 	oldDir := filepath.Join(root, "plus-import", "team-json")
 	if err := os.MkdirAll(oldDir, 0700); err != nil {
@@ -108,6 +119,13 @@ func TestCoreRepairFixture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var argv []string
+	if err := json.Unmarshal([]byte(local.ArgsJSON), &argv); err != nil {
+		t.Fatal(err)
+	}
+	if len(argv) < 3 || argv[1] != "--ref" || argv[2] != ref {
+		t.Fatalf("executor did not resolve canonical ref: %v", argv)
+	}
 	status := input.Status
 	if status == "" {
 		status = "succeeded"
@@ -126,9 +144,13 @@ func TestCoreRepairFixture(t *testing.T) {
 		artifact = call("/tasks/"+ticket+"/artifact", read)
 	}
 	recovered := call("/resolve", read)
-	account, err := st.GetAccount(subject)
+	account, err := st.GetAccount(ref)
 	if err != nil {
 		t.Fatal(err)
+	}
+	decoy, err := st.GetAccount(decoyRef)
+	if err != nil || decoy.Version != 1 {
+		t.Fatalf("decoy version changed: %v", err)
 	}
 	output, err := json.Marshal(map[string]any{"ack": ack, "duplicate": duplicate, "pending": pending, "receipt": receipt, "artifact": artifact, "recovered": recovered, "account_version": account.Version, "argv": local.ArgsJSON})
 	if err != nil {

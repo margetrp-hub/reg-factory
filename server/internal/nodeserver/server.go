@@ -266,7 +266,11 @@ func (h *Handler) registerTask(mailbox string) (string, string) {
 // authorizeArgv 把 account.authorize 映射成 asset_ops refresh（允许重新登录）。
 func (h *Handler) authorizeArgv(v *Verified) string {
 	platform := strings.TrimSpace(h.cfg.Platform)
-	argv := []string{"refresh", "--ref", v.Subject, "--allow-relogin"}
+	ref := v.Subject
+	if resolved, ok := h.subjectRef(ref); ok {
+		ref = resolved
+	}
+	argv := []string{"refresh", "--ref", ref, "--allow-relogin"}
 	if email := h.subjectEmail(v); email != "" {
 		argv = append(argv, "--email", email)
 	}
@@ -280,11 +284,15 @@ func (h *Handler) authorizeArgv(v *Verified) string {
 // assetOpArgv 把 Work 动作映射成 asset_ops.py 的参数数组。
 func (h *Handler) assetOpArgv(v *Verified) string {
 	platform := strings.TrimSpace(h.cfg.Platform)
+	ref := v.Subject
+	if resolved, ok := h.subjectRef(ref); ok {
+		ref = resolved
+	}
 	argv := []string{}
 	if v.Action == "account.refresh" {
-		argv = append(argv, "refresh", "--ref", v.Subject)
+		argv = append(argv, "refresh", "--ref", ref)
 	} else {
-		argv = append(argv, "liveness", "--ref", v.Subject)
+		argv = append(argv, "liveness", "--ref", ref)
 	}
 	if email := h.subjectEmail(v); email != "" {
 		argv = append(argv, "--email", email)

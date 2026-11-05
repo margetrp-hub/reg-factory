@@ -124,6 +124,13 @@ CREATE TABLE IF NOT EXISTS accounts (
 );
 CREATE INDEX IF NOT EXISTS idx_accounts_kind ON accounts(kind, platform, status);
 
+CREATE TABLE IF NOT EXISTS account_subject_aliases (
+  subject_id TEXT PRIMARY KEY,
+  account_ref TEXT NOT NULL REFERENCES accounts(ref),
+  evidence_sha256 TEXT NOT NULL CHECK(length(evidence_sha256) = 64),
+  created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS account_credentials (
   ref TEXT PRIMARY KEY,
   password TEXT NOT NULL DEFAULT '',

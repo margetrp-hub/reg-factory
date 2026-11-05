@@ -225,7 +225,8 @@ def _credential_matches(ref: str, path: Path, document: dict) -> bool:
         _json_email(document).lower(),
     }
     email = _json_email(document)
-    if email:
+    explicit_ref = str(document.get("ref") or payload.get("ref") or "").strip()
+    if email and not explicit_ref:
         candidates.update({
             email.lower(),
             f"creds:{email}".lower(),
@@ -323,7 +324,7 @@ def _refresh_document_copies(ref: str, email: str, selected_path: Path,
     The unified asset store and the historical ``plus-import/team-json`` tree
     are both read by deployed SG images. Updating only the first match makes a
     customer download the old document after a successful 401 repair. Match
-    by the stable Work subject and by email, then write each file atomically.
+    by the original source credentials, never email alone, then write atomically.
     """
     targets: list[tuple[Path, dict]] = [(selected_path, selected_document)]
     seen = {str(selected_path.resolve())}
@@ -343,7 +344,7 @@ def _refresh_document_copies(ref: str, email: str, selected_path: Path,
                 continue
             if not isinstance(document, dict):
                 continue
-            if _credential_matches(ref, path, document) or (email and _credential_matches(email, path, document)):
+            if _same_oauth_source(selected_document, document):
                 targets.append((path, document))
                 seen.add(key)
 
@@ -355,13 +356,28 @@ def _refresh_document_copies(ref: str, email: str, selected_path: Path,
     return written
 
 
+def _same_oauth_source(selected: dict, candidate: dict) -> bool:
+    left = selected.get("payload") if isinstance(selected.get("payload"), dict) else selected
+    right = candidate.get("payload") if isinstance(candidate.get("payload"), dict) else candidate
+    # A shared email can represent distinct workspaces and OAuth sessions.
+    for key in ("workspace_account_id", "chatgpt_account_id", "account_id", "chatgpt_user_id", "user_id"):
+        if left.get(key) and right.get(key) and left[key] != right[key]:
+            return False
+    left_ref = selected.get("ref") or left.get("ref")
+    right_ref = candidate.get("ref") or right.get("ref")
+    if left_ref and right_ref:
+        return left_ref == right_ref
+    left_tokens, right_tokens = _token_map(selected) or {}, _token_map(candidate) or {}
+    left_refresh = left_tokens.get("refresh_token") or left_tokens.get("refreshToken")
+    right_refresh = right_tokens.get("refresh_token") or right_tokens.get("refreshToken")
+    return bool(left_refresh and left_refresh == right_refresh)
+
+
 def _refresh_chatgpt(ref: str, email: str = "") -> dict:
     """Refresh a ChatGPT OAuth record and atomically persist the new JSON."""
     import requests
 
-    found = _find_credential(email) if email else None
-    if not found:
-        found = _find_credential(ref)
+    found = _find_credential(ref or email)
     if not found:
         return {"ref": ref, "result": "relogin_required", "message": "找不到可刷新凭据"}
     path, document = found

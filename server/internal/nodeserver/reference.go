@@ -36,6 +36,7 @@ func SubjectID(ref string) string {
 
 // subjectRef 反查：给定 UUID 找本地 ref。
 func (h *Handler) subjectRef(subject string) (string, bool) {
+	alias, _ := h.st.AccountSubjectRef(subject)
 	if strings.Contains(subject, ":") {
 		return subject, true
 	}
@@ -47,13 +48,19 @@ func (h *Handler) subjectRef(subject string) (string, bool) {
 		// Core may use the canonical account UUID directly for local intake.
 		// Keep accepting the older deterministic SubjectID(ref) projection too.
 		if a.Ref == subject {
+			if alias != "" && alias != a.Ref {
+				return "", false
+			}
 			return a.Ref, true
 		}
 		if SubjectID(a.Ref) == subject {
+			if alias != "" && alias != a.Ref {
+				return "", false
+			}
 			return a.Ref, true
 		}
 	}
-	return "", false
+	return alias, alias != ""
 }
 
 // parseStamp 把节点的 RFC3339 时间转成 Unix 秒；解析失败返回 0，
