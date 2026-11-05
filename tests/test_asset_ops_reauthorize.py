@@ -7,6 +7,8 @@ import pytest
 
 from tools import asset_ops
 from tools.chatgpt_reauthorize import login_record, validate_identity
+from tools.chatgpt_reauthorize import authorize_document
+import asyncio
 
 
 def jwt(claims):
@@ -36,6 +38,18 @@ def test_workspace_identity_is_checked_before_persistence():
         validate_identity(doc, {'access_token': token})
     token = jwt({'email': doc['email'], 'https://api.openai.com/auth': {'chatgpt_account_id': 'workspace-original'}})
     validate_identity(doc, {'access_token': token})
+
+
+def test_password_totp_uses_supplier_protocol_and_preserves_workspace():
+    doc = {'payload': {'email': 'original@icloud.com', 'password': 'original-password', 'totp': 'JBSWY3DPEHPK3PXP', 'workspace_account_id': 'original-workspace'}}
+    token = jwt({'email': doc['payload']['email'], 'exp': 4102444800, 'https://api.openai.com/auth': {'chatgpt_account_id': 'original-workspace'}})
+    with patch('vendor.reauth_web.engine.reauth_account', return_value={'payloads': {'cpa': {'access_token': token, 'refresh_token': 'fresh'}}}) as reauth:
+        result = asyncio.run(authorize_document(doc))
+    account, settings = reauth.call_args.args
+    assert account.password == 'original-password'
+    assert account.totp_secret == 'JBSWY3DPEHPK3PXP'
+    assert settings.extra['workspace_id'] == 'original-workspace'
+    assert result['refresh_token'] == 'fresh'
 
 
 def test_fresh_authorization_persists_original_copies_but_unknown_preserves_them(tmp_path, monkeypatch):

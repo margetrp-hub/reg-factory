@@ -1248,7 +1248,7 @@ class OAuthClient:
         return ""
 
     def _select_workspace_for_callback(self, current_url, html_text, expected_state, redirect_uri, user_agent, impersonate, device_id, max_hops, oauth_protocol):
-        workspace_id = self._extract_workspace_id_from_session() or self._extract_workspace_id_from_html(html_text or "")
+        workspace_id = str(self.config.get("workspace_id") or "").strip() or self._extract_workspace_id_from_session() or self._extract_workspace_id_from_html(html_text or "")
         if not workspace_id:
             return None, ""
         headers = {

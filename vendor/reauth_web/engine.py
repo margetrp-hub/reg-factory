@@ -68,6 +68,7 @@ def _oauth_config(settings: Settings) -> dict:
         "oauth_email_otp_timeout": 150,
         "sub2api_oauth_impersonates": settings.impersonates,
         "sub2api_redirect_uri": OAUTH_REDIRECT_URI,
+        "workspace_id": str(settings.extra.get("workspace_id") or ""),
     }
 
 

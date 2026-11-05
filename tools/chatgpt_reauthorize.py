@@ -57,12 +57,16 @@ def validate_identity(document: dict, tokens: dict) -> None:
 
 
 async def authorize_document(document: dict, *, timeout: int = 600) -> dict:
+    record = login_record(document)
+    if record.get("account_password") and record.get("two_factor"):
+        # The supplier already has a complete protocol login implementation.
+        # Password/TOTP accounts do not depend on a desktop browser process.
+        return await asyncio.to_thread(_authorize_protocol, document, record, timeout)
     from playwright.async_api import async_playwright
     from common.browser import open_and_connect, teardown
     from common.oauth_codex import drive_authorize, REDIRECT_URI
     from tools.import_plus_codex import MailCodeProvider
 
-    record = login_record(document)
     value = document.get("payload", document)
     verifier, state = secrets.token_urlsafe(48), secrets.token_urlsafe(32)
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
@@ -100,6 +104,30 @@ async def authorize_document(document: dict, *, timeout: int = 600) -> dict:
         finally:
             if handle and profile_id:
                 await teardown(handle, profile_id)
+
+
+def _authorize_protocol(document: dict, record: dict, timeout: int) -> dict:
+    from pathlib import Path
+    from vendor.reauth_web.config import Settings
+    from vendor.reauth_web.engine import reauth_account
+    from vendor.reauth_web.parsing import AccountLine
+    from common import proxy_switch
+
+    value = document.get("payload", document)
+    settings = Settings(data_dir=Path(os.environ.get("REG_FACTORY_DATA_DIR") or "."),
+        proxy=proxy_switch.effective_proxy_url() or "", account_timeout_seconds=timeout,
+        extra={"workspace_id": str(value.get("workspace_account_id") or value.get("chatgpt_account_id") or value.get("account_id") or "")})
+    account = AccountLine(email=record["email"], password=record["account_password"],
+        totp_secret=record["two_factor"], raw="")
+    print("[reauthorize] SG启动原账号密码/TOTP协议授权", flush=True)
+    result = reauth_account(account, settings,
+        on_step=lambda step, _message: print(f"[reauthorize] SG授权步骤 {step}", flush=True))
+    tokens = dict(result["payloads"]["cpa"])
+    validate_identity(document, tokens)
+    expires_at = int(_claims(tokens["access_token"]).get("exp") or 0)
+    tokens["expires_at"] = expires_at
+    tokens["expires_in"] = max(0, expires_at - int(time.time())) if expires_at else 0
+    return tokens
 
 
 def _exchange(code: str, verifier: str, client_id: str, redirect_uri: str) -> dict:
