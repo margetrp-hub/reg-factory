@@ -118,6 +118,7 @@ func (h *Handler) Register(r *gin.Engine) {
 	group.POST("/tasks", h.acceptTask)
 	group.GET("/tasks/:task_id", h.taskStatus)
 	group.POST("/tasks/:task_id/result", h.taskReceipt)
+	group.POST("/tasks/:task_id/events", h.executionEvents)
 	group.POST("/tasks/:task_id/artifact", h.workArtifact)
 	group.POST("/resolve", h.resolveTask)
 	group.POST("/inventory/library", h.accountLibrary)
