@@ -7,9 +7,9 @@
 # 用法：
 #   scp -r reg-factory ubuntu@<实例IP>:~/ && ssh ubuntu@<实例IP>
 #   cd ~/reg-factory/deploy && sudo ./deploy-oci-sg.sh
-#   sudo ./deploy-oci-sg.sh --publish 8799        # 直接暴露 8799（无 HTTPS）
+#   sudo ./deploy-oci-sg.sh --publish 8800        # 直接暴露 8800（无 HTTPS）
 #
-# 注意：OCI 还有一层「安全列表 / NSG」，必须在控制台放行 80/443（或 8799），
+# 注意：OCI 还有一层「安全列表 / NSG」，必须在控制台放行 80/443（或 8800），
 # 脚本会打印对应 ingress 规则，但不会替你改云上配置。
 set -euo pipefail
 
@@ -20,7 +20,7 @@ PUBLISH=""
 ASSUME_YES=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    --publish) PUBLISH="${2:-8799}"; shift 2 ;;
+    --publish) PUBLISH="${2:?--publish 需要宿主端口或 IP:端口}"; shift 2 ;;
     --yes|-y) ASSUME_YES=1; shift ;;
     -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
     *) echo "未知参数: $1" >&2; exit 2 ;;
@@ -145,21 +145,25 @@ else
 fi
 
 if [ -n "${PUBLISH}" ]; then
-  PORT_ONLY="${PUBLISH##*:}"
+  # RF_PUBLISH 只保存宿主地址和端口，容器 8800 由 compose 追加。
+  case "${PUBLISH}" in
+    *:*) PUBLISH_BINDING="${PUBLISH}" ;;
+    *) PUBLISH_BINDING="0.0.0.0:${PUBLISH}" ;;
+  esac
   if grep -q '^RF_PUBLISH=' .env; then
-    sed -i "s|^RF_PUBLISH=.*|RF_PUBLISH=${PUBLISH}:8799|" .env
+    sed -i "s|^RF_PUBLISH=.*|RF_PUBLISH=${PUBLISH_BINDING}|" .env
   else
-    printf '\nRF_PUBLISH=%s:8799\n' "${PUBLISH}" >> .env
+    printf '\nRF_PUBLISH=%s\n' "${PUBLISH_BINDING}" >> .env
   fi
-  log "端口发布改为 ${PUBLISH}:8799"
+  log "端口发布改为 ${PUBLISH_BINDING} -> 8800"
 fi
 
 # ------------------------------------------------------------ 4. 构建 & 启动
 log "构建镜像（首次需下载 Playwright Chromium，5-15 分钟）"
-"${DOCKER[@]}" compose build
+"${DOCKER[@]}" compose build panel
 
 log "启动服务"
-"${DOCKER[@]}" compose up -d
+"${DOCKER[@]}" compose up -d --no-build panel
 
 log "等待健康检查"
 for i in $(seq 1 60); do
@@ -168,9 +172,18 @@ for i in $(seq 1 60); do
   [ "${status}" = "unhealthy" ] && { "${DOCKER[@]}" compose logs --tail 80 panel; fail "容器不健康，见上方日志"; }
   sleep 3
 done
+if [ "${status}" != "healthy" ]; then
+  "${DOCKER[@]}" compose logs --tail 80 panel
+  fail "等待健康检查超时（最后状态 ${status}）"
+fi
 
 # ------------------------------------------------------------ 5. 冒烟
-bash ./smoke-test.sh || warn "冒烟测试未全部通过，请检查 docker compose logs -f panel"
+PUBLISHED="$("${DOCKER[@]}" compose port panel 8800 | head -1)"
+case "${PUBLISHED}" in
+  0.0.0.0:*) PUBLISHED="127.0.0.1:${PUBLISHED##*:}" ;;
+esac
+RF_BASE="${RF_BASE:-http://${PUBLISHED}}" bash ./smoke-test.sh \
+  || fail "冒烟测试未全部通过，请检查 docker compose logs -f panel"
 
 # ------------------------------------------------------------ 6. 摘要
 PUBLIC_IP="$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || echo '<实例公网IP>')"

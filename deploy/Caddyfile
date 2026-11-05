@@ -4,9 +4,10 @@
 # Caddy 会自动申请并续期 Let's Encrypt 证书（80/443 需在 OCI 安全列表放行）。
 #
 # 注意：
-#   * SSE（/api/logs/<run_id>）必须关闭缓冲，否则运行日志会攒着不下发；
-#   * 面板会传大段账号文本（/api/authorize-outlook 上限 5MB），请求体放宽；
-#   * 上游固定 127.0.0.1:8799，不直接暴露容器端口。
+#   * SSE（/api/logs/stream、/api/tasks/<id>/stream）必须关闭缓冲；
+#   * 账号导入会传大段文本，请求体放宽；
+#   * 本样例用于 Compose 中的 Caddy 服务，通过服务名连接 panel:8800。
+#     Caddy 安装在宿主机时，将上游改成 127.0.0.1:8800。
 
 {
 	email you@example.com
@@ -21,7 +22,7 @@ panel.example.com {
 		max_size 16MB
 	}
 
-	reverse_proxy 127.0.0.1:8799 {
+	reverse_proxy panel:8800 {
 		# SSE 长连接不缓冲
 		flush_interval -1
 		header_up X-Forwarded-Proto {scheme}

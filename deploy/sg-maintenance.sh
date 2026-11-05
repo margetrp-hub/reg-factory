@@ -19,6 +19,7 @@ BACKUP_DIR="${BACKUP_DIR:-/opt/reg-factory/backups}"
 PROFILE_DAYS="${PROFILE_DAYS:-3}"
 BACKUP_KEEP="${BACKUP_KEEP:-7}"
 CONTAINER="${CONTAINER:-reg-factory}"
+BASE="${RF_BASE:-http://127.0.0.1:8800}"
 
 DRY=0
 BACKUP_ONLY=0
@@ -93,6 +94,14 @@ case "${STATUS}" in
   running/healthy) log "容器状态 ${STATUS}" ;;
   *) log "异常：容器状态 ${STATUS}"; FAIL=1 ;;
 esac
+
+if curl -fsS --max-time 5 "${BASE}/api/health" >/dev/null; then
+  log "regd 健康检查通过"
+else
+  log "异常：${BASE}/api/health 不可用"
+  FAIL=1
+fi
+log "regd 内存水位：$(curl -fsS --max-time 5 "${BASE}/api/memory" 2>/dev/null || echo unavailable)"
 
 DISK_USE="$(df --output=pcent / | tail -1 | tr -dc '0-9')"
 MEM_AVAIL_MB="$(awk '/MemAvailable/ {print int($2/1024)}' /proc/meminfo)"

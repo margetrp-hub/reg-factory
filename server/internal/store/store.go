@@ -286,10 +286,13 @@ func (s *Store) TailEvents(taskID string, limit int) ([]Event, error) {
 	if limit <= 0 || limit > 20000 {
 		limit = 2000
 	}
-	rows, err := s.db.Query(
-		`SELECT id, task_id, ts, stream, line FROM events
-		 WHERE task_id=? ORDER BY id DESC LIMIT ?`, taskID, limit,
-	)
+	query := `SELECT id, task_id, ts, stream, line FROM events`
+	args := []any{}
+	if taskID != "" {
+		query += ` WHERE task_id=?`
+		args = append(args, taskID)
+	}
+	rows, err := s.db.Query(query+` ORDER BY id DESC LIMIT ?`, append(args, limit)...)
 	if err != nil {
 		return nil, err
 	}
@@ -305,6 +308,34 @@ func (s *Store) TailEvents(taskID string, limit int) ([]Event, error) {
 	// 反转为升序
 	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
 		out[i], out[j] = out[j], out[i]
+	}
+	return out, rows.Err()
+}
+
+// EventsAfter reads the persisted cursor, including output missed while offline.
+// An empty taskID selects the unified system and task terminal.
+func (s *Store) EventsAfter(taskID string, after int64, limit int) ([]Event, error) {
+	if limit <= 0 || limit > 20000 {
+		limit = 1000
+	}
+	query := `SELECT id, task_id, ts, stream, line FROM events WHERE id>?`
+	args := []any{after}
+	if taskID != "" {
+		query += ` AND task_id=?`
+		args = append(args, taskID)
+	}
+	rows, err := s.db.Query(query+` ORDER BY id LIMIT ?`, append(args, limit)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Event{}
+	for rows.Next() {
+		var event Event
+		if err := rows.Scan(&event.ID, &event.TaskID, &event.TS, &event.Stream, &event.Line); err != nil {
+			return nil, err
+		}
+		out = append(out, event)
 	}
 	return out, rows.Err()
 }

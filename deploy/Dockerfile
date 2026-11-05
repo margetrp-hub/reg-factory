@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1.7
 #
-# reg-factory 服务器镜像（linux/amd64 + linux/arm64，甲骨文 A1 免费 ARM 可用）
+# reg-factory 统一镜像：regd 控制面 + 内嵌前端 + Python worker
+# linux/amd64 + linux/arm64；从干净 checkout 一次构建，无需预先准备项目镜像。
 #
 # 设计要点：
 #   * 基础镜像 Debian bookworm slim，Playwright 官方支持，依赖库齐全
@@ -11,7 +12,31 @@
 #   * 数据全部落 /data（单卷即可备份/迁移）
 
 ARG PYTHON_IMAGE=python:3.11-slim-bookworm
-FROM ${PYTHON_IMAGE}
+ARG GO_IMAGE=golang:1.26-bookworm
+ARG NODE_IMAGE=node:22-bookworm-slim
+
+# ---------------------------------------------------------------- 前端
+FROM ${NODE_IMAGE} AS web
+WORKDIR /web
+ENV NEXT_TELEMETRY_DISABLED=1 CI=1
+RUN corepack enable && corepack prepare pnpm@10.18.2 --activate
+COPY server/web/package.json server/web/pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile --config.minimumReleaseAge=0
+COPY server/web/ ./
+RUN pnpm build
+
+# ---------------------------------------------------------------- Go
+FROM ${GO_IMAGE} AS api
+WORKDIR /src
+ENV CGO_ENABLED=0 GOPROXY=https://goproxy.cn,direct
+COPY server/go.mod server/go.sum ./
+RUN go mod download
+COPY server/ ./
+COPY --from=web /web/out ./webdist
+RUN go build -trimpath -ldflags="-s -w" -o /out/regd ./cmd/regd
+
+# ---------------------------------------------------------------- Python worker 运行时
+FROM ${PYTHON_IMAGE} AS runtime
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG INSTALL_CLOAK=0
@@ -75,28 +100,30 @@ RUN set -eux; \
 
 WORKDIR /app
 COPY . /app
+COPY --from=api /out/regd /usr/local/bin/regd
 
 RUN set -eux; \
     # 从 Windows 工作区复制进来时统一去掉 CRLF，避免 /bin/bash^M 报错
     find /app/deploy -maxdepth 1 -type f \( -name '*.sh' -o -name '*.py' -o -name 'Caddyfile' \) \
         -exec sed -i 's/\r$//' {} + ; \
-    chmod +x /app/deploy/entrypoint.sh /app/deploy/deploy-oci-sg.sh /app/deploy/smoke-test.sh 2>/dev/null || true; \
-    chown -R rf:rf /app 2>/dev/null || true; \
-    python -m compileall -q /app/deploy /app/webui /app/common >/dev/null || true
+    chmod +x /app/deploy/entrypoint-go.sh /usr/local/bin/regd; \
+    python /app/server/tools/export_schema.py; \
+    chown -R rf:rf /app
 
-ENV REG_FACTORY_DATA_DIR=/data \
+ENV REGD_ADDR=0.0.0.0:8800 \
+    REGD_APP_ROOT=/app \
+    REGD_DB=/data/regd.db \
+    REGD_PYTHON=python3 \
+    REG_FACTORY_DATA_DIR=/data \
     REG_FACTORY_ENV_FILE=/data/.env \
-    REG_FACTORY_HOST=0.0.0.0 \
-    REG_FACTORY_PORT=8799 \
     REG_FACTORY_XVFB=1 \
     REG_FACTORY_BROWSER_HEADLESS=0 \
     REG_FACTORY_RUN_USER=rf
 
 VOLUME ["/data"]
-EXPOSE 8799
+EXPOSE 8800
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
-    CMD curl -fsS "http://127.0.0.1:${REG_FACTORY_PORT}/__rf/health" >/dev/null || exit 1
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD curl -fsS "http://127.0.0.1:${REGD_ADDR##*:}/api/health" >/dev/null || exit 1
 
-ENTRYPOINT ["/usr/bin/tini", "--", "/app/deploy/entrypoint.sh"]
-CMD ["python", "-m", "deploy.serve"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/app/deploy/entrypoint-go.sh"]

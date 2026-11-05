@@ -37,7 +37,7 @@ const CONTEXT_LINKS: Record<NavSection, { href: string; label: string }[]> = {
   ],
   nodes: [
     { href: "/nodes/", label: "节点总览" },
-    { href: "/settings/?focus=node", label: "节点配置" },
+    { href: "/nodes/config/", label: "节点配置" },
     { href: "/tasks/", label: "节点运行日志" },
   ],
   system: [
@@ -115,18 +115,14 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const activeItem = NAV.find((item) =>
     item.href === "/" ? pathname === "/" : pathname.startsWith(item.href.replace(/\/$/, "")),
   );
-  const nodeConfigFocused = pathname.startsWith("/settings") &&
-    typeof window !== "undefined" && new URLSearchParams(window.location.search).get("focus") === "node";
-  const activeSection: NavSection = nodeConfigFocused ? "nodes" : activeItem?.section ||
+  const activeSection: NavSection = activeItem?.section ||
     (pathname.startsWith("/platform/") ? "production" :
       pathname.startsWith("/apps/icmail") || pathname.startsWith("/materials") ? "supply" :
       pathname.startsWith("/nodes") ? "nodes" :
         pathname.startsWith("/audit") ? "runtime" : "workspace");
-  const activeContext = CONTEXT_LINKS[activeSection].find((item) => {
-    const [itemPath, itemQuery] = item.href.split("?");
-    if (itemQuery === "focus=node") return nodeConfigFocused;
-    return itemPath === "/" ? pathname === "/" : pathname.startsWith(itemPath.replace(/\/$/, ""));
-  });
+  const activeContext = CONTEXT_LINKS[activeSection]
+    .filter((item) => pathname === item.href.replace(/\/$/, "") || pathname.startsWith(item.href))
+    .sort((a, b) => b.href.length - a.href.length)[0];
   const activeLabel = activeContext?.label || activeItem?.label || "工作台";
 
   return (
@@ -162,11 +158,12 @@ export function Shell({ children }: { children: React.ReactNode }) {
                 {active && CONTEXT_LINKS[item.section].length > 0 && (
                   <div className="ml-3 mt-1 space-y-0.5 border-l border-sidebar-border pl-3">
                     {CONTEXT_LINKS[item.section].map((link) => {
-                      const selected = pathname === link.href || pathname.startsWith(link.href);
+                      const selected = activeContext?.href === link.href;
                       return (
                         <Link
                           key={link.href}
                           href={link.href}
+                          aria-current={selected ? "page" : undefined}
                           onClick={() => setOpen(false)}
                           className={`block rounded-md px-2.5 py-1.5 text-[12px] transition-colors ${
                             selected ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground" : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"

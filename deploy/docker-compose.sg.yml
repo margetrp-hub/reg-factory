@@ -6,7 +6,7 @@
 # 设计依据（2026-10-31 实测）：
 #   * 主机 4 vCPU / 24GB，已用约 4.6GB，可用约 19GB
 #   * 单 Chromium 峰值 500MB-1GB，3 并发 + 面板 ≈ 4GB
-#   * 上限 8GB / 2.5 vCPU：既够 3-4 并发，又不会把现役业务挤到 OOM
+#   * 上限 8GB / 3 vCPU：给浏览器任务设置资源上限
 #   * memswap_limit 与 mem_limit 相等 = 容器内禁用 swap，避免整机卡死
 #
 # 为什么用 host 网络：
@@ -19,13 +19,9 @@
 
 services:
   panel:
-    build:
-      context: ..
-      dockerfile: deploy/Dockerfile.go
-    image: "${REG_FACTORY_IMAGE:-reg-factory:unified}"
-    container_name: reg-factory
     network_mode: host
-    ports: []
+    # 空列表会与基础文件的 ports 合并；显式 reset 才能移除端口发布。
+    ports: !reset []
     mem_limit: 8g
     memswap_limit: 8g
     # 软限制：让内核优先回收页缓存，而不是等到 8G 硬顶触发 OOM kill
@@ -33,26 +29,8 @@ services:
     cpus: "3.0"
     pids_limit: 4096
     environment:
-      TZ: "${TZ:-Asia/Singapore}"
-      REG_FACTORY_HOST: 127.0.0.1
       REGD_ADDR: "127.0.0.1:8800"
-      REGD_APP_ROOT: /app
-      REGD_DB: /data/regd.db
-      REG_FACTORY_DATA_DIR: /data
-      REG_FACTORY_ENV_FILE: /data/.env
-      REG_FACTORY_NODE_ARTIFACT_KEY: "${ACCOUNT_NODE_TEAM_ARTIFACT_KEY:?需在 deploy/.env 配置}"
-      REG_FACTORY_NODE_PLATFORM: chatgpt
+      # 节点身份、平台与密钥沿用 deploy/.env / /data/.env，不在 override 改写。
     labels:
       - "com.reg-factory.role=control-plane"
       - "com.reg-factory.host=sg"
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8800/api/health >/dev/null || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 30s
-    logging:
-      driver: json-file
-      options:
-        max-size: "20m"
-        max-file: "5"

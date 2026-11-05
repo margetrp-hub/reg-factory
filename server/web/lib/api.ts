@@ -34,7 +34,7 @@ export type Task = {
   actor: string;
 };
 
-export type LogEvent = { ts: string; stream: string; line: string };
+export type LogEvent = { id: number; task_id: string; ts: string; stream: string; line: string };
 
 export type SystemInfo = {
   version: string;

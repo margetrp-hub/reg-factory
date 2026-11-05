@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,14 +31,6 @@ type MemInfo struct {
 	UsedPct   float64 `json:"used_pct"`
 }
 
-// Line 是广播给 SSE 的一行。
-type Line struct {
-	ID     int64  `json:"id"`
-	TS     string `json:"ts"`
-	Stream string `json:"stream"`
-	Line   string `json:"line"`
-}
-
 // Manager 管理所有 worker 进程。
 type Manager struct {
 	cfg *settings.Settings
@@ -45,7 +38,6 @@ type Manager struct {
 
 	mu    sync.Mutex
 	procs map[string]*proc
-	subs  map[string]map[chan Line]struct{}
 	slots int
 	// weight 是当前占用的“浏览器槽位”总数。任务可用 --concurrency 一次占多槽，
 	// 避免“全局 6 并发 × 任务内 3 并发”互相超卖把内存打爆。
@@ -76,7 +68,6 @@ func New(cfg *settings.Settings, st *store.Store) *Manager {
 		cfg:       cfg,
 		st:        st,
 		procs:     map[string]*proc{},
-		subs:      map[string]map[chan Line]struct{}{},
 		wake:      make(chan struct{}, 1),
 		stop:      make(chan struct{}),
 		startedAt: time.Now(),
@@ -140,40 +131,9 @@ func (m *Manager) Guarded() bool {
 
 // ---------------------------------------------------------------- 订阅
 
-// Subscribe 订阅某任务的实时日志；返回取消函数。
-func (m *Manager) Subscribe(taskID string) (<-chan Line, func()) {
-	ch := make(chan Line, 256)
-	m.mu.Lock()
-	if m.subs[taskID] == nil {
-		m.subs[taskID] = map[chan Line]struct{}{}
-	}
-	m.subs[taskID][ch] = struct{}{}
-	m.mu.Unlock()
-
-	cancel := func() {
-		m.mu.Lock()
-		if set, ok := m.subs[taskID]; ok {
-			if _, exists := set[ch]; exists {
-				delete(set, ch)
-				close(ch)
-			}
-			if len(set) == 0 {
-				delete(m.subs, taskID)
-			}
-		}
-		m.mu.Unlock()
-	}
-	return ch, cancel
-}
-
-func (m *Manager) broadcast(taskID string, line Line) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for ch := range m.subs[taskID] {
-		select {
-		case ch <- line:
-		default: // 慢消费者丢弃，避免拖住 worker
-		}
+func (m *Manager) record(taskID, stream, line string) {
+	if err := m.st.AppendEvent(taskID, stream, line); err != nil {
+		log.Printf("[runner] task=%s log persistence failed: %v", taskID, err)
 	}
 }
 
@@ -215,6 +175,7 @@ func (m *Manager) dispatch() {
 				}
 			}
 			if err := m.launch(*next, w); err != nil {
+				m.record(next.ID, "system", "启动失败: "+err.Error())
 				_ = m.st.Finish(next.ID, "failed", -1, err.Error())
 				continue
 			}
@@ -399,13 +360,13 @@ func (m *Manager) launch(task store.Task, weight int) error {
 	m.weight += weight
 	m.mu.Unlock()
 	_ = m.st.MarkRunning(task.ID, cmd.Process.Pid)
+	m.record(task.ID, "system", fmt.Sprintf("任务启动 script=%s pid=%d", task.Script, cmd.Process.Pid))
 
 	// 任务超时保护：注册流程卡住时释放槽位，避免队头阻塞
 	var timer *time.Timer
 	if timeout := m.taskTimeout(); timeout > 0 {
 		timer = time.AfterFunc(timeout, func() {
-			m.broadcast(task.ID, Line{TS: time.Now().Format(time.RFC3339), Stream: "system",
-				Line: fmt.Sprintf("[regd] 任务超过 %s 未结束，强制终止", timeout)})
+			m.record(task.ID, "system", fmt.Sprintf("[regd] 任务超过 %s 未结束，强制终止", timeout))
 			_ = killGroup(cmd.Process.Pid, 5*time.Second)
 		})
 	}
@@ -417,8 +378,10 @@ func (m *Manager) launch(task store.Task, weight int) error {
 		scanner.Buffer(make([]byte, 0, 64*1024), 512*1024)
 		for scanner.Scan() {
 			text := scanner.Text()
-			_ = m.st.AppendEvent(task.ID, stream, text)
-			m.broadcast(task.ID, Line{TS: time.Now().Format(time.RFC3339), Stream: stream, Line: text})
+			m.record(task.ID, stream, text)
+		}
+		if err := scanner.Err(); err != nil {
+			m.record(task.ID, "system", "读取输出失败: "+err.Error())
 		}
 	}
 	wg.Add(2)
@@ -458,10 +421,9 @@ func (m *Manager) launch(task store.Task, weight int) error {
 				status = "failed"
 			}
 		}
+		m.record(task.ID, "system", fmt.Sprintf("[regd] 任务结束 status=%s exit=%d", status, code))
 		_ = m.st.Finish(task.ID, status, code, message)
 		m.afterFinish(task, status, code)
-		m.broadcast(task.ID, Line{TS: time.Now().Format(time.RFC3339), Stream: "system",
-			Line: fmt.Sprintf("[regd] 任务结束 status=%s exit=%d", status, code)})
 		m.Wake()
 	}()
 	return nil
@@ -479,6 +441,7 @@ func (m *Manager) Stop(taskID string) error {
 	if entry == nil {
 		// 还没启动的排队任务：直接标记停止
 		if task, err := m.st.GetTask(taskID); err == nil && task.Status == "queued" {
+			m.record(taskID, "system", "任务在启动前已停止")
 			return m.st.Finish(taskID, "stopped", -1, "cancelled before start")
 		}
 		return errors.New("任务不在运行中")

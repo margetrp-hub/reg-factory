@@ -34,6 +34,18 @@ node_modules
 .pytest_cache
 .mypy_cache
 .tmp
+.tmp-*
+deploy/.icmail-*
+deploy/team_library_test.py
+dedup_sg.py
+patch_sg.py
+**/*.disabled
+
+# 前端和 Go 产物由多阶段构建生成，不能继承本机旧包
+server/web/.next
+server/web/out
+server/webdist
+server/regd
 
 # 桌面端产物
 *.exe

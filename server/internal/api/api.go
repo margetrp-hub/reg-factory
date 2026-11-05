@@ -92,6 +92,8 @@ func (s *Server) Register(r *gin.Engine) {
 	r.POST("/api/tasks/stop-all", s.stopAll)
 	r.GET("/api/tasks/:id/logs", s.taskLogs)
 	r.GET("/api/tasks/:id/stream", s.taskStream)
+	r.GET("/api/logs", s.taskLogs)
+	r.GET("/api/logs/stream", s.taskStream)
 
 	r.GET("/api/assets/export", s.assetExport)
 	r.GET("/api/assets/tree", s.assetTree)
@@ -243,8 +245,8 @@ func (s *Server) createTask(c *gin.Context) {
 		return
 	}
 	s.st.Audit(task.Actor, "task.create", task.Script+" "+string(argsJSON), c.ClientIP())
-	log.Printf("[task] enqueue %s script=%s slots=%d/%d args=%s",
-		task.ID, task.Script, s.run.Weight(), s.cfg.MaxParallel, string(argsJSON))
+	log.Printf("[task] enqueue %s script=%s slots=%d/%d",
+		task.ID, task.Script, s.run.Weight(), s.cfg.MaxParallel)
 	c.JSON(http.StatusAccepted, gin.H{
 		"id":     task.ID,
 		"status": "queued",
@@ -294,6 +296,33 @@ func (s *Server) stopAll(c *gin.Context) {
 
 func (s *Server) taskLogs(c *gin.Context) {
 	id := c.Param("id")
+	if id != "" {
+		if _, err := s.st.GetTask(id); err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "not_found"})
+			return
+		}
+	}
+	if c.Query("download") == "1" {
+		c.Header("Content-Disposition", `attachment; filename="runtime.log"`)
+		c.Header("Content-Type", "text/plain; charset=utf-8")
+		var cursor int64
+		for {
+			events, err := s.st.EventsAfter(id, cursor, 1000)
+			if err != nil {
+				c.String(http.StatusInternalServerError, "log read failed")
+				return
+			}
+			for _, event := range events {
+				if _, err := fmt.Fprintf(c.Writer, "%s [%s] [%s] %s\n", event.TS, event.TaskID, event.Stream, event.Line); err != nil {
+					return
+				}
+				cursor = event.ID
+			}
+			if len(events) < 1000 || c.Request.Context().Err() != nil {
+				return
+			}
+		}
+	}
 	limit := atoi(c.DefaultQuery("tail", strconv.Itoa(s.cfg.LogTailMax)), s.cfg.LogTailMax)
 	events, err := s.st.TailEvents(id, limit)
 	if err != nil {
@@ -305,6 +334,21 @@ func (s *Server) taskLogs(c *gin.Context) {
 
 func (s *Server) taskStream(c *gin.Context) {
 	id := c.Param("id")
+	if id != "" {
+		if _, err := s.st.GetTask(id); err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "not_found"})
+			return
+		}
+	}
+	cursorText := c.GetHeader("Last-Event-ID")
+	if cursorText == "" {
+		cursorText = c.Query("after")
+	}
+	cursor, err := strconv.ParseInt(cursorText, 10, 64)
+	if cursorText != "" && (err != nil || cursor < 0) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_log_cursor"})
+		return
+	}
 	flusher, ok := c.Writer.(http.Flusher)
 	if !ok {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "stream_unsupported"})
@@ -315,41 +359,58 @@ func (s *Server) taskStream(c *gin.Context) {
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
 
-	if events, err := s.st.TailEvents(id, 200); err == nil {
-		for _, event := range events {
-			writeSSE(c, "log", gin.H{"ts": event.TS, "stream": event.Stream, "line": event.Line})
-		}
-		flusher.Flush()
-	}
-
-	lines, cancel := s.run.Subscribe(id)
-	defer cancel()
-
-	ticker := time.NewTicker(20 * time.Second)
+	// SQLite is the single source for history and live output. Reconnection
+	// resumes by event ID, so there is no replay gap or slow-subscriber loss.
+	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
-	done := c.Request.Context().Done()
+	initial := cursorText == ""
+	lastPing := time.Now()
 	for {
-		select {
-		case <-done:
+		var task store.Task
+		if id != "" {
+			task, err = s.st.GetTask(id)
+			if err != nil {
+				writeSSE(c, "stream_error", gin.H{"error": "任务状态读取失败，正在重连"})
+				return
+			}
+		}
+		for {
+			var events []store.Event
+			wasInitial := initial
+			if initial {
+				events, err = s.st.TailEvents(id, 500)
+				initial = false
+			} else {
+				events, err = s.st.EventsAfter(id, cursor, 1000)
+			}
+			if err != nil {
+				writeSSE(c, "stream_error", gin.H{"error": "日志读取失败，正在重连"})
+				return
+			}
+			for _, event := range events {
+				fmt.Fprintf(c.Writer, "id: %d\n", event.ID)
+				writeSSE(c, "log", event)
+				cursor = event.ID
+			}
+			flusher.Flush()
+			if wasInitial || len(events) < 1000 || c.Request.Context().Err() != nil {
+				break
+			}
+		}
+		if id != "" && task.Status != "running" && task.Status != "queued" {
+			writeSSE(c, "done", gin.H{"task": id, "status": task.Status, "exit_code": task.ExitCode, "error": task.Error})
+			flusher.Flush()
 			return
-		case <-ticker.C:
+		}
+		if time.Since(lastPing) >= 15*time.Second {
 			fmt.Fprint(c.Writer, ": ping\n\n")
 			flusher.Flush()
-		case line, open := <-lines:
-			if !open {
-				writeSSE(c, "done", gin.H{"task": id})
-				flusher.Flush()
-				return
-			}
-			writeSSE(c, "log", gin.H{"ts": line.TS, "stream": line.Stream, "line": line.Line})
-			flusher.Flush()
+			lastPing = time.Now()
 		}
-		if task, err := s.st.GetTask(id); err == nil {
-			if task.Status != "running" && task.Status != "queued" {
-				writeSSE(c, "done", gin.H{"task": id, "status": task.Status, "exit_code": task.ExitCode})
-				flusher.Flush()
-				return
-			}
+		select {
+		case <-c.Request.Context().Done():
+			return
+		case <-ticker.C:
 		}
 	}
 }

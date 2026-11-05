@@ -53,19 +53,20 @@ func New(cfg Config, mgr *runner.Manager, st *store.Store) *Handler {
 
 // Register 挂载节点端点（不走面板登录，靠 Work 签名鉴权）。
 func (h *Handler) Register(r *gin.Engine) {
-	if !h.cfg.Enabled || h.cfg.NodeID == "" || len(h.cfg.Key) < minKeyLength {
+	enabled := h.cfg.Enabled && h.cfg.NodeID != "" && len(h.cfg.Key) >= minKeyLength
+	if !enabled {
 		log.Printf("[node] Work 子节点未启用（缺 NODE_ID/NODE_KEY>=32 字节）")
-		return
+	} else {
+		log.Printf("[node] Work 子节点启用：node_id=%s platform=%s", h.cfg.NodeID, h.cfg.Platform)
 	}
-	log.Printf("[node] Work 子节点启用：node_id=%s platform=%s", h.cfg.NodeID, h.cfg.Platform)
 
 	// Work probes this unauthenticated endpoint before it projects the node's
 	// inventory or submits a task.  Keep it separate from the panel fallback:
 	// returning HTML here makes a healthy node look unavailable forever.
 	r.GET("/ready", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
-			"ready":           true,
-			"execution_ready": true,
+			"ready":           enabled,
+			"execution_ready": enabled,
 			"runtime": gin.H{
 				"supported_actions": []string{
 					"account.register", "account.authorize", "account.refresh",
@@ -80,28 +81,6 @@ func (h *Handler) Register(r *gin.Engine) {
 			},
 		})
 	})
-
-	group := r.Group("/internal/work/v1")
-	group.POST("/tasks", h.acceptTask)
-	group.GET("/tasks/:task_id", h.taskStatus)
-	group.POST("/tasks/:task_id/result", h.taskReceipt)
-	group.POST("/tasks/:task_id/artifact", h.workArtifact)
-	group.POST("/resolve", h.resolveTask)
-	group.POST("/inventory/library", h.accountLibrary)
-	group.POST("/inventory/reference", h.accountReference)
-	// Work's account projection contract uses /accounts. Keep the newer
-	// inventory/accounts spelling as an alias for callers already on it.
-	group.GET("/accounts", h.accountsInventory)
-	group.GET("/inventory/accounts", h.accountsInventory)
-	// offer/event 使用 work.inventory-relay.v1；旧的 inventory() 会按
-	// account-node.work.v1 解析并把 relay 请求误报成普通 Work 任务。
-	group.POST("/inventory/:action", h.inventoryRelay)
-	if err := h.st.EnsureInventoryRelay(); err != nil {
-		log.Printf("[node] inventory relay schema unavailable: %v", err)
-	}
-
-	// 账号库自检：节点用自身密钥构造一次 relay 请求并自验，证明契约自洽。
-	r.GET("/node/library/selftest", h.librarySelftest)
 
 	r.GET("/node/capabilities", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
@@ -132,6 +111,24 @@ func (h *Handler) Register(r *gin.Engine) {
 			},
 		})
 	})
+	if !enabled {
+		return
+	}
+	group := r.Group("/internal/work/v1")
+	group.POST("/tasks", h.acceptTask)
+	group.GET("/tasks/:task_id", h.taskStatus)
+	group.POST("/tasks/:task_id/result", h.taskReceipt)
+	group.POST("/tasks/:task_id/artifact", h.workArtifact)
+	group.POST("/resolve", h.resolveTask)
+	group.POST("/inventory/library", h.accountLibrary)
+	group.POST("/inventory/reference", h.accountReference)
+	group.GET("/accounts", h.accountsInventory)
+	group.GET("/inventory/accounts", h.accountsInventory)
+	group.POST("/inventory/:action", h.inventoryRelay)
+	if err := h.st.EnsureInventoryRelay(); err != nil {
+		log.Printf("[node] inventory relay schema unavailable: %v", err)
+	}
+	r.GET("/node/library/selftest", h.librarySelftest)
 }
 
 // acceptTask 接收 account.register 等动作并转成本地任务。

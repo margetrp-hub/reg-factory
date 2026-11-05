@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
-# reg-factory 服务器版冒烟测试：鉴权闸门 + 面板接口 + 资产 API 配置
+# reg-factory 统一控制面冒烟：健康、静态页面、鉴权、会话与 worker 运行时
 set -uo pipefail
 
-# 在 Windows 的 Git Bash / MSYS 下跑时，避免 /data 这类容器内路径被改写成 C:\...
+# Git Bash / MSYS 不转换容器内路径。
 export MSYS_NO_PATHCONV=1
 export MSYS2_ARG_CONV_EXCL='*'
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BASE="${RF_BASE:-http://127.0.0.1:8799}"
+BASE="${RF_BASE:-http://127.0.0.1:8800}"
 ENV_FILE="${HERE}/.env"
+CONTAINER="${CONTAINER:-reg-factory}"
+USER_NAME="${REG_FACTORY_PANEL_USER:-}"
+PASSWORD="${REG_FACTORY_PANEL_PASSWORD:-}"
 
 pass=0
 fail=0
@@ -17,86 +20,110 @@ bad()  { printf '  \033[31m✗\033[0m %s\n' "$*"; fail=$((fail + 1)); }
 info() { printf '  · %s\n' "$*"; }
 
 if [ -f "${ENV_FILE}" ]; then
-  USER_NAME="$(grep -E '^REG_FACTORY_PANEL_USER=' "${ENV_FILE}" | head -1 | cut -d= -f2-)"
-  PASSWORD="$(grep -E '^REG_FACTORY_PANEL_PASSWORD=' "${ENV_FILE}" | head -1 | cut -d= -f2-)"
+  USER_NAME="${USER_NAME:-$(grep -E '^REG_FACTORY_PANEL_USER=' "${ENV_FILE}" | head -1 | cut -d= -f2-)}"
+  PASSWORD="${PASSWORD:-$(grep -E '^REG_FACTORY_PANEL_PASSWORD=' "${ENV_FILE}" | head -1 | cut -d= -f2-)}"
 fi
 USER_NAME="${USER_NAME:-admin}"
-PASSWORD="${PASSWORD:-}"
 
-echo "== reg-factory 服务器冒烟 =="
+# 不依赖宿主 Python/jq；密码中的引号、反斜杠与换行按 JSON 编码。
+json_escape() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//$'\n'/\\n}"
+  value="${value//$'\r'/\\r}"
+  value="${value//$'\t'/\\t}"
+  value="${value//$'\b'/\\b}"
+  value="${value//$'\f'/\\f}"
+  printf '%s' "${value}"
+}
+
+echo "== reg-factory 统一控制面冒烟 =="
 info "目标 ${BASE}"
 
-# 1. 容器
-if command -v docker >/dev/null 2>&1 && docker inspect reg-factory >/dev/null 2>&1; then
-  state="$(docker inspect --format '{{.State.Status}}/{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' reg-factory)"
+HAS_CONTAINER=0
+if command -v docker >/dev/null 2>&1 && docker inspect "${CONTAINER}" >/dev/null 2>&1; then
+  HAS_CONTAINER=1
+  # Compose 已处理 .env 的引号和插值；优先验证容器实际收到的凭据。
+  # 显式传给本脚本的环境值仍可覆盖，用于诊断失败路径。
+  runtime_user="$(docker exec "${CONTAINER}" printenv REG_FACTORY_PANEL_USER 2>/dev/null || true)"
+  runtime_password="$(docker exec "${CONTAINER}" printenv REG_FACTORY_PANEL_PASSWORD 2>/dev/null || true)"
+  USER_NAME="${REG_FACTORY_PANEL_USER:-${runtime_user:-${USER_NAME}}}"
+  PASSWORD="${REG_FACTORY_PANEL_PASSWORD:-${runtime_password:-${PASSWORD}}}"
+  state="$(docker inspect --format '{{.State.Status}}/{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "${CONTAINER}")"
   case "${state}" in
     running/healthy) ok "容器状态 ${state}" ;;
     *) bad "容器状态 ${state}" ;;
   esac
 else
-  info "跳过容器状态检查（docker 不可用或容器名不同）"
+  info "跳过容器检查（docker 不可用或未找到 ${CONTAINER}）"
 fi
 
-# 2. 健康检查
-if curl -fsS --max-time 5 "${BASE}/__rf/health" | grep -q '"ok":true'; then
-  ok "健康检查 /__rf/health"
+if curl -fsS --max-time 5 "${BASE}/api/health" | grep -q '"service"[[:space:]]*:[[:space:]]*"regd"'; then
+  ok "regd 健康检查 /api/health"
 else
-  bad "健康检查 /__rf/health 失败"
+  bad "regd 健康检查 /api/health 失败"
 fi
 
-# 3. 未认证页面访问应跳登录页
-code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "${BASE}/")"
-loc="$(curl -s -o /dev/null -D - --max-time 5 "${BASE}/" | tr -d '\r' | awk 'tolower($1)=="location:" {print $2}')"
-if [ "${code}" = "302" ] && printf '%s' "${loc}" | grep -q '__rf/login'; then
-  ok "未认证访问被导向登录页"
+# 静态页面公开，由前端根据 /api/session 跳转；服务端 API 必须返回 401。
+code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "${BASE}/login/")"
+if [ "${code}" = "200" ]; then
+  ok "登录页面可访问"
 else
-  bad "未认证访问未拦截（code=${code} location=${loc}）—— 检查 REG_FACTORY_ALLOW_ANONYMOUS"
+  bad "登录页面返回 ${code}（应为 200）"
 fi
+for route in /api/session /api/system; do
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "${BASE}${route}")"
+  if [ "${code}" = "401" ]; then
+    ok "未认证 ${route} 返回 401"
+  else
+    bad "未认证 ${route} 返回 ${code}（应为 401）"
+  fi
+done
 
-# 4. 未认证 API 应 401
-code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "${BASE}/api/status")"
-if [ "${code}" = "401" ]; then
-  ok "未认证调用 /api/status 返回 401"
-else
-  bad "未认证调用 /api/status 返回 ${code}（应为 401）"
-fi
-
-# 5. 登录后应能读面板状态
 if [ -n "${PASSWORD}" ]; then
-  jar="$(mktemp)"
-  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
-    -c "${jar}" -d "username=${USER_NAME}&password=${PASSWORD}&next=/" "${BASE}/__rf/login")"
-  if [ "${code}" = "302" ] || [ "${code}" = "200" ]; then
-    body="$(curl -s --max-time 10 -b "${jar}" "${BASE}/api/status")"
-    if printf '%s' "${body}" | grep -q '"browser_provider"'; then
-      provider="$(printf '%s' "${body}" | sed -n 's/.*"browser_provider": *"\([^"]*\)".*/\1/p')"
-      ok "面板登录成功，browser_provider=${provider:-unknown}"
+  jar="$(mktemp)" || exit 1
+  trap 'rm -f "${jar}"' EXIT
+  payload="$(printf '{"username":"%s","password":"%s"}' "$(json_escape "${USER_NAME}")" "$(json_escape "${PASSWORD}")")"
+  code="$(printf '%s' "${payload}" | curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+    -c "${jar}" -H 'Content-Type: application/json' --data-binary @- "${BASE}/api/login")"
+  if [ "${code}" = "200" ]; then
+    body="$(curl -fsS --max-time 10 -b "${jar}" "${BASE}/api/system")"
+    if printf '%s' "${body}" | grep -q '"max_parallel"[[:space:]]*:'; then
+      ok "JSON 登录与 Cookie 会话可读取 /api/system"
     else
-      bad "登录后 /api/status 未返回预期结构：$(printf '%s' "${body}" | head -c 200)"
+      bad "登录后 /api/system 未返回控制面状态"
+    fi
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -X POST \
+      -b "${jar}" -c "${jar}" "${BASE}/api/logout")"
+    session_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -b "${jar}" "${BASE}/api/session")"
+    if [ "${code}" = "200" ] && [ "${session_code}" = "401" ]; then
+      ok "登出后会话恢复未认证状态"
+    else
+      bad "登出后会话状态异常（logout=${code} session=${session_code}）"
     fi
   else
     bad "登录请求返回 ${code}"
   fi
-  rm -f "${jar}"
 else
-  info "未读取到面板密码，跳过登录链路检查"
+  bad "未读取到面板密码，无法验证登录链路"
 fi
 
-# 6. 资产 API key
-if docker inspect reg-factory >/dev/null 2>&1; then
-  if docker exec reg-factory test -s /data/runtime/asset-api-key.txt 2>/dev/null; then
-    ok "资产 API Key 已生成（/data/runtime/asset-api-key.txt）"
+if [ "${HAS_CONTAINER}" = "1" ]; then
+  if docker exec "${CONTAINER}" sh -c '[ -n "${REG_FACTORY_ASSET_API_KEY:-}" ] || test -s /data/runtime/asset-api-key.txt || grep -qE "^REG_FACTORY_ASSET_API_KEY=.+" /data/.env'; then
+    ok "资产 API Key 已配置或自动生成"
   else
-    bad "资产 API Key 未生成"
+    bad "资产 API Key 未配置"
   fi
-fi
-
-# 7. 浏览器内核
-if docker inspect reg-factory >/dev/null 2>&1; then
-  if docker exec reg-factory test -x /usr/local/bin/chromium 2>/dev/null; then
-    ok "Chromium 可执行（/usr/local/bin/chromium）"
+  if docker exec "${CONTAINER}" test -x /usr/local/bin/chromium; then
+    ok "Chromium 可执行"
   else
     bad "Chromium 缺失"
+  fi
+  if docker exec "${CONTAINER}" python3 -c 'import playwright, requests, PIL, aiohttp, curl_cffi, cryptography'; then
+    ok "Python worker 运行依赖可导入"
+  else
+    bad "Python worker 运行依赖缺失"
   fi
 fi
 

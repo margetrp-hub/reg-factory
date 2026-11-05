@@ -1,12 +1,13 @@
-# reg-factory 服务器版 docker compose
+# reg-factory 统一控制面 docker compose（regd + Python worker）
 #
 # 用法（在 deploy/ 目录）：
 #   cp .env.server.example .env      # 然后改密码
 #   docker compose up -d --build
 #
 # 说明：
-#   * 宿主机只绑 127.0.0.1:8799，公网访问走 Caddy/Nginx 反代 + HTTPS；
-#     需要临时直连时把 deploy/.env 里的 RF_PUBLISH 改成 "8799:8799"，
+#   * 宿主机只绑 127.0.0.1:8800，公网访问走 Caddy/Nginx 反代 + HTTPS；
+#     容器内由 regd 监听 8800；RF_PUBLISH 只包含宿主地址和端口。
+#     需要临时直连时把 deploy/.env 里的 RF_PUBLISH 改成 "0.0.0.0:8800"，
 #     但必须确认 REG_FACTORY_PANEL_PASSWORD 足够强。
 #   * 业务配置（浏览器、代理池、并发）不在这里写死，全部放 /data/.env，
 #     这样才能在面板「环境配置」页里改；这里只传基础设施与鉴权变量。
@@ -22,7 +23,7 @@ services:
         INSTALL_CLOAK: "${INSTALL_CLOAK:-0}"
         APT_MIRROR: "${APT_MIRROR:-}"
         PIP_INDEX_URL_ARG: "${PIP_INDEX_URL_ARG:-}"
-    image: "${REG_FACTORY_IMAGE:-reg-factory:server}"
+    image: "${REG_FACTORY_IMAGE:-reg-factory:unified}"
     container_name: reg-factory
     restart: unless-stopped
     # 镜像 ENTRYPOINT 已经套了 tini，这里不要再加 init: true，
@@ -30,28 +31,29 @@ services:
     stop_grace_period: 40s
     shm_size: "1gb"
     ports:
-      - "${RF_PUBLISH:-127.0.0.1:8799}:8799"
+      - "${RF_PUBLISH:-127.0.0.1:8800}:8800"
     env_file:
       - ./.env
     environment:
       TZ: "${TZ:-Asia/Singapore}"
       REG_FACTORY_DATA_DIR: /data
       REG_FACTORY_ENV_FILE: /data/.env
-      REG_FACTORY_HOST: 0.0.0.0
-      REG_FACTORY_PORT: "8799"
+      REGD_ADDR: "0.0.0.0:8800"
+      REGD_APP_ROOT: /app
+      REGD_DB: /data/regd.db
+      REGD_PYTHON: python3
       REG_FACTORY_PANEL_USER: "${REG_FACTORY_PANEL_USER:-admin}"
       REG_FACTORY_PANEL_PASSWORD: "${REG_FACTORY_PANEL_PASSWORD:?请先在 deploy/.env 设置 REG_FACTORY_PANEL_PASSWORD}"
       REG_FACTORY_ALLOW_ANONYMOUS: "${REG_FACTORY_ALLOW_ANONYMOUS:-0}"
       REG_FACTORY_COOKIE_SECURE: "${REG_FACTORY_COOKIE_SECURE:-auto}"
-      REG_FACTORY_FORWARDED_ALLOW_IPS: "${REG_FACTORY_FORWARDED_ALLOW_IPS:-127.0.0.1,::1}"
     volumes:
       - rf-data:/data
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8799/__rf/health || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8800/api/health >/dev/null || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 60s
+      start_period: 30s
     logging:
       driver: json-file
       options:

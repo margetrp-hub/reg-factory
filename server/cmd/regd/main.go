@@ -51,6 +51,9 @@ func main() {
 		log.Fatalf("[regd] 打开数据库失败: %v", err)
 	}
 	defer st.Close()
+	previousLog := log.Writer()
+	log.SetOutput(io.MultiWriter(previousLog, &store.RuntimeLog{Store: st}))
+	defer log.SetOutput(previousLog)
 	// Inventory relay needs the version/status projection even when this is an
 	// existing SG database created before the relay was introduced.
 	if err := st.EnsureInventoryRelay(); err != nil {
@@ -163,10 +166,11 @@ func requestLogger() gin.HandlerFunc {
 		start := time.Now()
 		c.Next()
 		path := c.Request.URL.Path
-		if !strings.HasPrefix(path, "/api/") {
+		if !strings.HasPrefix(path, "/api/") && !strings.HasPrefix(path, "/internal/work/") {
 			return
 		}
-		if path == "/api/health" || path == "/api/memory" {
+		if path == "/api/health" || path == "/api/memory" || path == "/api/system" ||
+			path == "/api/logs" || path == "/api/logs/stream" || strings.HasSuffix(path, "/stream") {
 			return
 		}
 		log.Printf("[api] %s %s %d %dms", c.Request.Method, path, c.Writer.Status(), time.Since(start).Milliseconds())

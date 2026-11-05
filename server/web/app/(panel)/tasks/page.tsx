@@ -12,6 +12,7 @@ export default function TaskCenterPage() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [error, setError] = useState("");
   const [selected, setSelected] = useState("");
+  const [allLogs, setAllLogs] = useState(true);
 
   const load = useCallback(async () => {
     try {
@@ -74,14 +75,21 @@ export default function TaskCenterPage() {
         </div>
       )}
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_minmax(420px,1fr)]">
+      <div className="grid gap-4">
         <Card title="全局任务流" bodyClass="p-0">
           <div className="max-h-[520px] overflow-auto">
-            <TaskTable tasks={tasks} onSelect={setSelected} activeId={selected} onStop={async (id) => { await api.stopTask(id).catch(() => null); await load(); }} showScript />
+            <TaskTable tasks={tasks} onSelect={(id) => { setSelected(id); setAllLogs(false); }} activeId={allLogs ? "" : selected} onStop={async (id) => {
+              try { await api.stopTask(id); await load(); } catch (err) { setError((err as Error).message); }
+            }} showScript />
           </div>
         </Card>
-        <Card title={selected ? `终端日志 · ${selected}` : "终端日志"} bodyClass="p-2">
-          {selected ? <LogView taskId={selected} height={480} /> : <div className="p-8 text-center text-[12px] text-muted-foreground">选择一个任务查看持久化输出和实时日志</div>}
+        <Card title="终端日志" bodyClass="p-2" actions={
+          <>
+            <button className={allLogs ? "btn-primary" : "btn-ghost"} onClick={() => setAllLogs(true)}>系统与全部任务</button>
+            <button className={!allLogs ? "btn-primary" : "btn-ghost"} disabled={!selected} onClick={() => setAllLogs(false)}>选中任务</button>
+          </>
+        }>
+          <LogView taskId={allLogs ? "" : selected} height={480} />
         </Card>
       </div>
 

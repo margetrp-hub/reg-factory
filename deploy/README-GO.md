@@ -1,4 +1,4 @@
-# reg-factory Go 控制面（Next.js + Gin + SQLite）
+# reg-factory 统一控制面（Next.js + regd + Python worker）
 
 把原来的 Python FastAPI 面板换成 **Go 控制面 + Next.js 前端**，执行层仍是仓库里
 成熟的 Python worker（`register*.py` / `tools/*.py`）。理由很直接：
@@ -57,7 +57,7 @@ server/
 |---|---|---|
 | 任务状态 | 进程内 `RUNS` dict，重启即丢 | **SQLite 持久化**，重启把 running 标 interrupted |
 | 队列 | 无，直接 spawn | **真正的队列**：queued → dispatcher → running，受并发与内存双闸门 |
-| 日志 | 内存环形 5000 行 | 全量落库 + SSE 实时 + 历史 tail |
+| 日志 | 内存环形 5000 行 | SQLite events 同时提供全量历史与 SSE 实时日志 |
 | 并发控制 | 无（只靠任务自身参数） | `REG_FACTORY_MAX_CONCURRENCY` + cgroup 内存水位（默认 85%） |
 | 鉴权 | 无（靠绑回环） | Cookie 会话 / Basic / Bearer / X-API-Key，登录失败限流 |
 | 审计 | 无 | 登录、建任务、停任务、改配置、领资产全部落库 |
@@ -81,8 +81,9 @@ server/
 | POST | `/api/tasks` | 建任务 `{script, args}`；接受 `--flag` 或裸名 |
 | GET | `/api/tasks` · `/api/tasks/{id}` | 列表/详情 |
 | POST | `/api/tasks/{id}/stop` · `/api/tasks/stop-all` | 停止 |
-| GET | `/api/tasks/{id}/logs?tail=N` | 历史日志 |
-| GET | `/api/tasks/{id}/stream` | SSE 实时日志（`event: log/done`） |
+| GET | `/api/logs` · `/api/logs/stream` | 全部日志：服务诊断与所有任务，历史 / SSE |
+| GET | `/api/tasks/{id}/logs?tail=N` | 任务历史日志；`?download=1` 下载完整日志 |
+| GET | `/api/tasks/{id}/stream` | SSE 日志，支持 `Last-Event-ID` 无重复补读；终态立即 `done` |
 | GET | `/api/assets` · `/api/assets/{kind}` | 资产概览/列表 |
 | POST | `/api/assets/{kind}/claim` | 领取一条（记账） |
 | POST | `/api/assets/claims/reset?kind=` | 重置领取 |
@@ -103,45 +104,77 @@ curl -s -b jar -H 'content-type: application/json' \
 curl -N -b jar http://127.0.0.1:8800/api/tasks/<id>/stream
 ```
 
+历史查询与实时流都直接读取 SQLite `events`，没有另一份内存订阅日志。
+断线后客户端带 `Last-Event-ID` 继续读取，服务重启后仍可从持久游标恢复；
+已结束任务补齐日志后立即发送 `done`，不会等待新的内存事件。
+
 ## 4. 构建与部署
 
 ### 4.1 本地
 
 ```bash
+# 在仓库根目录执行
 # 1) 前端
-cd server/web && pnpm install && pnpm build
+pnpm --dir server/web install --frozen-lockfile
+pnpm --dir server/web build
 # 2) 复制产物
-cp -r out/* ../webdist/
+mkdir -p server/webdist
+cp -r server/web/out/. server/webdist/
 # 3) 导 schema（Python 侧）
 python server/tools/export_schema.py
 # 4) 编译（前端已 embed）
-cd server && go build -o regd ./cmd/regd
+(cd server && go build -o regd ./cmd/regd)
 # 5) 运行
 REGD_ADDR=127.0.0.1:8800 REG_FACTORY_DATA_DIR=/data \
-REGD_APP_ROOT=<repo> REGD_PYTHON=python3 \
-REG_FACTORY_PANEL_PASSWORD=<强口令> ./regd
+REGD_APP_ROOT="$PWD" REGD_PYTHON=python3 \
+REG_FACTORY_PANEL_PASSWORD='<强口令>' ./server/regd
 ```
 
 ### 4.2 容器（推荐）
 
-镜像基于已有的 `reg-factory:server`（Python + Chromium + Xvfb），只加一个 25MB 的
-Go 二进制，所以几乎不增加体积。
+唯一构建入口是 `deploy/Dockerfile`。它从 Node、Go、Python 基础镜像分别构建前端、
+regd 和 worker 运行时，不依赖本机已有的项目镜像。Python、Chromium、Xvfb 与原服务器
+运行依赖保持同一套安装方式，前端静态资源内嵌在 regd 中，不需要独立前端服务。
+构建会从 `schema/scripts.py` 重新导出任务定义；前端或 Go 编译失败会直接终止构建。
 
 ```bash
 cd deploy
-# 构建并启动统一控制面（Go + 内置 Python worker）
-sudo docker compose -f docker-compose.yml -f docker-compose.sg.yml up -d --build panel
+# 首次部署：复制后设置 REG_FACTORY_PANEL_PASSWORD
+cp .env.server.example .env
+# 建议 REG_FACTORY_IMAGE=reg-factory:unified
+docker compose build panel
+docker compose up -d --no-build panel
+curl -fsS http://127.0.0.1:8800/api/health
 ```
 
-生产只运行一个 `reg-factory` 控制面容器：Go 负责状态、界面和调度，镜像内复用
-Python worker；共用 `/data` 与 `/data/.env`，SQLite 使用 `/data/regd.db`。
+默认只运行一个 `panel` 服务、一个 `reg-factory` 容器。Go 负责界面、状态和调度，
+按需启动镜像内的 Python worker；共用 `/data` 与 `/data/.env`，SQLite 使用 `/data/regd.db`。
+启动入口仍负责数据目录初始化、资产 Key 首次生成、Xvfb 和降权，不改变业务或节点密钥协议。
+
+默认 bridge 网络中，容器监听 `0.0.0.0:8800`，宿主发布 `127.0.0.1:8800`。
+`RF_PUBLISH` 只填宿主地址和端口（例如 `127.0.0.1:8800` 或 `0.0.0.0:8800`），
+容器目标端口由 Compose 固定为 8800。健康检查统一使用 `/api/health`。
+
+SG 使用同一个构建入口和服务，追加主机网络与资源限制：
+
+```bash
+# 在 deploy/.env 与 /data/.env 保留现有节点身份、平台与密钥
+docker compose -f docker-compose.yml -f docker-compose.sg.yml config --quiet
+docker compose -f docker-compose.yml -f docker-compose.sg.yml build panel
+docker compose -f docker-compose.yml -f docker-compose.sg.yml up -d --no-build panel
+curl -fsS http://127.0.0.1:8800/api/health
+```
+
+SG 的 `REGD_ADDR=127.0.0.1:8800` 只监听主机回环，Nginx 上游保持 8800。
+override 用 `ports: !reset []` 移除基础配置的端口发布；普通 `ports: []` 会保留继承的映射。
+使用支持 `!reset` 的 Docker Compose V2 或更新版本，旧版 `docker-compose` 不适用。
 
 ### 4.3 切换
 
-1. 用 SSH 隧道或临时端口验证 8800 一切正常；
-2. Nginx 把 `reg.yhoo.lol` 的 upstream 从 `127.0.0.1:8799` 改成 `127.0.0.1:8800`；
-3. 确认 `/api/health`、`/ready` 和 `/node/capabilities` 后继续使用同一容器；
-4. 需要回滚：恢复旧镜像标签和源码备份，再执行同一个 `panel` 服务启动命令。
+1. 保留当前镜像和 `/data` 的一致性备份，确认没有需要继续处理的运行中任务；
+2. 构建统一镜像，以同一个 `panel` 服务切换；不要再另起一套控制面；
+3. 确认反代上游指向 8800，验证 `/api/health`、登录和真实任务日志，启用节点时再验证 `/ready` 与 `/node/capabilities`；已有 `.env` 若覆盖了 `RF_PUBLISH`，同时核对宿主实际端口；
+4. 需要回滚时恢复对应镜像与必要的数据备份，再使用相同网络配置重建 `panel` 服务。
 
 ## 5. 运维
 
@@ -153,9 +186,9 @@ curl -s http://127.0.0.1:8800/api/memory
 # 日志（容器）
 sudo docker logs -f reg-factory --tail 100
 
-# 数据库（SQLite，可随时拷走）
-sudo docker exec reg-factory sqlite3 /data/regd.db \
-  "select id,script,status,exit_code,created_at from tasks order by created_at desc limit 10;"
+# 数据库（Python 运行时已内置 sqlite3）
+sudo docker exec reg-factory python3 -c \
+  'import sqlite3; print(sqlite3.connect("file:/data/regd.db?mode=ro", uri=True).execute("select id,script,status,exit_code,created_at from tasks order by created_at desc limit 10").fetchall())'
 
 # 备份：/data 卷里含 regd.db、.env、号池、Cookie、Token
 sudo ./sg-maintenance.sh
@@ -173,7 +206,7 @@ sudo ./sg-maintenance.sh
 ## 6. 已知边界
 
 * 执行层仍是 Python，`/app` 里的脚本需要 `REG_FACTORY_DATA_DIR`、`PYTHONPATH=/app`（entrypoint 已设）；
-* `scripts.schema.json` 由 `schema/scripts.py` 生成，新增任务需要重新导出并重跑构建；
-* 单实例单进程（SQLite + 内存订阅表），不要开多副本；需要多机请换 Postgres + Redis Stream；
-* 面板只绑 `127.0.0.1`，公网入口必须走 Nginx/Caddy 反代（与旧面板一致）；
-* `--single-process` 等 Chromium 参数在容器里会崩，内存优化见 `README-OCI-SG.md` 第 10 节。
+* `scripts.schema.json` 由 `schema/scripts.py` 生成；容器构建会自动重新导出，本地直接运行需手动导出；
+* 单实例单进程（SQLite 持久化日志与任务状态），不要对同一数据目录启动多个控制面副本；
+* 默认宿主端口和 SG 监听地址都只绑 `127.0.0.1`，公网入口走 Nginx/Caddy 反代；
+* `--single-process` 等 Chromium 参数在容器里会崩，历史内存测量与 SG 限制见 `README-OCI-SG.md`。
