@@ -4,10 +4,19 @@ from __future__ import annotations
 
 import unittest
 
-from vendor.reauth_web.engine import _failure_reason, is_phone_required
+from vendor.reauth_web.engine import _failure_reason, failure_evidence, is_phone_required
 
 
 class FailureReasonTests(unittest.TestCase):
+    def test_safe_failure_evidence_uses_actual_page_and_no_provider_values(self):
+        self.assertEqual(failure_evidence({"error": "oauth_cloudflare_challenge", "oauth_protocol": {
+            "last_http_status": 403, "last_page_type": "edge-challenge", "final_url": "https://secret"}}),
+            {"stage": "authorize", "error_code": "oauth_cloudflare_challenge", "http_status": 403,
+             "page_type": "edge-challenge", "token_exchange_started": False})
+        value = failure_evidence({"error": "password=secret", "page_type": "secret", "status": "secret"})
+        self.assertNotIn("secret", str(value))
+        self.assertFalse(value["token_exchange_started"])
+
     def test_phone_required_is_explicit(self):
         reason = _failure_reason(
             {"error": "phone_required", "page_type": "add-phone"}

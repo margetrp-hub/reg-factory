@@ -109,7 +109,7 @@ async def authorize_document(document: dict, *, timeout: int = 600) -> dict:
 def _authorize_protocol(document: dict, record: dict, timeout: int) -> dict:
     from pathlib import Path
     from vendor.reauth_web.config import Settings
-    from vendor.reauth_web.engine import reauth_account
+    from vendor.reauth_web.engine import ReauthError, reauth_account
     from vendor.reauth_web.parsing import AccountLine
     from common import proxy_switch
 
@@ -120,8 +120,19 @@ def _authorize_protocol(document: dict, record: dict, timeout: int) -> dict:
     account = AccountLine(email=record["email"], password=record["account_password"],
         totp_secret=record["two_factor"], raw="")
     print("[reauthorize] SG启动原账号密码/TOTP协议授权", flush=True)
-    result = reauth_account(account, settings,
-        on_step=lambda step, _message: print(f"[reauthorize] SG授权步骤 {step}", flush=True))
+    def progress(step, _message):
+        # The shared engine's mfa event announces intent before the first HTTP
+        # request. It is not evidence that MFA was reached or accepted.
+        if step != "mfa":
+            print(f"[reauthorize] SG授权步骤 {'authorize' if step == 'login' else step}", flush=True)
+
+    try:
+        result = reauth_account(account, settings, on_step=progress)
+    except ReauthError as exc:
+        if exc.evidence:
+            import json
+            print("[reauthorize] " + json.dumps(exc.evidence, sort_keys=True), flush=True)
+        raise
     tokens = dict(result["payloads"]["cpa"])
     validate_identity(document, tokens)
     expires_at = int(_claims(tokens["access_token"]).get("exp") or 0)

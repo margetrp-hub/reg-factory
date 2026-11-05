@@ -59,6 +59,10 @@ STEPS_CONVERT = [
 class ReauthError(RuntimeError):
     """单个账号重登失败。"""
 
+    def __init__(self, message, *, evidence=None):
+        super().__init__(message)
+        self.evidence = evidence or {}
+
 
 def _oauth_config(settings: Settings) -> dict:
     return {
@@ -144,6 +148,25 @@ def _failure_reason(result: dict) -> str:
     return " / ".join(parts) or "授权未完成"
 
 
+def failure_evidence(result: dict) -> dict:
+    """Allowlisted diagnostics only: never return provider text, URLs or secrets."""
+    protocol = result.get("oauth_protocol") or {}
+    known = set(ERROR_HINTS) | {
+        "oauth_cloudflare_challenge", "oauth_callback_not_found", "oauth_callback_timeout",
+        "email_otp_provider_required", "email_otp_verification_failed", "login_continue_failed",
+        "mfa_totp_verification_failed", "choose_account_failed", "about_you_failed",
+    }
+    code = result.get("error")
+    page = protocol.get("last_page_type") or result.get("page_type")
+    pages = {"start", "log-in", "mfa-challenge", "email-verification", "workspace",
+             "consent", "edge-challenge", "http-page", "choose-an-account", "add-phone"}
+    status = protocol.get("last_http_status") or protocol.get("last_status") or result.get("status")
+    return {"stage": "authorize", "error_code": code if code in known else "oauth_authorization_failed",
+            "page_type": page if page in pages else "unknown",
+            "http_status": status if type(status) is int and 100 <= status <= 599 else 0,
+            "token_exchange_started": False}
+
+
 def reauth_account(
     account: AccountLine,
     settings: Settings,
@@ -209,12 +232,12 @@ def _reauth_with_clients(account, settings, chatgpt_client, oauth_client, *, on_
         )
     except Exception as exc:  # noqa: BLE001 - 统一转成站点可读错误
         if is_phone_required(exc):
-            raise ReauthError(PHONE_MESSAGE) from exc
-        raise ReauthError(f"登录流程异常：{type(exc).__name__}") from exc
+            raise ReauthError(PHONE_MESSAGE, evidence=failure_evidence({"error": "phone_required"})) from exc
+        raise ReauthError(f"登录流程异常：{type(exc).__name__}", evidence=failure_evidence({})) from exc
 
     if not isinstance(result, dict) or not result.get("ok"):
         reason = _failure_reason(result if isinstance(result, dict) else {})
-        raise ReauthError(f"授权失败：{reason}")
+        raise ReauthError(f"授权失败：{reason}", evidence=failure_evidence(result if isinstance(result, dict) else {}))
     code = str(result.get("code") or "").strip()
     callback_state = str(result.get("state") or "").strip()
     if not code:
