@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/tiantianGPU/reg-factory/server/internal/assetstore"
 )
 
 // credDir 是旧版节点本地凭据目录：/<email 前缀>.json。
@@ -176,6 +178,18 @@ func (h *Handler) credDocument(verified *Verified) (map[string]any, string) {
 	email := h.resolveEmail(verified)
 	if email == "" {
 		return nil, ""
+	}
+	// The refresh executor writes the canonical asset store. Read that exact
+	// source before historical producer files, which may still hold old tokens.
+	if h.st != nil {
+		if ref, ok := h.subjectRef(verified.Subject); ok {
+			if asset, err := assetstore.New(dataDir()).Get(ref); err == nil && asset.Payload != nil {
+				doc := normalizeDocument(asset.Payload, asset.Email)
+				if doc != nil && strings.EqualFold(emailFromDocument(doc), email) {
+					return doc, email
+				}
+			}
+		}
 	}
 	doc, path := findCredential(email)
 	if doc == nil {

@@ -7,20 +7,15 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
-	"errors"
 	"time"
 )
 
 // fernetEncrypt 实现标准 Fernet（AES-128-CBC + HMAC-SHA256），
 // key 为 base64url 编码的 32 字节（前 16 签名、后 16 加密）。
 func fernetEncrypt(key, plaintext []byte) (string, error) {
-	raw := make([]byte, 32)
-	if decoded, err := base64.RawURLEncoding.DecodeString(string(key)); err == nil && len(decoded) == 32 {
-		copy(raw, decoded)
-	} else if len(key) == 32 {
-		copy(raw, key)
-	} else {
-		return "", errors.New("artifact key 必须是 base64url 编码的 32 字节")
+	raw, err := decodeFernetKey(key)
+	if err != nil {
+		return "", err
 	}
 	signingKey, encryptionKey := raw[:16], raw[16:]
 
@@ -53,7 +48,7 @@ func fernetEncrypt(key, plaintext []byte) (string, error) {
 	mac := hmac.New(sha256.New, signingKey)
 	mac.Write(body)
 	token := append(body, mac.Sum(nil)...)
-	return base64.RawURLEncoding.EncodeToString(token), nil
+	return base64.URLEncoding.EncodeToString(token), nil
 }
 
 func bytesRepeat(b byte, count int) []byte {

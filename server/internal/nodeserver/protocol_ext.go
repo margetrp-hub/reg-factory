@@ -113,6 +113,15 @@ func (h *Handler) ReceiptFor(verified *Verified, nodeTaskID, nodeStatus string, 
 		resultAccountID = nil
 		resultResourceVersion = nil
 	}
+	var finishedAt any
+	if workStatus != "queued" && workStatus != "running" && workStatus != "waiting_user" {
+		finishedAt = now.UTC().Format(time.RFC3339)
+		if h.st != nil {
+			if task, err := h.taskByTicket(nodeTaskID); err == nil && task.FinishedAt != "" {
+				finishedAt = task.FinishedAt
+			}
+		}
+	}
 	rawFull, err := Canonical(full)
 	if err != nil {
 		return nil, perr("WORK_REQUEST_INVALID", 400)
@@ -136,7 +145,7 @@ func (h *Handler) ReceiptFor(verified *Verified, nodeTaskID, nodeStatus string, 
 		"artifact_available":      workStatus == "completed" && full["document"] != nil,
 		"result_account_id":       resultAccountID,
 		"result_resource_version": resultResourceVersion,
-		"finished_at":             now.UTC().Format(time.RFC3339),
+		"finished_at":             finishedAt,
 	}
 	sig, err := Sign(payload, key, false)
 	if err != nil {
