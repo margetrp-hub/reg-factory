@@ -567,10 +567,12 @@ async def _enter_otp(page, code):
 async def _wait_for_phone_flow_exit(page, timeout=20):
     """Wait until phone verification reaches consent or the OAuth callback."""
     deadline = time.time() + timeout
-    while time.time() <= deadline:
+    while True:
         if _is_authorization_advanced_url(page.url):
             return True
         if not _is_phone_flow_url(page.url):
+            return False
+        if time.time() >= deadline:
             return False
         if await _has_phone_error(page):
             return False

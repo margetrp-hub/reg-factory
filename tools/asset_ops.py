@@ -152,6 +152,8 @@ def cmd_refresh(args) -> int:
         return _refresh_outlook(args)
 
     if platform == "chatgpt":
+        if args.allow_relogin:
+            return _emit(_reauthorize_chatgpt(args.ref, args.email, args.timeout))
         return _emit(_refresh_chatgpt(args.ref, args.email))
 
     return _emit({
@@ -301,6 +303,8 @@ def _update_oauth_document(document: dict, tokens: dict) -> dict:
         refresh_key = "refreshToken" if "refreshToken" in target and "refresh_token" not in target else "refresh_token"
         if "access_token" in target or "accessToken" in target or target is primary:
             target[access_key] = tokens["access_token"]
+        if "oauth_access_token" in target:
+            target["oauth_access_token"] = tokens["access_token"]
         if tokens.get("refresh_token") and ("refresh_token" in target or "refreshToken" in target or target is primary):
             target[refresh_key] = tokens["refresh_token"]
         if tokens.get("id_token") and (target is primary or "id_token" in target or "idToken" in target):
@@ -423,6 +427,44 @@ def _refresh_chatgpt(ref: str, email: str = "") -> dict:
     if response.status_code in {400, 401} and code in {"invalid_grant", "invalid_token", "account_deactivated", "account_banned"}:
         return {"ref": ref, "result": "relogin_required", "message": f"refresh_token 无效（{code or response.status_code}）"}
     return {"ref": ref, "result": "unknown", "message": f"OAuth HTTP {response.status_code}"}
+
+
+def _reauthorize_chatgpt(ref: str, email: str = "", timeout: int = 600) -> dict:
+    """An authorize command must perform a fresh supplier-owned OAuth login."""
+    import asyncio
+    from tools.chatgpt_reauthorize import authorize_document
+
+    found = _find_credential(ref or email)
+    if not found:
+        return {"ref": ref, "result": "relogin_required", "message": "找不到原账号登录资料"}
+    path, document = found
+    try:
+        login_document = copy.deepcopy(document)
+        login_payload = login_document.get("payload", login_document)
+        # OAuth exports omit password/TOTP; the original imported record owns
+        # these. Match the same source ref, never merely a shared email.
+        for directory in _credential_dirs():
+            if not directory.is_dir():
+                continue
+            for candidate_path in directory.glob("*.json"):
+                try:
+                    candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue
+                if not isinstance(candidate, dict) or not _same_oauth_source(document, candidate):
+                    continue
+                original = candidate.get("payload", candidate)
+                for key in ("password", "account_password", "chatgpt_password", "totp", "two_factor", "otp_secret", "reauthorization", "notes", "mail_api_url", "mail_api_key"):
+                    if original.get(key) and not login_payload.get(key):
+                        login_payload[key] = original[key]
+        updates = asyncio.run(authorize_document(login_document, timeout=timeout))
+        written = _refresh_document_copies(ref, _json_email(document), path, document, updates)
+    except Exception as exc:
+        # Browser/transport failures can leave an external result unknown. Do
+        # not replay automatically or print provider responses/credentials.
+        return {"ref": ref, "result": "unknown", "message": f"SG重新授权未完成：{type(exc).__name__}"}
+    return {"ref": ref, "result": "refreshed", "updated_files": len(written),
+            "message": "SG已重新登录并获取全新OAuth凭据，原账号JSON已更新"}
 
 
 def _lookup_mailbox(email: str) -> list[str] | None:
