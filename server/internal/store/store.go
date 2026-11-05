@@ -181,6 +181,10 @@ func Open(path string) (*Store, error) {
 		"result_resource_version": "INTEGER NOT NULL DEFAULT 0",
 		"completed_at":            "TEXT NOT NULL DEFAULT ''",
 	})
+	if err := st.RecoverLegacyQuota(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("recover read-only quota records: %w", err)
+	}
 	return st, nil
 }
 

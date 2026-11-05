@@ -3,6 +3,7 @@ package nodeserver
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"time"
 )
 
@@ -45,6 +46,21 @@ func VerifyRead(doc Document, key []byte, nodeID string, now time.Time) (*Verifi
 // 回执只放脱敏视图，凭据本体只出现在工件里；两处的 result_sha256 必须由
 // 同一份完整结果算出，否则 Core 判 WORK_ACCOUNT_ARTIFACT_SCOPE_CHANGED。
 func (h *Handler) fullResult(verified *Verified, status string, exitCode int) map[string]any {
+	if verified.Action == "account.quota" {
+		full := map[string]any{"status": status, "exit_code": exitCode}
+		if task, err := h.taskByTicket(nodeTicket(verified)); err == nil {
+			if task.Error != "" {
+				full["error_code"] = task.Error
+			}
+			if status == "completed" {
+				var snapshot map[string]any
+				if json.Unmarshal([]byte(task.ArgsJSON), &snapshot) == nil {
+					full["observation"] = snapshot
+				}
+			}
+		}
+		return full
+	}
 	doc, _ := h.credDocument(verified)
 	full := map[string]any{"status": status, "exit_code": exitCode}
 	if doc != nil {
@@ -82,7 +98,7 @@ func (h *Handler) ReceiptFor(verified *Verified, nodeTaskID, nodeStatus string, 
 	var resultAccountID any
 	var resultResourceVersion any
 	versionError := ""
-	if workStatus == "completed" {
+	if workStatus == "completed" && verified.Action != "account.quota" {
 		resultAccountID = verified.Payload["subject_id"]
 		if v, ok := toInt64(verified.Payload["resource_version"]); ok {
 			resultVersion := v + 1

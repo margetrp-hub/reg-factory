@@ -150,6 +150,16 @@ func (h *Handler) acceptTask(c *gin.Context) {
 
 	// 幂等：同一 operation_id 只生产一次
 	localID := "work-" + verified.TaskID
+	if verified.Action == "account.quota" {
+		operationID, _ := verified.Payload["operation_id"].(string)
+		version, _ := toInt64(verified.Payload["resource_version"])
+		if err := h.st.RecordQuotaObservation(operationID, localID, h.cfg.Platform, int(version)); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "QUOTA_SNAPSHOT_FAILED"})
+			return
+		}
+		h.writeAccepted(c, verified)
+		return
+	}
 	if operationID, _ := verified.Payload["operation_id"].(string); operationID != "" {
 		inputVersion, _ := toInt64(verified.Payload["resource_version"])
 		_, fresh, err := h.st.ReserveOperation(operationID, localID, verified.Action, int(inputVersion))
@@ -198,25 +208,6 @@ func (h *Handler) acceptTask(c *gin.Context) {
 		}
 		log.Printf("[node] accept %s task=%s subject=%s", verified.Action, verified.TaskID, verified.Subject)
 		h.writeAccepted(c, verified)
-
-	case "account.quota":
-		available, err := h.st.ListAccounts("", h.cfg.Platform, "ok", 10000)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "quota_failed", "detail": err.Error()})
-			return
-		}
-		// Quota is a synchronous read.  Keep the normal ACK shape and expose
-		// the observation as an extra field for callers that use it.
-		response := gin.H{
-			"id":               nodeTicket(verified),
-			"origin":           "work",
-			"action":           verified.Action,
-			"subject_id":       verified.Payload["subject_id"],
-			"subject_kind":     verified.Payload["subject_kind"],
-			"resource_version": verified.Payload["resource_version"],
-			"quota":            gin.H{"platform": h.cfg.Platform, "available": len(available)},
-		}
-		c.JSON(http.StatusOK, response)
 
 	case "account.liveness", "asset.liveness", "account.refresh":
 		argvTail := h.assetOpArgv(verified)
