@@ -30,6 +30,7 @@ var Kinds = map[string]bool{
 	"password": true, // 邮箱+密码（Outlook/iCloud）
 	"imported": true, // 人工导入
 	"free":     true, // 已转成 Free 凭据（access_token）
+	"team":     true,
 }
 
 // Asset 是一条资产记录。
@@ -42,7 +43,9 @@ type Asset struct {
 	CreatedAt string         `json:"created_at"`
 	Payload   map[string]any `json:"payload,omitempty"`
 	// Path 是文件相对 assets 根的路径（不进 JSON）
-	Path string `json:"-"`
+	Path      string `json:"-"`
+	ResultSHA string `json:"result_sha256,omitempty"`
+	Current   bool   `json:"is_current,omitempty"`
 }
 
 // Store 是资产库。
@@ -99,7 +102,7 @@ func documentEmail(value any) string {
 	return ""
 }
 
-// Put 写入一条资产（同 ref 覆盖）。
+// Put retains both versions before atomically updating the current projection.
 func (s *Store) Put(asset Asset) error {
 	if asset.Ref == "" || asset.Platform == "" || asset.Kind == "" {
 		return fmt.Errorf("asset 缺少 ref/platform/kind")
@@ -117,15 +120,22 @@ func (s *Store) Put(asset Asset) error {
 	name := safe(strings.ReplaceAll(strings.TrimPrefix(asset.Ref, "creds:"), "/", "_"))
 	path := filepath.Join(dir, name+".json")
 
+	asset.ResultSHA = ""
 	raw, err := json.MarshalIndent(asset, "", "  ")
 	if err != nil {
 		return err
 	}
-	temp := path + ".tmp"
-	if err := os.WriteFile(temp, raw, 0o600); err != nil {
+	if old, err := os.ReadFile(path); err == nil {
+		if _, err = s.Retain(old); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(err) {
 		return err
 	}
-	return os.Rename(temp, path)
+	if _, err = s.Retain(raw); err != nil {
+		return err
+	}
+	return atomicWrite(path, raw)
 }
 
 // PutIfAbsent 只在目标不存在时写入（增量迁移用，避免反复覆盖时间戳）。
@@ -134,6 +144,15 @@ func (s *Store) PutIfAbsent(asset Asset) (bool, error) {
 	name := safe(strings.ReplaceAll(strings.TrimPrefix(asset.Ref, "creds:"), "/", "_"))
 	path := filepath.Join(dir, name+".json")
 	if _, err := os.Stat(path); err == nil {
+		// Preserve the observed legacy result without selecting it as current.
+		raw, marshalErr := json.MarshalIndent(asset, "", "  ")
+		if marshalErr != nil {
+			return false, marshalErr
+		}
+		_, retainErr := s.Retain(raw)
+		if retainErr != nil {
+			return false, retainErr
+		}
 		return false, nil
 	}
 	if err := s.Put(asset); err != nil {
@@ -163,6 +182,14 @@ func (s *Store) List() ([]Asset, error) {
 		if jsonErr := json.Unmarshal(raw, &asset); jsonErr != nil {
 			return nil
 		}
+		if asset.Ref == "" {
+			return nil
+		}
+		digest, retainErr := s.Retain(raw)
+		if retainErr != nil {
+			return retainErr
+		}
+		asset.ResultSHA = digest
 		if rel, relErr := filepath.Rel(s.root, path); relErr == nil {
 			asset.Path = rel
 		} else {
@@ -194,12 +221,31 @@ func (s *Store) Get(ref string) (Asset, error) {
 	if err != nil {
 		return Asset{}, err
 	}
+	var found *Asset
 	for _, asset := range list {
-		if asset.Ref == ref {
-			return asset, nil
+		if asset.Ref != ref {
+			continue
+		}
+		// Login metadata shares the account ref but is not an OAuth result.
+		if found != nil && found.Kind == "oauth" && asset.Kind != "oauth" {
+			continue
+		}
+		if found != nil && asset.Kind == found.Kind {
+			a, _ := json.Marshal(asset.Payload)
+			b, _ := json.Marshal(found.Payload)
+			if string(a) != string(b) {
+				return Asset{}, ErrAmbiguous
+			}
+		}
+		if found == nil || asset.Kind == "oauth" {
+			copy := asset
+			found = &copy
 		}
 	}
-	return Asset{}, os.ErrNotExist
+	if found == nil {
+		return Asset{}, os.ErrNotExist
+	}
+	return *found, nil
 }
 
 // Migrate 把旧路径的资产搬进统一目录（幂等，不删除源文件）。
@@ -237,10 +283,8 @@ func (s *Store) Migrate(dataDir string) (int, error) {
 		}
 	}
 
-	// 1b) 手工生成的 Team JSON。它是 ChatGPT OAuth 的最新事实来源：
-	// 同一个邮箱沿用 import:<email> 引用，这样不会在 accounts 表里产生
-	// 第二个账号；每轮覆盖统一资产里的旧快照，401 刷新写回后下一个
-	// sync tick 就能被 Team 看到。源文件保留作生产回滚材料。
+	// 1b) Legacy Team JSON is evidence, never authority to overwrite current
+	// credentials. Explicit production/export selects a retained result digest.
 	teamDir := filepath.Join(dataDir, "plus-import", "team-json")
 	if entries, err := os.ReadDir(teamDir); err == nil {
 		for _, entry := range entries {
@@ -266,7 +310,9 @@ func (s *Store) Migrate(dataDir string) (int, error) {
 				Ref: "import:" + strings.ToLower(strings.TrimSpace(email)), Platform: "chatgpt", Kind: "oauth",
 				Email: email, Source: "migrated:team-json", Payload: payload,
 			}
-			if err := s.Put(asset); err == nil {
+			if added, err := s.PutIfAbsent(asset); err != nil {
+				return moved, err
+			} else if added {
 				moved++
 			}
 		}
@@ -330,6 +376,14 @@ func (s *Store) Migrate(dataDir string) (int, error) {
 				asset := Asset{
 					Ref: "tokens:" + platform.Name() + ":" + name, Platform: platform.Name(), Kind: "oauth",
 					Email: email, Source: "migrated:tokens", Payload: payload,
+				}
+				if platform.Name() == "chatgpt" {
+					if added, err := s.PutIfAbsent(asset); err != nil {
+						return moved, err
+					} else if added {
+						moved++
+					}
+					continue
 				}
 				if err := s.Put(asset); err == nil {
 					moved++

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/tiantianGPU/reg-factory/server/internal/store"
 	"net/http"
 	"regexp"
 	"strings"
@@ -124,11 +125,27 @@ func (h *Handler) executionEvents(c *gin.Context) {
 	}
 	items := []map[string]any{}
 	for _, event := range rows {
+		text := safeExecutionText(event.Line)
+		if event.Stream == "stage" {
+			var stage store.StageEvent
+			if json.Unmarshal([]byte(event.Line), &stage) == nil {
+				text = safeExecutionText(stage.Stage + " · " + stage.Status + " · " + stage.Action)
+				if regexp.MustCompile(`^PRODUCTION_[A-Z0-9_]{1,80}$`).MatchString(stage.Code) {
+					text += " · " + stage.Code
+				}
+				if hex64Pattern.MatchString(stage.ResultSHA) {
+					text += " · result=" + stage.ResultSHA[:12]
+				}
+				if stage.DurationMS > 0 {
+					text += fmt.Sprintf(" · %dms", stage.DurationMS)
+				}
+			}
+		}
 		stream := event.Stream
 		if stream != "stdout" && stream != "stderr" && stream != "system" {
 			stream = "system"
 		}
-		items = append(items, map[string]any{"id": event.ID, "kind": "log", "text": safeExecutionText(event.Line), "stream": stream, "created_at": event.TS})
+		items = append(items, map[string]any{"id": event.ID, "kind": "log", "text": text, "stream": stream, "created_at": event.TS})
 	}
 	result := map[string]any{}
 	for _, field := range fields {

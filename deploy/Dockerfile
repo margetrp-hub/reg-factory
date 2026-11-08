@@ -38,6 +38,9 @@ RUN go build -trimpath -ldflags="-s -w" -o /out/regd ./cmd/regd
 # ---------------------------------------------------------------- Python worker 运行时
 FROM ${PYTHON_IMAGE} AS runtime
 
+ARG REVISION=unknown
+LABEL org.opencontainers.image.revision=$REVISION
+
 ARG DEBIAN_FRONTEND=noninteractive
 ARG INSTALL_CLOAK=0
 ARG APT_MIRROR=""

@@ -30,7 +30,7 @@ const CONTEXT_LINKS: Record<NavSection, { href: string; label: string }[]> = {
     { href: "/tasks/", label: "任务队列" },
     { href: "/audit/", label: "操作审计" },
   ],
-  assets: [{ href: "/accounts/", label: "账号主数据" }],
+  assets: [{ href: "/accounts/", label: "账号主数据" }, { href: "/assets/", label: "结果版本与导出" }],
   supply: [
     { href: "/materials/", label: "物料总览" },
     { href: "/apps/icmail/", label: "IC 邮箱" },
@@ -116,7 +116,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
     item.href === "/" ? pathname === "/" : pathname.startsWith(item.href.replace(/\/$/, "")),
   );
   const activeSection: NavSection = activeItem?.section ||
-    (pathname.startsWith("/platform/") ? "production" :
+    (pathname.startsWith("/assets") ? "assets" : pathname.startsWith("/platform/") ? "production" :
       pathname.startsWith("/apps/icmail") || pathname.startsWith("/materials") ? "supply" :
       pathname.startsWith("/nodes") ? "nodes" :
         pathname.startsWith("/audit") ? "runtime" : "workspace");

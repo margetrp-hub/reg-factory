@@ -32,7 +32,7 @@ export function TaskTable({
     );
   }
   return (
-    <table className="tbl">
+    <table className="tbl whitespace-nowrap">
       <thead>
         <tr className="border-b border-border">
           <th className="px-3 py-1.5 text-left font-medium">状态</th>
@@ -80,7 +80,9 @@ export function TaskTable({
               </td>
               {onStop && (
                 <td className="px-3 py-1.5 text-right">
-                  {running ? (
+                  {task.script === "production.team_json" ? (
+                    <span className="text-[11px] text-muted-foreground">生产中心管理</span>
+                  ) : running ? (
                     <button
                       className="btn-danger px-2 py-0.5 text-[11px]"
                       onClick={(event) => {

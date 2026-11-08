@@ -41,9 +41,10 @@ func (h *Handler) receiptKey() []byte {
 
 // Handler 提供 Work 协议的入站端点。
 type Handler struct {
-	cfg Config
-	mgr *runner.Manager
-	st  *store.Store
+	cfg             Config
+	mgr             *runner.Manager
+	st              *store.Store
+	productionCheck func(map[string]any) map[string]any
 }
 
 // New 构造节点处理器。
@@ -53,6 +54,11 @@ func New(cfg Config, mgr *runner.Manager, st *store.Store) *Handler {
 
 // Register 挂载节点端点（不走面板登录，靠 Work 签名鉴权）。
 func (h *Handler) Register(r *gin.Engine) {
+	if h.st != nil {
+		if err := h.st.EnsureProduction(); err != nil {
+			panic("production storage unavailable")
+		}
+	}
 	enabled := h.cfg.Enabled && h.cfg.NodeID != "" && len(h.cfg.Key) >= minKeyLength
 	if !enabled {
 		log.Printf("[node] Work 子节点未启用（缺 NODE_ID/NODE_KEY>=32 字节）")
@@ -71,6 +77,7 @@ func (h *Handler) Register(r *gin.Engine) {
 				"supported_actions": []string{
 					"account.register", "account.authorize", "account.refresh",
 					"account.liveness", "asset.liveness", "account.quota",
+					productionAction, "production.team_json.existing_result",
 				},
 				"protocol_capabilities": []string{
 					"account-node.work.v1",
@@ -98,6 +105,7 @@ func (h *Handler) Register(r *gin.Engine) {
 				"supported": []string{
 					"account.register", "account.authorize", "account.refresh",
 					"account.liveness", "asset.liveness", "account.quota",
+					productionAction, "production.team_json.existing_result",
 				},
 				"unsupported": []string{
 					"account.join", "account.verify_asset", "team.seat_price",
@@ -150,6 +158,10 @@ func (h *Handler) acceptTask(c *gin.Context) {
 	}
 
 	// 幂等：同一 operation_id 只生产一次
+	if verified.Action == productionAction {
+		h.acceptProduction(c, verified)
+		return
+	}
 	localID := "work-" + verified.TaskID
 	if verified.Action == "account.quota" {
 		operationID, _ := verified.Payload["operation_id"].(string)

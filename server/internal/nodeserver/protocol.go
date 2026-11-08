@@ -48,6 +48,7 @@ var workFields = []string{
 
 // 支持的动作与各自允许的业务参数。
 var workActions = map[string]map[string]bool{
+	productionAction:    {"production_ref": true, "order_ref": true, "product_id": true, "seat_type": true, "workspace_ids": true, "mode": true, "source_ref": true, "source_sha256": true, "budget_units": true},
 	"account.register":  {"goal": true, "sms_allowance": true},
 	"account.authorize": {"sms_allowance": true, "custody_grant": true},
 	// A refresh issued by Team carries the signed custody grant that binds the
@@ -190,6 +191,9 @@ func Verify(doc Document, key []byte, nodeID string, now time.Time) (*Verified, 
 	wantKind := "account"
 	if action == "account.register" {
 		wantKind = "mailbox"
+	}
+	if action == productionAction {
+		wantKind = "production"
 	}
 	if subjectKind != wantKind {
 		return nil, perr("WORK_SUBJECT_INVALID", 400)

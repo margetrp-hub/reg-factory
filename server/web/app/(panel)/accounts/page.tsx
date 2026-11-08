@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { api, type AccountRow } from "@/lib/api";
 import { Badge, Card, Empty, Stat, timeAgo } from "@/components/ui";
 import { Drawer } from "@/components/drawer";
@@ -97,6 +98,10 @@ export default function AccountsPage() {
 
   return (
     <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-xs text-muted-foreground">账号状态与已保存的结果版本分别查看；导出时可以明确选择完整凭据。</p>
+        <Link href="/assets/" className="btn-primary">结果版本与导出</Link>
+      </div>
       {(() => {
         const platformCards = [
           { slug: "claude", name: "Claude", tone: "bg-[#d97757]" },

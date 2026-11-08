@@ -85,6 +85,9 @@ func receiptSafe(full map[string]any) map[string]any {
 
 // ReceiptFor 生成 account-node.receipt.v1。
 func (h *Handler) ReceiptFor(verified *Verified, nodeTaskID, nodeStatus string, exitCode int, key []byte, now time.Time) (map[string]any, error) {
+	if verified.Action == productionAction {
+		return h.productionReceipt(verified, key, now)
+	}
 	workStatus := map[string]string{
 		"succeeded": "completed", "completed": "completed",
 		"failed": "failed", "error": "failed", "interrupted": "failed",

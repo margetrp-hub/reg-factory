@@ -1,0 +1,319 @@
+package nodeserver
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"math"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/tiantianGPU/reg-factory/server/internal/store"
+)
+
+const productionAction = "production.team_json"
+
+func productionDigest(v any) string {
+	raw, _ := Canonical(v)
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
+}
+
+func productionScope(v *Verified) string {
+	stable := map[string]any{}
+	for _, key := range workFields {
+		if key != "issued_at" && key != "expires_at" {
+			stable[key] = v.Payload[key]
+		}
+	}
+	return productionDigest(stable)
+}
+
+func productionMetadata(document map[string]any) (map[string]any, error) {
+	token := ls(document["access_token"])
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 || ls(document["refresh_token"]) == "" {
+		return nil, perr("PRODUCTION_DOCUMENT_INVALID", 422)
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, perr("PRODUCTION_DOCUMENT_INVALID", 422)
+	}
+	var claims map[string]any
+	if json.Unmarshal(raw, &claims) != nil {
+		return nil, perr("PRODUCTION_DOCUMENT_INVALID", 422)
+	}
+	auth, _ := claims["https://api.openai.com/auth"].(map[string]any)
+	profile, _ := claims["https://api.openai.com/profile"].(map[string]any)
+	email := strings.ToLower(strings.TrimSpace(ls(document["email"])))
+	workspace := ls(auth["chatgpt_account_id"])
+	seat := map[string]string{"team": "standard", "business": "standard", "self_serve_business": "standard",
+		"self_serve_business_prolite": "premium", "team_prolite": "premium", "business_prolite": "premium"}[ls(auth["chatgpt_plan_type"])]
+	if !uuidLike.MatchString(workspace) || seat == "" || !strings.Contains(email, "@") ||
+		ls(profile["email"]) != "" && !strings.EqualFold(ls(profile["email"]), email) {
+		return nil, perr("PRODUCTION_DOCUMENT_IDENTITY_INVALID", 422)
+	}
+	for _, key := range []string{"account_id", "workspace_account_id", "chatgpt_account_id"} {
+		if ls(document[key]) != "" && document[key] != workspace {
+			return nil, perr("PRODUCTION_DOCUMENT_IDENTITY_INVALID", 422)
+		}
+	}
+	return map[string]any{"email": email, "workspace_id": workspace, "seat_type": seat}, nil
+}
+
+func readProductionSource(name string) (map[string]any, map[string]any, error) {
+	if !refPattern.MatchString(name) || filepath.Base(name) != name || !strings.HasSuffix(name, ".json") {
+		return nil, nil, perr("PRODUCTION_SOURCE_INVALID", 422)
+	}
+	path := filepath.Join(dataDir(), "plus-import", "team-json", name)
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > 2*1024*1024 {
+		return nil, nil, perr("PRODUCTION_SOURCE_UNAVAILABLE", 409)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, nil, perr("PRODUCTION_SOURCE_UNAVAILABLE", 409)
+	}
+	var document map[string]any
+	if json.Unmarshal(raw, &document) != nil {
+		return nil, nil, perr("PRODUCTION_DOCUMENT_INVALID", 422)
+	}
+	metadata, err := productionMetadata(document)
+	if err != nil {
+		return nil, nil, err
+	}
+	sum := sha256.Sum256(raw)
+	metadata["source_ref"], metadata["source_sha256"] = name, hex.EncodeToString(sum[:])
+	return document, metadata, nil
+}
+
+func validProduction(p map[string]any, subject string) bool {
+	fields := workActions[productionAction]
+	if len(p) != len(fields) || p["production_ref"] != subject || !uuidLike.MatchString(subject) ||
+		!uuidLike.MatchString(ls(p["order_ref"])) || !productionInteger(p["product_id"]) || typeInt(p["product_id"]) < 1 ||
+		(p["seat_type"] != "standard" && p["seat_type"] != "premium") || !productionInteger(p["budget_units"]) || typeInt(p["budget_units"]) < 0 {
+		return false
+	}
+	workspaces, ok := p["workspace_ids"].([]any)
+	if !ok || len(workspaces) > 100 {
+		return false
+	}
+	seen := map[string]bool{}
+	for _, id := range workspaces {
+		if !uuidLike.MatchString(ls(id)) || seen[ls(id)] {
+			return false
+		}
+		seen[ls(id)] = true
+	}
+	return p["mode"] == "existing_result" && refPattern.MatchString(ls(p["source_ref"])) && hex64Pattern.MatchString(ls(p["source_sha256"])) && typeInt(p["budget_units"]) == 0
+}
+
+func productionInteger(value any) bool {
+	switch n := value.(type) {
+	case int, int64:
+		return true
+	case float64:
+		return !math.IsInf(n, 0) && !math.IsNaN(n) && n == math.Trunc(n) && math.Abs(n) <= 9007199254740991
+	default:
+		return false
+	}
+}
+
+func (h *Handler) productionSources(request map[string]any, data map[string]any) (map[string]any, error) {
+	if len(data) != 0 {
+		return nil, perr("PRODUCTION_REQUEST_INVALID", 422)
+	}
+	entries, err := os.ReadDir(filepath.Join(dataDir(), "plus-import", "team-json"))
+	if os.IsNotExist(err) {
+		entries = nil
+	} else if err != nil {
+		return nil, perr("PRODUCTION_SOURCE_UNAVAILABLE", 503)
+	}
+	items := []map[string]any{}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		_, metadata, err := readProductionSource(entry.Name())
+		if err != nil {
+			continue
+		}
+		claimed, err := h.st.ProductionClaimed(ls(metadata["workspace_id"])+":"+ls(metadata["email"]), ls(metadata["source_sha256"]))
+		if err != nil {
+			return nil, perr("PRODUCTION_STORAGE_UNAVAILABLE", 503)
+		}
+		if claimed {
+			continue
+		}
+		items = append(items, metadata)
+		if len(items) >= 500 {
+			break
+		}
+	}
+	stamp := time.Now().Unix()
+	return signInventory(map[string]any{"schema": "work.production-sources.v1", "node_id": h.cfg.NodeID,
+		"request_id": request["request_id"], "issued_at": stamp, "expires_at": stamp + 120, "items": items}, h.receiptKey(), domainWork)
+}
+
+func (h *Handler) acceptProduction(c *gin.Context, v *Verified) {
+	if !validProduction(v.Params, v.Subject) {
+		writeErr(c, perr("PRODUCTION_PARAMETERS_INVALID", 422))
+		return
+	}
+	id := nodeTicket(v)
+	if old, err := h.st.Production(id); err == nil {
+		if old.RequestSHA != productionScope(v) {
+			writeErr(c, perr("PRODUCTION_REQUEST_CHANGED", 409))
+			return
+		}
+		h.writeAccepted(c, v)
+		return
+	}
+	document, metadata, err := readProductionSource(ls(v.Params["source_ref"]))
+	if err != nil {
+		writeErr(c, err)
+		return
+	}
+	if metadata["source_sha256"] != v.Params["source_sha256"] || metadata["seat_type"] != v.Params["seat_type"] {
+		writeErr(c, perr("PRODUCTION_SOURCE_CHANGED", 409))
+		return
+	}
+	allowed := v.Params["workspace_ids"].([]any)
+	matches := len(allowed) == 0
+	for _, id := range allowed {
+		if id == metadata["workspace_id"] {
+			matches = true
+		}
+	}
+	if !matches {
+		writeErr(c, perr("PRODUCTION_WORKSPACE_FORBIDDEN", 409))
+		return
+	}
+	raw, err := Canonical(document)
+	if err != nil {
+		writeErr(c, perr("PRODUCTION_DOCUMENT_INVALID", 422))
+		return
+	}
+	sealed, err := fernetEncrypt(h.cfg.ArtifactKey, raw)
+	if err != nil {
+		writeErr(c, perr("TEAM_ARTIFACT_KEY_UNCONFIGURED", 503))
+		return
+	}
+	params, _ := Canonical(v.Params)
+	sourceKey := ls(metadata["workspace_id"]) + ":" + ls(metadata["email"])
+	p := store.Production{OperationID: id, RequestSHA: productionScope(v), Parameters: string(params), SourceKey: sourceKey,
+		SourceRef: ls(metadata["source_ref"]), SourceSHA: ls(metadata["source_sha256"]),
+		AccountRef: "production:" + id, Email: ls(metadata["email"]), Artifact: sealed}
+	if err = h.st.AdmitProduction(p); err != nil {
+		writeErr(c, perr("PRODUCTION_SOURCE_ALREADY_CLAIMED", 409))
+		return
+	}
+	h.writeAccepted(c, v)
+}
+
+func checkProductionDocument(document map[string]any) map[string]any {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, "python", "tools/team_production_check.py")
+	raw, _ := Canonical(document)
+	command.Stdin = bytes.NewReader(raw)
+	output, err := command.Output()
+	result := map[string]any{}
+	if err != nil || len(output) > 4096 || json.Unmarshal(output, &result) != nil {
+		return map[string]any{"status": "unknown", "error_code": "PRODUCTION_CHECK_UNAVAILABLE"}
+	}
+	return result
+}
+
+func (h *Handler) productionReceipt(v *Verified, key []byte, now time.Time) (map[string]any, error) {
+	p, err := h.st.Production(nodeTicket(v))
+	if err != nil {
+		return nil, perr("WORK_TASK_NOT_FOUND", 404)
+	}
+	if p.RequestSHA != productionScope(v) {
+		return nil, perr("PRODUCTION_REQUEST_CHANGED", 409)
+	}
+	if claimed, err := h.st.ClaimProductionCheck(p.OperationID, now.Unix()); err != nil {
+		return nil, perr("PRODUCTION_STORAGE_UNAVAILABLE", 503)
+	} else if claimed {
+		started := time.Now()
+		if err := h.st.Stage("work-"+p.OperationID, store.StageEvent{Stage: "verification", Status: "running", ResultSHA: p.SourceSHA, Action: "只读检查已保存结果，不刷新、不重新登录"}); err != nil {
+			return nil, perr("PRODUCTION_STORAGE_UNAVAILABLE", 503)
+		}
+		document, err := h.productionDocument(p.Artifact)
+		check := h.productionCheck
+		if check == nil {
+			check = checkProductionDocument
+		}
+		result := map[string]any{"status": "unknown", "error_code": "PRODUCTION_ARTIFACT_UNAVAILABLE"}
+		if err == nil {
+			result = check(document)
+		}
+		status := ls(result["status"])
+		if status != "completed" && status != "failed" && status != "unknown" {
+			status = "unknown"
+			result = map[string]any{"status": status, "error_code": "PRODUCTION_CHECK_INVALID"}
+		}
+		safe := map[string]any{"status": status, "error_code": ls(result["error_code"])}
+		if status == "completed" {
+			metadata, err := productionMetadata(document)
+			if err != nil {
+				return nil, err
+			}
+			var params map[string]any
+			_ = json.Unmarshal([]byte(p.Parameters), &params)
+			for _, field := range []string{"production_ref", "mode", "source_ref", "source_sha256"} {
+				metadata[field] = params[field]
+			}
+			metadata["artifact_sha256"] = productionDigest(document)
+			metadata["checked_at"] = now.Unix()
+			metadata["valid_until"] = result["valid_until"]
+			metadata["spent_units"] = 0
+			safe["observation"], safe["liveness"] = metadata, "alive"
+		}
+		encoded, _ := Canonical(safe)
+		if err = h.st.FinishProduction(p.OperationID, status, string(encoded), now.Unix()); err != nil {
+			return nil, perr("PRODUCTION_STORAGE_UNAVAILABLE", 503)
+		}
+		_ = h.st.Stage("work-"+p.OperationID, store.StageEvent{Stage: "verification_timing", Status: status, DurationMS: time.Since(started).Milliseconds(), ResultSHA: p.SourceSHA})
+		p, err = h.st.Production(p.OperationID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	result := map[string]any{}
+	_ = json.Unmarshal([]byte(p.Result), &result)
+	if len(result) == 0 {
+		result = map[string]any{"status": p.State, "error_code": ""}
+	}
+	payload := map[string]any{}
+	for _, field := range []string{"issuer", "node_id", "operation_id", "task_id", "attempt_id", "fence", "subject_id", "resource_version", "command_sha256"} {
+		payload[field] = v.Payload[field]
+	}
+	payload["schema"], payload["node_task_id"], payload["status"] = ReceiptSchema, p.OperationID, p.State
+	payload["result"], payload["result_sha256"] = result, productionDigest(result)
+	payload["artifact_available"], payload["result_account_id"], payload["result_resource_version"], payload["finished_at"] = false, nil, nil, nil
+	if p.FinishedAt != "" {
+		payload["finished_at"] = p.FinishedAt
+	}
+	if p.State == "completed" {
+		payload["artifact_available"], payload["result_account_id"], payload["result_resource_version"] = true, SubjectID(p.AccountRef), 1
+	}
+	return signInventory(payload, key, domainWork)
+}
+
+func (h *Handler) productionDocument(sealed string) (map[string]any, error) {
+	raw, err := fernetDecrypt(h.cfg.ArtifactKey, []byte(sealed), 0)
+	var document map[string]any
+	if err != nil || json.Unmarshal(raw, &document) != nil {
+		return nil, perr("PRODUCTION_ARTIFACT_UNAVAILABLE", 409)
+	}
+	return document, nil
+}

@@ -244,8 +244,9 @@ export const api = {
     request<{
       root: string;
       total: number;
-      groups: { platform: string; kind: string; count: number; items: { ref: string; email: string; source: string }[] }[];
+      groups: { platform: string; kind: string; count: number; items: { ref: string; email: string; kind: string; source: string; created_at?: string; result_sha256: string }[] }[];
     }>("/api/assets/tree"),
+  assetResults: (ref: string, query = "") => request<{items: {ref: string; email: string; kind: string; source: string; created_at?: string; result_sha256: string; is_current?: boolean}[]}>(`/api/assets/results?ref=${encodeURIComponent(ref)}&query=${encodeURIComponent(query)}`),
   accountDetail: (ref: string) =>
     request<{ account: AccountRow }>(`/api/accounts/detail?ref=${encodeURIComponent(ref)}`),
   syncAccounts: () => request<{ ok: boolean; synced: number }>("/api/accounts/sync", { method: "POST" }),

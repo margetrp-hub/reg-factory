@@ -270,10 +270,28 @@ func (s *Store) ListTasks(status string, limit int) ([]Task, error) {
 }
 
 // RecoverInterrupted 把上次进程崩溃遗留的 running 标记为 interrupted。
+func (s *Store) NextScriptTask() (*Task, error) {
+	var id string
+	err := s.db.QueryRow(`SELECT id FROM tasks WHERE status='queued' AND script <> 'production.team_json' ORDER BY created_at,id LIMIT 1`).Scan(&id)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	task, err := s.GetTask(id)
+	return &task, err
+}
+
+func (s *Store) StopQueuedScripts() error {
+	_, err := s.db.Exec(`UPDATE tasks SET status='stopped',finished_at=?,exit_code=-1,error='stop-all' WHERE status='queued' AND script <> 'production.team_json'`, now())
+	return err
+}
+
 func (s *Store) RecoverInterrupted() (int64, error) {
 	res, err := s.db.Exec(
 		`UPDATE tasks SET status='interrupted', error='regd restarted', finished_at=?, pid=0
-		 WHERE status IN ('running','queued')`, now(),
+		 WHERE status IN ('running','queued') AND script <> 'production.team_json'`, now(),
 	)
 	if err != nil {
 		return 0, err
@@ -287,7 +305,7 @@ func (s *Store) RecoverInterrupted() (int64, error) {
 func (s *Store) AppendEvent(taskID, stream, line string) error {
 	_, err := s.db.Exec(
 		`INSERT INTO events(task_id, ts, stream, line) VALUES(?,?,?,?)`,
-		taskID, now(), stream, line,
+		taskID, now(), stream, RedactLog(line),
 	)
 	return err
 }
@@ -314,6 +332,7 @@ func (s *Store) TailEvents(taskID string, limit int) ([]Event, error) {
 		if err := rows.Scan(&e.ID, &e.TaskID, &e.TS, &e.Stream, &e.Line); err != nil {
 			return nil, err
 		}
+		e.Line = RedactLog(e.Line)
 		out = append(out, e)
 	}
 	// 反转为升序
@@ -346,6 +365,7 @@ func (s *Store) EventsAfter(taskID string, after int64, limit int) ([]Event, err
 		if err := rows.Scan(&event.ID, &event.TaskID, &event.TS, &event.Stream, &event.Line); err != nil {
 			return nil, err
 		}
+		event.Line = RedactLog(event.Line)
 		out = append(out, event)
 	}
 	return out, rows.Err()

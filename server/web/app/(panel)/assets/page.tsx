@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, type AssetItem } from "@/lib/api";
 import { Badge, Card, Empty, Stat } from "@/components/ui";
+import { AssetResults } from "@/components/asset-results";
 
 const TABS: { kind: string; label: string; hint: string }[] = [
   { kind: "emails", label: "邮箱池", hint: "emails.txt" },
@@ -25,8 +26,8 @@ export default function AssetsPage() {
   const load = useCallback(async (target: string) => {
     try {
       const [list, sum] = await Promise.all([api.assetList(target, 300), api.assetSummary()]);
-      setItems(list.items);
-      setSummary(sum.assets);
+      setItems(list.items || []);
+      setSummary(sum.assets || []);
       setError("");
     } catch (err) {
       setError((err as Error).message);
@@ -74,6 +75,7 @@ export default function AssetsPage() {
 
   return (
     <div className="space-y-4">
+      <AssetResults />
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         {TABS.map((tab) => {
           const item = summary.find((entry) => entry.kind === tab.kind);

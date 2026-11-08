@@ -7,7 +7,19 @@ const STREAM_COLOR: Record<string, string> = {
   stdout: "text-[#d5dbe6]",
   stderr: "text-[#ff9d6b]",
   system: "text-[#6fb3ff]",
+  stage: "text-[#98d8c1]",
 };
+
+function stageText(line: string) {
+  try {
+    const value = JSON.parse(line) as { stage: string; status: string; duration_ms?: number; error_code?: string; next_action?: string; result_sha256?: string };
+    const stages: Record<string, string> = { result_saved: "原结果已保存", verification: "成品核验", verification_timing: "核验耗时", execution: "脚本执行", queue: "等待执行" };
+    const states: Record<string, string> = { queued: "已排队", running: "执行中", completed: "已完成", succeeded: "成功", failed: "失败", unknown: "结果待核对", stopped: "已停止" };
+    return [stages[value.stage] || value.stage, states[value.status] || value.status,
+      value.duration_ms !== undefined ? `${value.duration_ms} ms` : "", value.error_code,
+      value.result_sha256 ? `结果 ${value.result_sha256.slice(0, 12)}` : "", value.next_action].filter(Boolean).join(" · ");
+  } catch { return line; }
+}
 
 /** 终端风格实时日志：等宽、行号、自动跟随、SSE 推送。 */
 export function LogView({ taskId = "", height = 420 }: { taskId?: string; height?: number }) {
@@ -18,6 +30,8 @@ export function LogView({ taskId = "", height = 420 }: { taskId?: string; height
   const [follow, setFollow] = useState(true);
   const [reload, setReload] = useState(0);
   const [result, setResult] = useState("");
+  const [filter, setFilter] = useState("all");
+  const [query, setQuery] = useState("");
   const boxRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
 
@@ -39,7 +53,7 @@ export function LogView({ taskId = "", height = 420 }: { taskId?: string; height
     });
     source.addEventListener("done", (event) => {
       const data = JSON.parse((event as MessageEvent).data) as { status: string; exit_code: number; error?: string };
-      const labels: Record<string, string> = { succeeded: "成功", failed: "失败", stopped: "已停止", interrupted: "已中断" };
+      const labels: Record<string, string> = { succeeded: "成功", completed: "成品核验完成，等待 Work 回传", failed: "失败", stopped: "已停止", cancelled: "已取消", interrupted: "已中断" };
       setResult(`${labels[data.status] || data.status} · 退出码 ${data.exit_code}${data.error ? ` · ${data.error}` : ""}`);
       setDone(true);
       setLive(false);
@@ -82,6 +96,10 @@ export function LogView({ taskId = "", height = 420 }: { taskId?: string; height
         ? { text: "实时", tone: "text-[#4ade80]" }
         : { text: "连接中…", tone: "text-white/40" };
 
+  const visible = lines.filter(event => (filter === "all" || event.stream === filter)
+    && (!query || (event.stream === "stage" ? stageText(event.line) : event.line).toLowerCase().includes(query.toLowerCase())));
+  const latestStage = [...lines].reverse().find(event => event.stream === "stage");
+
   return (
     <div className="overflow-hidden rounded-lg border border-white/10 bg-[#0b0e14]">
       <div className="flex flex-wrap items-center gap-2 border-b border-white/10 bg-white/[0.03] px-3 py-1.5 [&_button]:shrink-0 [&_button]:whitespace-nowrap [&_a]:shrink-0 [&_a]:whitespace-nowrap">
@@ -116,22 +134,32 @@ export function LogView({ taskId = "", height = 420 }: { taskId?: string; height
         </button>
       </div>
 
+      <div className="space-y-2 border-b border-white/10 px-3 py-2 text-[11px] text-white/70">
+        {latestStage && <p role="status">{stageText(latestStage.line)}</p>}
+        <div className="flex flex-wrap gap-2">
+          <select aria-label="日志类型" value={filter} onChange={e => setFilter(e.target.value)} className="rounded bg-[#192130] px-2 py-1">
+            <option value="all">全部输出</option><option value="stage">执行步骤</option><option value="stderr">错误输出</option><option value="system">系统事件</option>
+          </select>
+          <input aria-label="搜索日志" placeholder="搜索步骤、错误码或结果摘要" value={query} onChange={e => setQuery(e.target.value)} className="min-w-0 flex-1 rounded bg-[#192130] px-2 py-1" />
+        </div>
+      </div>
+
       <div
         ref={boxRef}
         onScroll={onScroll}
         style={{ height }}
         className="overflow-auto px-3 py-2 font-mono text-[11.5px] leading-[1.6]"
       >
-        {lines.length === 0 ? (
+        {visible.length === 0 ? (
           <div className="py-8 text-center text-[11px] text-white/25">{error || (done ? "此任务没有输出" : "等待输出…")}</div>
         ) : (
-          lines.map((event, index) => (
+          visible.map((event, index) => (
             <div key={event.id} className="flex gap-3">
               <span className="w-[44px] shrink-0 select-none text-right text-white/20">{index + 1}</span>
               <span title={event.ts} className="shrink-0 select-none text-white/25">{new Date(event.ts).toLocaleTimeString("zh-CN", {hour12:false})}</span>
               {!taskId && <span className="w-[100px] shrink-0 truncate text-white/40" title={event.task_id}>{event.task_id || "服务"}</span>}
               <span className={`min-w-0 whitespace-pre-wrap break-all ${STREAM_COLOR[event.stream] || "text-white/70"}`}>
-                {event.line}
+                {event.stream === "stage" ? stageText(event.line) : event.line}
               </span>
             </div>
           ))

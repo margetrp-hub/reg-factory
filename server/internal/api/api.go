@@ -97,6 +97,7 @@ func (s *Server) Register(r *gin.Engine) {
 
 	r.GET("/api/assets/export", s.assetExport)
 	r.GET("/api/assets/tree", s.assetTree)
+	r.GET("/api/assets/results", s.assetResults)
 	r.GET("/api/assets", s.assetSummary)
 	r.GET("/api/assets/:kind", s.assetList)
 	r.POST("/api/assets/:kind/claim", s.assetClaim)
@@ -397,7 +398,7 @@ func (s *Server) taskStream(c *gin.Context) {
 				break
 			}
 		}
-		if id != "" && task.Status != "running" && task.Status != "queued" {
+		if id != "" && task.Status != "running" && task.Status != "queued" && task.Status != "unknown" {
 			writeSSE(c, "done", gin.H{"task": id, "status": task.Status, "exit_code": task.ExitCode, "error": task.Error})
 			flusher.Flush()
 			return
@@ -429,8 +430,17 @@ func (s *Server) assetExport(c *gin.Context) {
 	kind := strings.TrimSpace(c.DefaultQuery("kind", ""))
 
 	list, err := s.assets.List()
+	if ref := c.Query("ref"); ref != "" {
+		var selected assetstore.Asset
+		if digest := c.Query("result_sha256"); digest != "" {
+			selected, err = s.assets.Result(ref, digest)
+		} else {
+			selected, err = s.assets.Get(ref)
+		}
+		list = []assetstore.Asset{selected}
+	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusConflict, gin.H{"error": "RESULT_SELECTION_REQUIRED", "detail": err.Error()})
 		return
 	}
 
@@ -447,18 +457,13 @@ func (s *Server) assetExport(c *gin.Context) {
 			continue
 		}
 		switch asset.Kind {
-		case "oauth":
-			// 标准 OAuth 凭据（与 creds/*.json 同构）
-			record := map[string]any{
-				"email":         firstNonEmptyStr(str(payload["email"]), asset.Email),
-				"access_token":  str(payload["access_token"]),
-				"refresh_token": str(payload["refresh_token"]),
-				"id_token":      str(payload["id_token"]),
-				"client_id":     firstNonEmptyStr(str(payload["client_id"]), "app_EMoamEEZ73f0CkXaXp7hrann"),
-				"token_type":    firstNonEmptyStr(str(payload["token_type"]), "Bearer"),
-				"expires_in":    payload["expires_in"],
-				"source_ref":    asset.Ref,
+		case "oauth", "team", "free":
+			record, err := assetstore.OAuthDocument(payload, asset.Email)
+			if err != nil {
+				c.JSON(http.StatusConflict, gin.H{"error": "RESULT_SELECTION_REQUIRED", "ref": asset.Ref, "detail": err.Error()})
+				return
 			}
+			record["source_ref"], record["result_sha256"] = asset.Ref, asset.ResultSHA
 			out = append(out, record)
 		case "imported":
 			// 邮箱 + 密码 + 2FA（登录用，不是 token）
@@ -476,6 +481,34 @@ func (s *Server) assetExport(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"platform": platform, "kind": kind, "count": len(out), "accounts": out,
 	})
+}
+
+func (s *Server) assetResults(c *gin.Context) {
+	ref := strings.TrimSpace(c.Query("ref"))
+	items, err := s.assets.History(ref)
+	if err != nil {
+		c.JSON(503, gin.H{"error": "result_history_unavailable"})
+		return
+	}
+	if ref == "" {
+		query := strings.ToLower(strings.TrimSpace(c.Query("query")))
+		selected := []assetstore.Asset{}
+		seen := map[string]bool{}
+		for _, item := range items {
+			if item.Platform != "chatgpt" || (item.Kind != "oauth" && item.Kind != "team" && item.Kind != "free") ||
+				seen[item.Ref] || !strings.Contains(strings.ToLower(item.Ref+" "+item.Email), query) {
+				continue
+			}
+			seen[item.Ref] = true
+			selected = append(selected, item)
+			if len(selected) == 100 {
+				break
+			}
+		}
+		items = selected
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(200, gin.H{"ref": ref, "items": items})
 }
 
 func str(value any) string {

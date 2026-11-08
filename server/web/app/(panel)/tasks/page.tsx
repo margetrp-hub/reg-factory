@@ -43,7 +43,8 @@ export default function TaskCenterPage() {
       perGroup,
       running: tasks.filter((task) => task.status === "running").length,
       queued: tasks.filter((task) => task.status === "queued").length,
-      succeeded: tasks.filter((task) => task.status === "succeeded").length,
+      succeeded: tasks.filter((task) => ["succeeded", "completed"].includes(task.status)).length,
+      unknown: tasks.filter((task) => task.status === "unknown").length,
       failed: tasks.filter((task) => task.status === "failed").length,
     };
   }, [tasks]);
@@ -66,7 +67,7 @@ export default function TaskCenterPage() {
         <Stat label="运行 / 排队" value={`${counts.running}/${counts.queued}`} tone={counts.queued > 0 ? "warn" : "neutral"} />
         <Stat label="成功" value={counts.succeeded} />
         <Stat label="失败" value={counts.failed} tone={counts.failed > 0 ? "bad" : "neutral"} />
-        <Stat label="任务模板" value={TASK_GROUPS.reduce((sum, group) => sum + group.ids.length, 0)} hint="4 个分类" />
+        <Stat label="结果待核对" value={counts.unknown} tone={counts.unknown > 0 ? "warn" : "neutral"} hint="查看原任务步骤和处理提示" />
       </div>
 
       {error && (
@@ -75,7 +76,7 @@ export default function TaskCenterPage() {
         </div>
       )}
 
-      <div className="grid gap-4">
+      <div className="grid min-w-0 grid-cols-1 gap-4">
         <Card title="全局任务流" bodyClass="p-0">
           <div className="max-h-[520px] overflow-auto">
             <TaskTable tasks={tasks} onSelect={(id) => { setSelected(id); setAllLogs(false); }} activeId={allLogs ? "" : selected} onStop={async (id) => {

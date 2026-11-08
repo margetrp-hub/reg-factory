@@ -60,6 +60,8 @@ func (h *Handler) inventoryRelay(c *gin.Context) {
 	}
 	var response map[string]any
 	switch action {
+	case "production_sources":
+		response, err = h.productionSources(payload, data)
 	case "offer":
 		response, err = h.inventoryOffer(payload, data)
 	case "event":
@@ -409,6 +411,13 @@ func (h *Handler) inventoryAccountRef(subject string) (string, bool) {
 }
 
 func (h *Handler) accountDocument(ref string) (map[string]any, error) {
+	if strings.HasPrefix(ref, "production:") {
+		sealed, err := h.st.ProductionArtifact(ref)
+		if err != nil {
+			return nil, err
+		}
+		return h.productionDocument(sealed)
+	}
 	root := strings.TrimSpace(os.Getenv("REG_FACTORY_DATA_DIR"))
 	if root == "" {
 		root = "/data"
@@ -418,6 +427,9 @@ func (h *Handler) accountDocument(ref string) (map[string]any, error) {
 		if document != nil {
 			return document, nil
 		}
+		return nil, errors.New("credential result incomplete or ambiguous")
+	} else if err != nil && !os.IsNotExist(err) {
+		return nil, err
 	}
 	account, err := h.st.GetAccount(ref)
 	if err != nil {
@@ -449,22 +461,9 @@ func normalizeDocument(payload map[string]any, fallbackEmail string) map[string]
 	if payload == nil {
 		return nil
 	}
-	document := make(map[string]any, len(payload)+4)
-	for key, value := range payload {
-		document[key] = value
-	}
-	// Producers use both the flat Team JSON shape and nested OAuth envelopes.
-	// Flatten only credential fields; keep the original document intact for
-	// artifact delivery and do not let a nested metadata value replace an
-	// explicit top-level value.
-	for _, section := range []string{"tokens", "credentials", "oauth", "token"} {
-		if tokens, ok := payload[section].(map[string]any); ok {
-			for _, key := range []string{"access_token", "accessToken", "refresh_token", "refreshToken", "id_token", "idToken"} {
-				if document[key] == nil || ls(document[key]) == "" {
-					document[key] = tokens[key]
-				}
-			}
-		}
+	document, err := assetstore.OAuthDocument(payload, fallbackEmail)
+	if err != nil {
+		return nil
 	}
 	for _, section := range []string{"account", "profile", "payload", "credentials", "oauth", "tokens"} {
 		if nested, ok := payload[section].(map[string]any); ok {

@@ -15,6 +15,7 @@ common/session_export.py — 把注册成功后的登录态导出成下游工具
 """
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -22,6 +23,7 @@ import sys
 import threading
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 if sys.platform == "win32":
     try:
@@ -409,6 +411,36 @@ def chatgpt_session_path(email):
     return os.path.join(_platform_dir("chatgpt"), f"{_safe_email_name(email)}.session.json")
 
 
+def _save_chatgpt_result(path, document, email):
+    """Retain each complete supplier result before changing export projections."""
+    destination = Path(path)
+    root = Path(os.environ.get("REG_FACTORY_DATA_DIR") or Path(TOKEN_OUTPUT_DIR).resolve().parent)
+    ref = "tokens:chatgpt:" + destination.stem
+    current = root / "assets/chatgpt/oauth" / (ref.replace(":", "_") + ".json")
+    current.parent.mkdir(parents=True, exist_ok=True)
+    history = root / "asset-results"
+    history.mkdir(parents=True, exist_ok=True)
+    def retain(value):
+        raw = json.dumps(value, ensure_ascii=False, indent=2).encode()
+        digest = hashlib.sha256(raw).hexdigest()
+        _write_json_atomic(str(history / (digest + ".json")), value)
+        return digest
+    if current.exists():
+        # Do not discard an unreadable existing projection silently.
+        retain(json.loads(current.read_text(encoding="utf-8")))
+    elif destination.exists():
+        retain({"ref": ref, "platform": "chatgpt", "kind": "oauth", "email": email,
+                "source": "legacy:" + destination.name,
+                "payload": json.loads(destination.read_text(encoding="utf-8"))})
+    envelope = {"ref": ref, "platform": "chatgpt", "kind": "oauth", "email": email,
+                "source": "producer:" + destination.name,
+                "created_at": datetime.now(timezone.utc).isoformat(), "payload": document}
+    digest = retain(envelope)
+    _write_json_atomic(str(destination), document)
+    _write_json_atomic(str(current), envelope)
+    print(f"[result] saved ref={ref} result_sha256={digest}")
+
+
 def save_chatgpt_tokens(session, email=""):
     """落盘 ChatGPT 标准 token。返回 True/False。"""
     if not _is_obj(session) or not _s(session.get("accessToken")):
@@ -417,14 +449,12 @@ def save_chatgpt_tokens(session, email=""):
     name = _safe_email_name(email or session.get("user", {}).get("email") or "account")
 
     session_path = chatgpt_session_path(name)
-    with open(session_path, "w", encoding="utf-8") as f:
-        json.dump(session, f, indent=2, ensure_ascii=False)
+    _save_chatgpt_result(session_path, session, email or session.get("user", {}).get("email", ""))
 
     try:
         cpa = build_cpa_codex_json(session, email=email)
         cpa_path = os.path.join(pdir, cpa["file_name"])
-        with open(cpa_path, "w", encoding="utf-8") as f:
-            json.dump(cpa["auth_json"], f, indent=2, ensure_ascii=False)
+        _save_chatgpt_result(cpa_path, cpa["auth_json"], email)
         print(f"  [chatgpt] token saved: {session_path} + {cpa_path}")
     except Exception as e:
         # session 已落盘,CPA 转换失败不致命(上传脚本可重试)
@@ -434,8 +464,7 @@ def save_chatgpt_tokens(session, email=""):
     try:
         c2a = build_chatgpt2api_account(session, email=email)
         c2a_path = os.path.join(pdir, f"c2a-{name}.json")
-        with open(c2a_path, "w", encoding="utf-8") as f:
-            json.dump(c2a, f, indent=2, ensure_ascii=False)
+        _save_chatgpt_result(c2a_path, c2a, email)
         print(f"  [chatgpt] chatgpt2api token saved: {c2a_path}")
     except Exception as e:
         print(f"  [chatgpt] chatgpt2api 转换跳过: {e}")
@@ -489,8 +518,7 @@ def save_codex_oauth_credentials(credentials, email=""):
     output["codex_phone_status"] = status if status in {"verified", "not_verified"} else "unknown"
     name = _safe_email_name(output["email"] or "account")
     path = os.path.join(_platform_dir("chatgpt"), f"oauth-{name}.session.json")
-    with open(path, "w", encoding="utf-8") as handle:
-        json.dump(output, handle, indent=2, ensure_ascii=False)
+    _save_chatgpt_result(path, output, output["email"])
     print(f"  [codex] OAuth credential saved: {path} ({output['codex_phone_status']})")
     return True
 
@@ -566,8 +594,11 @@ def build_kiro_rs_credentials(record, email=""):
 
 def _write_json_atomic(path, value):
     temporary = f"{path}.tmp-{os.getpid()}-{threading.get_ident()}"
-    with open(temporary, "w", encoding="utf-8") as handle:
+    with open(temporary, "w", encoding="utf-8", newline="\n") as handle:
+        os.chmod(temporary, 0o600)
         json.dump(value, handle, indent=2, ensure_ascii=False)
+        handle.flush()
+        os.fsync(handle.fileno())
     os.replace(temporary, path)
 
 

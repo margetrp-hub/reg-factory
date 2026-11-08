@@ -211,8 +211,10 @@ def _credential_dirs() -> list[Path]:
     root = Path(os.environ.get("REG_FACTORY_DATA_DIR") or ROOT).resolve()
     return [
         root / "assets" / "chatgpt" / "oauth",
+        root / "assets" / "chatgpt" / "team",
         root / "assets" / "chatgpt" / "imported",
         root / "plus-import" / "team-json",
+        root / "plus-import",
         root / "creds",
         root / "tokens" / "chatgpt",
     ]
@@ -259,6 +261,7 @@ def _credential_matches(ref: str, path: Path, document: dict) -> bool:
 
 
 def _find_credential(ref: str) -> tuple[Path, dict] | None:
+    matches = []
     for directory in _credential_dirs():
         if not directory.is_dir():
             continue
@@ -268,8 +271,19 @@ def _find_credential(ref: str) -> tuple[Path, dict] | None:
             except (OSError, UnicodeError, json.JSONDecodeError):
                 continue
             if isinstance(document, dict) and _credential_matches(ref, path, document):
-                return path, document
-    return None
+                matches.append((path, document))
+    # Explicit unified OAuth refs are the selected projection. Legacy files
+    # are evidence only; they do not become current by directory order.
+    selected = [(p, d) for p, d in matches if p.parent.name == "oauth"
+                and p.parent.parent.name == "chatgpt"
+                and (d.get("ref") == ref or _subject_id(str(d.get("ref") or "")) == ref)]
+    candidates = selected or [(p, d) for p, d in matches if _token_map(d)] or matches
+    if not candidates:
+        return None
+    fingerprints = {json.dumps(_token_map(d) or d, sort_keys=True) for _, d in candidates}
+    if len(fingerprints) > 1:
+        raise ValueError("CREDENTIAL_RESULT_AMBIGUOUS: select a retained result in assets")
+    return candidates[0]
 
 
 def _atomic_json_write(path: Path, document: dict) -> None:
@@ -277,7 +291,7 @@ def _atomic_json_write(path: Path, document: dict) -> None:
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     try:
         os.chmod(temporary, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
             json.dump(document, handle, ensure_ascii=False, indent=2)
             handle.write("\n")
             handle.flush()
@@ -356,9 +370,30 @@ def _refresh_document_copies(ref: str, email: str, selected_path: Path,
                 targets.append((path, document))
                 seen.add(key)
 
-    written: list[str] = []
+    root = Path(os.environ.get("REG_FACTORY_DATA_DIR") or ROOT).resolve()
+    prepared = []
     for path, document in targets:
         updated = _update_oauth_document(copy.deepcopy(document), updates)
+        prepared.append((path, document, updated))
+    # Persist the entire supplier response and intended write set first. If a
+    # projection fails halfway through, the new token is still recoverable
+    # without replaying the consumed refresh grant.
+    result = {"ref": ref, "email": email, "received_at": datetime.now(timezone.utc).isoformat(),
+              "updates": updates, "files": [{"path": str(p.relative_to(root)), "before": old,
+              "after": new} for p, old, new in prepared]}
+    result_raw = json.dumps(result, ensure_ascii=False, sort_keys=True).encode()
+    result_id = hashlib.sha256(result_raw).hexdigest()
+    _atomic_json_write(root / "oauth-results" / (result_id + ".json"), result)
+    for path, before, after in prepared:
+        for snapshot in (before, after):
+            envelope = snapshot if snapshot.get("ref") else {
+                "ref": ref, "platform": "chatgpt", "kind": "oauth", "email": email,
+                "source": "oauth-result:" + result_id, "payload": snapshot}
+            raw = json.dumps(envelope, ensure_ascii=False, indent=2) + "\n"
+            digest = hashlib.sha256(raw.encode()).hexdigest()
+            _atomic_json_write(root / "asset-results" / (digest + ".json"), envelope)
+    written: list[str] = []
+    for path, _, updated in prepared:
         _atomic_json_write(path, updated)
         written.append(str(path))
     return written
@@ -373,11 +408,13 @@ def _same_oauth_source(selected: dict, candidate: dict) -> bool:
             return False
     left_ref = selected.get("ref") or left.get("ref")
     right_ref = candidate.get("ref") or right.get("ref")
-    if left_ref and right_ref:
-        return left_ref == right_ref
     left_tokens, right_tokens = _token_map(selected) or {}, _token_map(candidate) or {}
     left_refresh = left_tokens.get("refresh_token") or left_tokens.get("refreshToken")
     right_refresh = right_tokens.get("refresh_token") or right_tokens.get("refreshToken")
+    if left_refresh and right_refresh:
+        return left_refresh == right_refresh and (not left_ref or not right_ref or left_ref == right_ref)
+    if left_ref and right_ref:
+        return left_ref == right_ref and not right_refresh
     return bool(left_refresh and left_refresh == right_refresh)
 
 
@@ -385,7 +422,10 @@ def _refresh_chatgpt(ref: str, email: str = "") -> dict:
     """Refresh a ChatGPT OAuth record and atomically persist the new JSON."""
     import requests
 
-    found = _find_credential(ref or email)
+    try:
+        found = _find_credential(ref or email)
+    except ValueError:
+        return {"ref": ref, "result": "unknown", "message": "存在不同凭据版本，请在资产页选择确定结果"}
     if not found:
         return {"ref": ref, "result": "relogin_required", "message": "找不到可刷新凭据"}
     path, document = found
@@ -438,7 +478,10 @@ def _reauthorize_chatgpt(ref: str, email: str = "", timeout: int = 600) -> dict:
     import asyncio
     from tools.chatgpt_reauthorize import authorize_document
 
-    found = _find_credential(ref or email)
+    try:
+        found = _find_credential(ref or email)
+    except ValueError:
+        return {"ref": ref, "result": "unknown", "message": "存在不同凭据版本，请在资产页选择确定结果"}
     if not found:
         return {"ref": ref, "result": "relogin_required", "message": "找不到原账号登录资料"}
     path, document = found

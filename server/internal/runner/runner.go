@@ -299,16 +299,7 @@ func (m *Manager) CPU() (cores float64, quota float64, pct float64) {
 }
 
 func (m *Manager) nextQueued() (*store.Task, error) {
-	tasks, err := m.st.ListTasks("queued", 50)
-	if err != nil {
-		return nil, err
-	}
-	if len(tasks) == 0 {
-		return nil, nil
-	}
-	// ListTasks 是倒序，取最早入队的一条
-	oldest := tasks[len(tasks)-1]
-	return &oldest, nil
+	return m.st.NextScriptTask()
 }
 
 // ---------------------------------------------------------------- 启动/停止
@@ -325,6 +316,7 @@ func (m *Manager) Submit(task store.Task) error {
 	if err := m.st.CreateTask(task); err != nil {
 		return err
 	}
+	_ = m.st.Stage(task.ID, store.StageEvent{Stage: "queue", Status: "queued", Action: "等待并发槽位；内存保护时保持排队"})
 	m.Wake()
 	return nil
 }
@@ -360,6 +352,8 @@ func (m *Manager) launch(task store.Task, weight int) error {
 	m.weight += weight
 	m.mu.Unlock()
 	_ = m.st.MarkRunning(task.ID, cmd.Process.Pid)
+	started := time.Now()
+	_ = m.st.Stage(task.ID, store.StageEvent{Stage: "execution", Status: "running"})
 	m.record(task.ID, "system", fmt.Sprintf("任务启动 script=%s pid=%d", task.Script, cmd.Process.Pid))
 
 	// 任务超时保护：注册流程卡住时释放槽位，避免队头阻塞
@@ -417,11 +411,15 @@ func (m *Manager) launch(task store.Task, weight int) error {
 			}
 			if stopping {
 				status = "stopped"
+			} else if code == 75 {
+				status = "unknown"
+				message = "执行结果未知；在 Work 核对原任务，不重复消耗凭证"
 			} else {
 				status = "failed"
 			}
 		}
 		m.record(task.ID, "system", fmt.Sprintf("[regd] 任务结束 status=%s exit=%d", status, code))
+		_ = m.st.Stage(task.ID, store.StageEvent{Stage: "execution", Status: status, DurationMS: time.Since(started).Milliseconds(), Code: message})
 		_ = m.st.Finish(task.ID, status, code, message)
 		m.afterFinish(task, status, code)
 		m.Wake()
@@ -431,6 +429,9 @@ func (m *Manager) launch(task store.Task, weight int) error {
 
 // Stop 停止单个任务（进程组 SIGTERM，5 秒后 SIGKILL）。
 func (m *Manager) Stop(taskID string) error {
+	if task, err := m.st.GetTask(taskID); err == nil && task.Script == "production.team_json" {
+		return errors.New("生产任务由 Work 管理，请在生产中心取消或核对原任务")
+	}
 	m.mu.Lock()
 	entry := m.procs[taskID]
 	if entry != nil {
@@ -467,10 +468,7 @@ func (m *Manager) StopAll() []string {
 		}
 	}
 	// 排队中的也清掉
-	queued, _ := m.st.ListTasks("queued", 200)
-	for i := range queued {
-		_ = m.st.Finish(queued[i].ID, "stopped", -1, "stop-all")
-	}
+	_ = m.st.StopQueuedScripts()
 	return ids
 }
 
