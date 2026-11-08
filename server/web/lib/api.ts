@@ -156,6 +156,8 @@ async function request<T>(path: string, init?: RequestInit, options?: { noRedire
 }
 
 export const api = {
+  productionControl: (id: string, action: "continue" | "stop") =>
+    request<{ ok: boolean }>(`/api/tasks/${encodeURIComponent(id)}/production/${action}`, { method: "POST" }),
   session: () =>
     request<{ ok: boolean; user: string; actor: string; anon: boolean }>("/api/session", undefined, {
       noRedirect: true,

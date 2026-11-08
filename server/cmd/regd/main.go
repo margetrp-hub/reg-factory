@@ -104,7 +104,7 @@ func main() {
 		log.Printf("[regd] 账号主数据已同步 %d 条", synced)
 	}
 	apiServer.StartLivenessLoop(context.Background())
-	nodeserver.New(nodeserver.Config{
+	productionNode := nodeserver.New(nodeserver.Config{
 		Enabled:     cfg.NodeID != "" && len(cfg.NodeKey) >= 32,
 		NodeID:      cfg.NodeID,
 		Key:         []byte(cfg.NodeKey),
@@ -112,7 +112,11 @@ func main() {
 		BusinessKey: []byte(cfg.NodeBusinessKey),
 		ArtifactKey: []byte(cfg.NodeArtifactKey),
 		Platform:    cfg.NodePlatform,
-	}, manager, st).Register(router)
+	}, manager, st)
+	productionNode.Register(router)
+	productionContext, stopProduction := context.WithCancel(context.Background())
+	defer stopProduction()
+	productionNode.StartProduction(productionContext)
 
 	registerStatic(router)
 

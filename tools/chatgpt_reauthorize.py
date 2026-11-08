@@ -56,12 +56,12 @@ def validate_identity(document: dict, tokens: dict) -> None:
         raise ValueError("OAuth workspace identity mismatch")
 
 
-async def authorize_document(document: dict, *, timeout: int = 600) -> dict:
+async def authorize_document(document: dict, *, timeout: int = 600, on_tokens=None, on_progress=None) -> dict:
     record = login_record(document)
     if record.get("account_password") and record.get("two_factor"):
         # The supplier already has a complete protocol login implementation.
         # Password/TOTP accounts do not depend on a desktop browser process.
-        return await asyncio.to_thread(_authorize_protocol, document, record, timeout)
+        return await asyncio.to_thread(_authorize_protocol, document, record, timeout, on_tokens, on_progress)
     from playwright.async_api import async_playwright
     from common.browser import open_and_connect, teardown
     from common.oauth_codex import drive_authorize, REDIRECT_URI
@@ -97,6 +97,8 @@ async def authorize_document(document: dict, *, timeout: int = 600) -> dict:
                 raise RuntimeError("OAuth callback incomplete")
             print("[reauthorize] SG登录授权完成，正在交换新凭据", flush=True)
             tokens = await asyncio.to_thread(_exchange, code, verifier, client_id, REDIRECT_URI)
+            if on_tokens:
+                on_tokens(tokens)
             validate_identity(document, tokens)
             expires_in = int(tokens.get("expires_in") or 0)
             tokens["expires_at"] = int(time.time()) + expires_in if expires_in else 0
@@ -106,7 +108,7 @@ async def authorize_document(document: dict, *, timeout: int = 600) -> dict:
                 await teardown(handle, profile_id)
 
 
-def _authorize_protocol(document: dict, record: dict, timeout: int) -> dict:
+def _authorize_protocol(document: dict, record: dict, timeout: int, on_tokens=None, on_progress=None) -> dict:
     from pathlib import Path
     from vendor.reauth_web.config import Settings
     from vendor.reauth_web.engine import ReauthError, reauth_account
@@ -121,6 +123,8 @@ def _authorize_protocol(document: dict, record: dict, timeout: int) -> dict:
         totp_secret=record["two_factor"], raw="")
     print("[reauthorize] SG启动原账号密码/TOTP协议授权", flush=True)
     def progress(step, _message):
+        if on_progress:
+            on_progress(step)
         # The shared engine's mfa event announces intent before the first HTTP
         # request. It is not evidence that MFA was reached or accepted.
         if step != "mfa":
@@ -134,6 +138,8 @@ def _authorize_protocol(document: dict, record: dict, timeout: int) -> dict:
             print("[reauthorize] " + json.dumps(exc.evidence, sort_keys=True), flush=True)
         raise
     tokens = dict(result["payloads"]["cpa"])
+    if on_tokens:
+        on_tokens(tokens)
     validate_identity(document, tokens)
     expires_at = int(_claims(tokens["access_token"]).get("exp") or 0)
     tokens["expires_at"] = expires_at

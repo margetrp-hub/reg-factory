@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import type { Task } from "@/lib/api";
+import { api, type Task } from "@/lib/api";
+import { useState } from "react";
 import { Empty, StatusBadge, timeAgo } from "@/components/ui";
 import { groupOf } from "@/lib/task-catalog";
 
@@ -23,7 +24,24 @@ export function TaskTable({
   limit?: number;
   showScript?: boolean;
 }) {
+  const [productionError, setProductionError] = useState("");
+  const [busy, setBusy] = useState("");
   const rows = limit ? tasks.slice(0, limit) : tasks;
+  const isProduction = (task: Task) => {
+    try { return task.script === "production.team_json" && JSON.parse(task.args_json || "{}").mode === "produce"; }
+    catch { return false; }
+  };
+  const showActions = Boolean(onStop) || rows.some(isProduction);
+  async function productionControl(task: Task, action: "continue" | "stop") {
+    const message = action === "stop"
+      ? "终止这一项生产，保留原账号、凭据和执行记录。系统会核对已发生的加入结果，其他数量继续执行。"
+      : "继续原账号的生产并重置自动重试次数。已保存的凭据会直接核验，不会重复生成。";
+    if (!window.confirm(message)) return;
+    setBusy(task.id); setProductionError("");
+    try { await api.productionControl(task.id, action); }
+    catch (error) { setProductionError(error instanceof Error ? error.message : "操作失败，请查看原任务日志"); }
+    finally { setBusy(""); }
+  }
   if (rows.length === 0) {
     return (
       <div className="p-4">
@@ -32,6 +50,8 @@ export function TaskTable({
     );
   }
   return (
+    <>
+    {productionError && <p role="alert" className="px-3 py-2 text-red-500">{productionError}</p>}
     <table className="tbl whitespace-nowrap">
       <thead>
         <tr className="border-b border-border">
@@ -41,7 +61,7 @@ export function TaskTable({
           <th className="px-2 py-1.5 text-right font-medium">耗时</th>
           <th className="px-3 py-1.5 text-right font-medium">创建</th>
           <th className="px-3 py-1.5 text-right font-medium">退出码</th>
-          {onStop && <th className="px-3 py-1.5 text-right font-medium">操作</th>}
+          {showActions && <th className="px-3 py-1.5 text-right font-medium">操作</th>}
         </tr>
       </thead>
       <tbody>
@@ -78,11 +98,21 @@ export function TaskTable({
               <td className="px-3 py-1.5 text-right font-mono text-[11px] text-muted-foreground">
                 {task.exit_code >= 0 ? task.exit_code : "-"}
               </td>
-              {onStop && (
+              {showActions && (
                 <td className="px-3 py-1.5 text-right">
-                  {task.script === "production.team_json" ? (
-                    <span className="text-[11px] text-muted-foreground">生产中心管理</span>
-                  ) : running ? (
+                  {isProduction(task) ? (<>
+                    {task.status === "waiting_user" || task.status === "unknown" ? (
+                      <button className="btn-ghost px-2 py-0.5 text-[11px]" disabled={busy === task.id}
+                        onClick={async (event) => {
+                          event.stopPropagation();
+                          await productionControl(task, "continue");
+                        }}>继续原生产</button>
+                    ) : null}
+                    {["running", "queued", "unknown", "waiting_user"].includes(task.status) ? (
+                      <button className="btn-danger px-2 py-0.5 text-[11px]" disabled={busy === task.id}
+                        onClick={async (event) => { event.stopPropagation(); await productionControl(task, "stop"); }}>终止本项</button>
+                    ) : <span className="text-[11px] text-muted-foreground">在生产中心补发此项</span>}
+                  </>) : running && onStop ? (
                     <button
                       className="btn-danger px-2 py-0.5 text-[11px]"
                       onClick={(event) => {
@@ -102,5 +132,6 @@ export function TaskTable({
         })}
       </tbody>
     </table>
+    </>
   );
 }

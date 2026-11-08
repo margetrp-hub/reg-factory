@@ -23,6 +23,8 @@ import (
 const productionAction = "production.team_json"
 const productionResumeDomain = "work-production-existing-resume-v1\n"
 const productionResumeProtocol = "work.production-existing-resume.v1"
+const productionAdmitDomain = "work-production-admit-v1\n"
+const productionAdmitProtocol = "work.production-admit.v1"
 
 func (h *Handler) productionReadiness() string {
 	if _, err := decodeFernetKey(h.cfg.ArtifactKey); err != nil {
@@ -46,7 +48,11 @@ func (h *Handler) resumeProduction(c *gin.Context) {
 		writeErr(c, perr("WORK_REQUEST_INVALID", 400))
 		return
 	}
-	expected, err := signInventory(doc.Payload, h.cfg.Key, productionResumeDomain)
+	domain, mode := productionResumeDomain, "existing_result"
+	if c.Request.URL.Path == "/internal/work/v1/production/admit" {
+		domain, mode = productionAdmitDomain, "produce"
+	}
+	expected, err := signInventory(doc.Payload, h.cfg.Key, domain)
 	if err != nil || !hmac.Equal([]byte(ls(expected["signature"])), []byte(doc.Signature)) {
 		writeErr(c, perr("WORK_SIGNATURE_INVALID", 401))
 		return
@@ -58,12 +64,12 @@ func (h *Handler) resumeProduction(c *gin.Context) {
 		writeErr(c, err)
 		return
 	}
-	if v.Action != productionAction || !validProduction(v.Params, v.Subject) {
+	if v.Action != productionAction || !validProduction(v.Params, v.Subject) || v.Params["mode"] != mode {
 		writeErr(c, perr("PRODUCTION_RESUME_FORBIDDEN", 422))
 		return
 	}
 	h.acceptProduction(c, v)
-	if c.Writer.Status() == 200 {
+	if c.Writer.Status() == 200 && mode == "existing_result" {
 		_ = h.st.Stage("work-"+nodeTicket(v), store.StageEvent{Stage: "recovery", Status: "queued", ResultSHA: ls(v.Params["source_sha256"]), Action: "沿原任务接收同一结果；未重新生产或登录"})
 	}
 }
@@ -160,6 +166,9 @@ func validProduction(p map[string]any, subject string) bool {
 		}
 		seen[ls(id)] = true
 	}
+	if p["mode"] == "produce" {
+		return p["source_ref"] == "" && p["source_sha256"] == ""
+	}
 	return p["mode"] == "existing_result" && refPattern.MatchString(ls(p["source_ref"])) && hex64Pattern.MatchString(ls(p["source_sha256"])) && typeInt(p["budget_units"]) == 0
 }
 
@@ -216,6 +225,10 @@ func (h *Handler) acceptProduction(c *gin.Context, v *Verified) {
 		return
 	}
 	id := nodeTicket(v)
+	if h.st.ProductionStopped(id) {
+		writeErr(c, perr("PRODUCTION_ADMIN_STOPPED", 409))
+		return
+	}
 	if old, err := h.st.Production(id); err == nil {
 		if old.RequestSHA != productionScope(v) {
 			writeErr(c, perr("PRODUCTION_REQUEST_CHANGED", 409))
@@ -252,6 +265,10 @@ func (h *Handler) acceptProduction(c *gin.Context, v *Verified) {
 	}
 	if code := h.productionReadiness(); code != "" {
 		reject(perr(code, 503))
+		return
+	}
+	if v.Params["mode"] == "produce" {
+		h.acceptNewProduction(c, v)
 		return
 	}
 	document, metadata, err := readProductionSource(ls(v.Params["source_ref"]))
@@ -322,6 +339,29 @@ func (h *Handler) productionReceipt(v *Verified, key []byte, now time.Time) (map
 	if err == sql.ErrNoRows {
 		p, err = h.st.ProductionAdmission(nodeTicket(v))
 		if err == nil && p.RequestSHA == productionScope(v) {
+			if p.State == "cancelled" && h.st.ProductionStopped(p.OperationID) {
+				effect, email := h.st.ProductionStopEffect(p.OperationID)
+				if effect == "" {
+					effect = "unknown"
+				}
+				var value map[string]any
+				_ = json.Unmarshal([]byte(p.Result), &value)
+				value["observation"] = map[string]any{"stop_effect": effect, "email": email}
+				if effect == "unknown" {
+					p.State = "unknown"
+					value["status"] = "unknown"
+				}
+				raw, _ := Canonical(value)
+				p.Result = string(raw)
+				return productionSignedReceipt(v, p, key)
+			}
+			if (p.State == "failed" || p.State == "cancelled") && h.st.ProductionRunSideEffectFree(p.OperationID) {
+				var value map[string]any
+				_ = json.Unmarshal([]byte(p.Result), &value)
+				value["observation"] = map[string]any{"side_effect_free": true}
+				raw, _ := Canonical(value)
+				p.Result = string(raw)
+			}
 			return productionSignedReceipt(v, p, key)
 		}
 	}

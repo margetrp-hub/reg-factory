@@ -29,7 +29,10 @@ func (s *Store) EnsureProduction() error {
  operation_id TEXT PRIMARY KEY, request_sha TEXT NOT NULL, parameters TEXT NOT NULL,
  state TEXT NOT NULL DEFAULT 'unknown', error_code TEXT NOT NULL DEFAULT 'PRODUCTION_ADMISSION_INTERRUPTED',
  finished_at TEXT NOT NULL DEFAULT '')`)
-	return err
+	if err != nil {
+		return err
+	}
+	return s.EnsureProductionRuns()
 }
 
 func (s *Store) Production(id string) (p Production, err error) {
@@ -77,6 +80,9 @@ func (s *Store) ProductionAdmission(id string) (p Production, err error) {
 }
 
 func (s *Store) RejectProductionAdmission(id, state, code string) error {
+	if s.ProductionStopped(id) {
+		return nil
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -136,6 +142,13 @@ func (s *Store) AdmitProduction(p Production) error {
 		return err
 	}
 	defer tx.Rollback()
+	var stopped int
+	if err = tx.QueryRow(`SELECT count(*) FROM production_stops WHERE operation_id=?`, p.OperationID).Scan(&stopped); err != nil {
+		return err
+	}
+	if stopped != 0 {
+		return errors.New("PRODUCTION_ADMIN_STOPPED")
+	}
 	var old string
 	err = tx.QueryRow(`SELECT request_sha FROM production_results WHERE operation_id=?`, p.OperationID).Scan(&old)
 	if err == nil {

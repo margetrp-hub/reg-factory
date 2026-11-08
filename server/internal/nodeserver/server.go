@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -41,10 +42,12 @@ func (h *Handler) receiptKey() []byte {
 
 // Handler 提供 Work 协议的入站端点。
 type Handler struct {
-	cfg             Config
-	mgr             *runner.Manager
-	st              *store.Store
-	productionCheck func(map[string]any) map[string]any
+	cfg              Config
+	mgr              *runner.Manager
+	st               *store.Store
+	productionCheck  func(map[string]any) map[string]any
+	productionMu     sync.Mutex
+	productionActive map[string]chan struct{}
 }
 
 // New 构造节点处理器。
@@ -57,6 +60,9 @@ func (h *Handler) Register(r *gin.Engine) {
 	if h.st != nil {
 		if err := h.st.EnsureProduction(); err != nil {
 			panic("production storage unavailable")
+		}
+		if err := h.st.EnsureProductionRuns(); err != nil {
+			panic("production run storage unavailable")
 		}
 	}
 	enabled := h.cfg.Enabled && h.cfg.NodeID != "" && len(h.cfg.Key) >= minKeyLength
@@ -73,7 +79,7 @@ func (h *Handler) Register(r *gin.Engine) {
 		actions := []string{"account.register", "account.authorize", "account.refresh", "account.liveness", "asset.liveness", "account.quota"}
 		productionError := h.productionReadiness()
 		if enabled && productionError == "" {
-			actions = append(actions, productionAction, "production.team_json.existing_result")
+			actions = append(actions, productionAction, "production.team_json.existing_result", "production.team_json.produce")
 		}
 		c.JSON(http.StatusOK, gin.H{
 			"ready":            enabled,
@@ -87,6 +93,8 @@ func (h *Handler) Register(r *gin.Engine) {
 					"work.inventory-relay.v1",
 					"account-node.accounts.v1",
 					productionResumeProtocol,
+					productionAdmitProtocol,
+					productionMaterialSchema,
 				},
 			},
 		})
@@ -108,7 +116,7 @@ func (h *Handler) Register(r *gin.Engine) {
 				"supported": []string{
 					"account.register", "account.authorize", "account.refresh",
 					"account.liveness", "asset.liveness", "account.quota",
-					productionAction, "production.team_json.existing_result",
+					productionAction, "production.team_json.existing_result", "production.team_json.produce",
 				},
 				"unsupported": []string{
 					"account.join", "account.verify_asset", "team.seat_price",
@@ -128,6 +136,10 @@ func (h *Handler) Register(r *gin.Engine) {
 	group := r.Group("/internal/work/v1")
 	group.POST("/tasks", h.acceptTask)
 	group.POST("/production/resume", h.resumeProduction)
+	group.POST("/production/admit", h.resumeProduction)
+	group.POST("/production/continue", h.continueProduction)
+	group.POST("/team/materials", h.productionMaterial)
+	group.POST("/stop", h.stopProduction)
 	group.GET("/tasks/:task_id", h.taskStatus)
 	group.POST("/tasks/:task_id/result", h.taskReceipt)
 	group.POST("/tasks/:task_id/events", h.executionEvents)

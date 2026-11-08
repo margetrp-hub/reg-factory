@@ -89,6 +89,7 @@ func (s *Server) Register(r *gin.Engine) {
 	r.GET("/api/tasks", s.listTasks)
 	r.GET("/api/tasks/:id", s.getTask)
 	r.POST("/api/tasks/:id/stop", s.stopTask)
+	r.POST("/api/tasks/:id/production/:action", s.productionControl)
 	r.POST("/api/tasks/stop-all", s.stopAll)
 	r.GET("/api/tasks/:id/logs", s.taskLogs)
 	r.GET("/api/tasks/:id/stream", s.taskStream)
@@ -285,6 +286,32 @@ func (s *Server) stopTask(c *gin.Context) {
 	}
 	actor, _ := c.Get("actor")
 	s.st.Audit(toString(actor), "task.stop", id, c.ClientIP())
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+func (s *Server) productionControl(c *gin.Context) {
+	id := strings.TrimPrefix(c.Param("id"), "work-")
+	if !strings.HasPrefix(c.Param("id"), "work-") || (c.Param("action") != "continue" && c.Param("action") != "stop") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "PRODUCTION_CONTROL_INVALID"})
+		return
+	}
+	var err error
+	if c.Param("action") == "stop" {
+		original, readErr := s.st.ProductionAdmission(id)
+		if readErr != nil {
+			c.JSON(404, gin.H{"error": "PRODUCTION_NOT_FOUND"})
+			return
+		}
+		err = s.st.StopProduction(id, original.RequestSHA, time.Now().Unix())
+	} else {
+		err = s.st.ControlProduction(id, c.Param("action"))
+	}
+	if err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		return
+	}
+	actor, _ := c.Get("actor")
+	s.st.Audit(toString(actor), "production."+c.Param("action"), id, c.ClientIP())
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
