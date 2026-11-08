@@ -3,7 +3,9 @@ package nodeserver
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -19,6 +21,52 @@ import (
 )
 
 const productionAction = "production.team_json"
+const productionResumeDomain = "work-production-existing-resume-v1\n"
+const productionResumeProtocol = "work.production-existing-resume.v1"
+
+func (h *Handler) productionReadiness() string {
+	if _, err := decodeFernetKey(h.cfg.ArtifactKey); err != nil {
+		return "PRODUCTION_ADMISSION_ARTIFACT_KEY_UNCONFIGURED"
+	}
+	if len(h.cfg.BusinessKey) < minKeyLength || len(h.cfg.ReceiptKey) < minKeyLength {
+		return "PRODUCTION_ADMISSION_KEYS_UNCONFIGURED"
+	}
+	return ""
+}
+
+// Recovery is an explicit mutation, never a read-domain side effect. Its fresh
+// signature authorizes only the same frozen existing output with zero spending.
+func (h *Handler) resumeProduction(c *gin.Context) {
+	if c.GetHeader("Cookie") != "" || c.GetHeader("Origin") != "" || c.GetHeader("Sec-Fetch-Site") != "" {
+		writeErr(c, perr("WORK_MACHINE_ONLY", 403))
+		return
+	}
+	var doc Document
+	if c.ShouldBindJSON(&doc) != nil {
+		writeErr(c, perr("WORK_REQUEST_INVALID", 400))
+		return
+	}
+	expected, err := signInventory(doc.Payload, h.cfg.Key, productionResumeDomain)
+	if err != nil || !hmac.Equal([]byte(ls(expected["signature"])), []byte(doc.Signature)) {
+		writeErr(c, perr("WORK_SIGNATURE_INVALID", 401))
+		return
+	}
+	// Reuse the full mutation validator after checking the dedicated domain.
+	doc.Signature, _ = Sign(doc.Payload, h.cfg.Key, false)
+	v, err := Verify(doc, h.cfg.Key, h.cfg.NodeID, time.Now())
+	if err != nil {
+		writeErr(c, err)
+		return
+	}
+	if v.Action != productionAction || !validProduction(v.Params, v.Subject) {
+		writeErr(c, perr("PRODUCTION_RESUME_FORBIDDEN", 422))
+		return
+	}
+	h.acceptProduction(c, v)
+	if c.Writer.Status() == 200 {
+		_ = h.st.Stage("work-"+nodeTicket(v), store.StageEvent{Stage: "recovery", Status: "queued", ResultSHA: ls(v.Params["source_sha256"]), Action: "沿原任务接收同一结果；未重新生产或登录"})
+	}
+}
 
 func productionDigest(v any) string {
 	raw, _ := Canonical(v)
@@ -175,14 +223,44 @@ func (h *Handler) acceptProduction(c *gin.Context, v *Verified) {
 		}
 		h.writeAccepted(c, v)
 		return
+	} else if err != sql.ErrNoRows {
+		writeErr(c, perr("PRODUCTION_STORAGE_UNAVAILABLE", 503))
+		return
+	}
+	params, _ := Canonical(v.Params)
+	if err := h.st.ReserveProductionAdmission(id, productionScope(v), string(params)); err != nil {
+		writeErr(c, perr("PRODUCTION_ADMISSION_SCOPE_CONFLICT", 409))
+		return
+	}
+	if admission, err := h.st.ProductionAdmission(id); err != nil || admission.State == "failed" {
+		writeErr(c, perr("PRODUCTION_ADMISSION_TERMINAL", 409))
+		return
+	}
+	reject := func(err error) {
+		code, state := "PRODUCTION_ADMISSION_STORAGE_UNAVAILABLE", "unknown"
+		if failure, ok := err.(*ProtocolError); ok {
+			code = failure.Code
+			if failure.Status < 500 {
+				state = "failed"
+			}
+		}
+		if saveErr := h.st.RejectProductionAdmission(id, state, code); saveErr != nil {
+			writeErr(c, perr("PRODUCTION_STORAGE_UNAVAILABLE", 503))
+			return
+		}
+		writeErr(c, err)
+	}
+	if code := h.productionReadiness(); code != "" {
+		reject(perr(code, 503))
+		return
 	}
 	document, metadata, err := readProductionSource(ls(v.Params["source_ref"]))
 	if err != nil {
-		writeErr(c, err)
+		reject(err)
 		return
 	}
 	if metadata["source_sha256"] != v.Params["source_sha256"] || metadata["seat_type"] != v.Params["seat_type"] {
-		writeErr(c, perr("PRODUCTION_SOURCE_CHANGED", 409))
+		reject(perr("PRODUCTION_SOURCE_CHANGED", 409))
 		return
 	}
 	allowed := v.Params["workspace_ids"].([]any)
@@ -193,26 +271,33 @@ func (h *Handler) acceptProduction(c *gin.Context, v *Verified) {
 		}
 	}
 	if !matches {
-		writeErr(c, perr("PRODUCTION_WORKSPACE_FORBIDDEN", 409))
+		reject(perr("PRODUCTION_WORKSPACE_FORBIDDEN", 409))
 		return
 	}
 	raw, err := Canonical(document)
 	if err != nil {
-		writeErr(c, perr("PRODUCTION_DOCUMENT_INVALID", 422))
+		reject(perr("PRODUCTION_DOCUMENT_INVALID", 422))
 		return
 	}
 	sealed, err := fernetEncrypt(h.cfg.ArtifactKey, raw)
 	if err != nil {
-		writeErr(c, perr("TEAM_ARTIFACT_KEY_UNCONFIGURED", 503))
+		reject(perr("PRODUCTION_ADMISSION_ENCRYPTION_UNAVAILABLE", 503))
 		return
 	}
-	params, _ := Canonical(v.Params)
 	sourceKey := ls(metadata["workspace_id"]) + ":" + ls(metadata["email"])
 	p := store.Production{OperationID: id, RequestSHA: productionScope(v), Parameters: string(params), SourceKey: sourceKey,
 		SourceRef: ls(metadata["source_ref"]), SourceSHA: ls(metadata["source_sha256"]),
 		AccountRef: "production:" + id, Email: ls(metadata["email"]), Artifact: sealed}
 	if err = h.st.AdmitProduction(p); err != nil {
-		writeErr(c, perr("PRODUCTION_SOURCE_ALREADY_CLAIMED", 409))
+		if old, readErr := h.st.Production(id); readErr == nil && old.RequestSHA == p.RequestSHA {
+			h.writeAccepted(c, v)
+			return
+		}
+		if claimed, readErr := h.st.ProductionClaimed(sourceKey, p.SourceSHA); readErr == nil && claimed {
+			reject(perr("PRODUCTION_SOURCE_ALREADY_CLAIMED", 409))
+		} else {
+			reject(perr("PRODUCTION_ADMISSION_STORAGE_UNAVAILABLE", 503))
+		}
 		return
 	}
 	h.writeAccepted(c, v)
@@ -234,6 +319,12 @@ func checkProductionDocument(document map[string]any) map[string]any {
 
 func (h *Handler) productionReceipt(v *Verified, key []byte, now time.Time) (map[string]any, error) {
 	p, err := h.st.Production(nodeTicket(v))
+	if err == sql.ErrNoRows {
+		p, err = h.st.ProductionAdmission(nodeTicket(v))
+		if err == nil && p.RequestSHA == productionScope(v) {
+			return productionSignedReceipt(v, p, key)
+		}
+	}
 	if err != nil {
 		return nil, perr("WORK_TASK_NOT_FOUND", 404)
 	}
@@ -288,6 +379,10 @@ func (h *Handler) productionReceipt(v *Verified, key []byte, now time.Time) (map
 			return nil, err
 		}
 	}
+	return productionSignedReceipt(v, p, key)
+}
+
+func productionSignedReceipt(v *Verified, p store.Production, key []byte) (map[string]any, error) {
 	result := map[string]any{}
 	_ = json.Unmarshal([]byte(p.Result), &result)
 	if len(result) == 0 {

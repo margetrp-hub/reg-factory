@@ -24,7 +24,7 @@ func TestProductionRetainsOriginalAcrossUnknownLostAckAndChangedSource(t *testin
 	}
 	defer db.Close()
 	key := bytes.Repeat([]byte("k"), 32)
-	h := New(Config{Enabled: true, NodeID: "sg", Key: key, ReceiptKey: key, BusinessKey: key, ArtifactKey: key}, nil, db)
+	h := New(Config{Enabled: true, NodeID: "sg", Key: key, ReceiptKey: key, BusinessKey: key}, nil, db)
 	router := gin.New()
 	h.Register(router)
 	workspace := SubjectID("workspace")
@@ -54,14 +54,63 @@ func TestProductionRetainsOriginalAcrossUnknownLostAckAndChangedSource(t *testin
 	payload := map[string]any{"schema": WorkSchema, "issuer": "work", "node_id": "sg", "operation_id": id, "task_id": id,
 		"attempt_id": SubjectID("attempt"), "fence": 1, "action": productionAction, "subject_kind": "production", "subject_id": slot,
 		"resource_version": 1, "issued_at": stamp.Unix(), "expires_at": stamp.Unix() + 120, "parameters": params, "command_sha256": productionDigest(params)}
-	post := func(payload map[string]any) int {
-		sig, _ := Sign(payload, key, false)
-		body, _ := json.Marshal(Document{Payload: payload, Signature: sig})
-		req := httptest.NewRequest("POST", "/internal/work/v1/tasks", bytes.NewReader(body))
+	postDocument := func(path string, document any) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(document)
+		req := httptest.NewRequest("POST", path, bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		resp := httptest.NewRecorder()
 		router.ServeHTTP(resp, req)
-		return resp.Code
+		return resp
+	}
+	post := func(payload map[string]any) int {
+		sig, _ := Sign(payload, key, false)
+		return postDocument("/internal/work/v1/tasks", Document{Payload: payload, Signature: sig}).Code
+	}
+	ready := httptest.NewRecorder()
+	router.ServeHTTP(ready, httptest.NewRequest("GET", "/ready", nil))
+	var readiness map[string]any
+	_ = json.Unmarshal(ready.Body.Bytes(), &readiness)
+	for _, action := range readiness["runtime"].(map[string]any)["supported_actions"].([]any) {
+		if action == productionAction {
+			t.Fatal("advertised unusable production")
+		}
+	}
+	if code := post(payload); code != 503 {
+		t.Fatalf("expected missing config, got %d", code)
+	}
+	readSig, _ := Sign(payload, key, true)
+	readDoc := Document{Payload: payload, Signature: readSig}
+	rejected := postDocument("/internal/work/v1/resolve", readDoc)
+	if rejected.Code != 200 || !bytes.Contains(rejected.Body.Bytes(), []byte("PRODUCTION_ADMISSION_ARTIFACT_KEY_UNCONFIGURED")) {
+		t.Fatal("first failure disappeared behind 404", rejected.Body.String())
+	}
+	if resp := postDocument("/internal/work/v1/production/resume", readDoc); resp.Code != 401 {
+		t.Fatal("read signature authorized mutation", resp.Code)
+	}
+	h.cfg.ArtifactKey = key
+	for _, invalid := range []string{"expired", "produce", "budget", "scope"} {
+		encoded, _ := json.Marshal(payload)
+		var changed map[string]any
+		_ = json.Unmarshal(encoded, &changed)
+		p := changed["parameters"].(map[string]any)
+		switch invalid {
+		case "expired":
+			changed["expires_at"] = stamp.Unix() - 1
+		case "produce":
+			p["mode"] = "produce"
+		case "budget":
+			p["budget_units"] = 1
+		case "scope":
+			p["source_sha256"] = productionDigest("different")
+		}
+		bad, _ := signInventory(changed, key, productionResumeDomain)
+		if resp := postDocument("/internal/work/v1/production/resume", bad); resp.Code < 400 {
+			t.Fatal("unsafe recovery accepted", invalid)
+		}
+	}
+	resume, _ := signInventory(payload, key, productionResumeDomain)
+	if resp := postDocument("/internal/work/v1/production/resume", resume); resp.Code != 200 {
+		t.Fatal("original admission did not recover", resp.Body.String())
 	}
 	if code := post(payload); code != 200 {
 		t.Fatalf("admit %d", code)
@@ -118,6 +167,13 @@ func TestProductionRetainsOriginalAcrossUnknownLostAckAndChangedSource(t *testin
 		if bytes.Contains([]byte(event.Line), []byte("synthetic-retained")) {
 			t.Fatal("credential leaked to logs")
 		}
+	}
+	foundAdmission := false
+	for _, event := range events {
+		foundAdmission = foundAdmission || bytes.Contains([]byte(event.Line), []byte("PRODUCTION_ADMISSION_ARTIFACT_KEY_UNCONFIGURED"))
+	}
+	if !foundAdmission {
+		t.Fatal("recovery erased original failure")
 	}
 	accountRef, found := h.inventoryAccountRef(ls(done["result_account_id"]))
 	if !found {

@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"strconv"
 	"time"
 )
 
@@ -23,7 +24,11 @@ func (s *Store) EnsureProduction() error {
  checked_at INTEGER NOT NULL DEFAULT 0, finished_at TEXT NOT NULL DEFAULT '',
  UNIQUE(source_key,source_sha));
  CREATE UNIQUE INDEX IF NOT EXISTS production_source_active ON production_results(source_key)
- WHERE state NOT IN ('failed','cancelled')`)
+ WHERE state NOT IN ('failed','cancelled');
+ CREATE TABLE IF NOT EXISTS production_admissions (
+ operation_id TEXT PRIMARY KEY, request_sha TEXT NOT NULL, parameters TEXT NOT NULL,
+ state TEXT NOT NULL DEFAULT 'unknown', error_code TEXT NOT NULL DEFAULT 'PRODUCTION_ADMISSION_INTERRUPTED',
+ finished_at TEXT NOT NULL DEFAULT '')`)
 	return err
 }
 
@@ -33,6 +38,80 @@ func (s *Store) Production(id string) (p Production, err error) {
 		&p.OperationID, &p.RequestSHA, &p.Parameters, &p.SourceKey, &p.SourceRef, &p.SourceSHA,
 		&p.AccountRef, &p.Email, &p.Artifact, &p.State, &p.Result, &p.CheckedAt, &p.FinishedAt)
 	return
+}
+
+// Admission is durable before opening or encrypting a source. A configuration
+// failure still has an original identity, visible task and append-only events.
+func (s *Store) ReserveProductionAdmission(id, scope, parameters string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec(`INSERT INTO production_admissions(operation_id,request_sha,parameters)
+ VALUES(?,?,?) ON CONFLICT(operation_id) DO NOTHING`, id, scope, parameters); err != nil {
+		return err
+	}
+	var old string
+	if err = tx.QueryRow(`SELECT request_sha FROM production_admissions WHERE operation_id=?`, id).Scan(&old); err != nil {
+		return err
+	}
+	if old != scope {
+		return errors.New("PRODUCTION_REQUEST_CHANGED")
+	}
+	_, err = tx.Exec(`INSERT INTO tasks(id,script,title,args_json,status,created_at,actor)
+ VALUES(?,'production.team_json','TEAM JSON',?,'unknown',?,'work') ON CONFLICT(id) DO NOTHING`, "work-"+id, parameters, now())
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) ProductionAdmission(id string) (p Production, err error) {
+	p.OperationID = id
+	var code string
+	err = s.db.QueryRow(`SELECT request_sha,parameters,state,error_code,finished_at
+ FROM production_admissions WHERE operation_id=?`, id).Scan(&p.RequestSHA, &p.Parameters, &p.State, &code, &p.FinishedAt)
+	p.Result = `{"status":` + strconv.Quote(p.State) + `,"error_code":` + strconv.Quote(code) + `}`
+	return
+}
+
+func (s *Store) RejectProductionAdmission(id, state, code string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	// A concurrent successful admission always outranks a failed preparation.
+	var exists int
+	if err = tx.QueryRow(`SELECT count(*) FROM production_results WHERE operation_id=?`, id).Scan(&exists); err != nil {
+		return err
+	}
+	if exists != 0 {
+		return nil
+	}
+	finished := ""
+	if state == "failed" {
+		finished = now()
+	}
+	action := "节点管理员修复接收配置后，Work 沿原任务恢复；不刷新凭证"
+	if state == "failed" {
+		action = "接收被拒绝；在生产中心查看原文件和错误，不能自动更换源文件"
+	}
+	_, err = tx.Exec(`UPDATE production_admissions SET state=?,error_code=?,finished_at=? WHERE operation_id=?`, state, code, finished, id)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(`UPDATE tasks SET status=?,error=?,finished_at=? WHERE id=?`, state, code, finished, "work-"+id)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(`INSERT INTO events(task_id,ts,stream,line) VALUES(?,?,'stage',?)`, "work-"+id, now(),
+		stageLine(StageEvent{Stage: "admission", Status: state, Code: code, Action: action}))
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) ProductionArtifact(ref string) (string, error) {
@@ -80,7 +159,8 @@ func (s *Store) AdmitProduction(p Production) error {
 		return err
 	}
 	_, err = tx.Exec(`INSERT INTO tasks(id,script,title,args_json,status,created_at,actor)
- VALUES(?,'production.team_json','TEAM JSON',?,'queued',?,'work')`, "work-"+p.OperationID, p.Parameters, now())
+ VALUES(?,'production.team_json','TEAM JSON',?,'queued',?,'work')
+ ON CONFLICT(id) DO UPDATE SET status='queued',error='',finished_at=''`, "work-"+p.OperationID, p.Parameters, now())
 	if err != nil {
 		return err
 	}

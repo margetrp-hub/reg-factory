@@ -13,7 +13,7 @@ const STREAM_COLOR: Record<string, string> = {
 function stageText(line: string) {
   try {
     const value = JSON.parse(line) as { stage: string; status: string; duration_ms?: number; error_code?: string; next_action?: string; result_sha256?: string };
-    const stages: Record<string, string> = { result_saved: "原结果已保存", verification: "成品核验", verification_timing: "核验耗时", execution: "脚本执行", queue: "等待执行" };
+    const stages: Record<string, string> = { admission: "接收成品", recovery: "恢复原任务", result_saved: "原结果已保存", verification: "成品核验", verification_timing: "核验耗时", execution: "脚本执行", queue: "等待执行" };
     const states: Record<string, string> = { queued: "已排队", running: "执行中", completed: "已完成", succeeded: "成功", failed: "失败", unknown: "结果待核对", stopped: "已停止" };
     return [stages[value.stage] || value.stage, states[value.status] || value.status,
       value.duration_ms !== undefined ? `${value.duration_ms} ms` : "", value.error_code,

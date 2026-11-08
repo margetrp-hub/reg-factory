@@ -70,20 +70,23 @@ func (h *Handler) Register(r *gin.Engine) {
 	// inventory or submits a task.  Keep it separate from the panel fallback:
 	// returning HTML here makes a healthy node look unavailable forever.
 	r.GET("/ready", func(c *gin.Context) {
+		actions := []string{"account.register", "account.authorize", "account.refresh", "account.liveness", "asset.liveness", "account.quota"}
+		productionError := h.productionReadiness()
+		if enabled && productionError == "" {
+			actions = append(actions, productionAction, "production.team_json.existing_result")
+		}
 		c.JSON(http.StatusOK, gin.H{
-			"ready":           enabled,
-			"execution_ready": enabled,
+			"ready":            enabled,
+			"execution_ready":  enabled,
+			"action_readiness": gin.H{productionAction: gin.H{"ready": enabled && productionError == "", "error_code": productionError, "processing_owner": "node_admin"}},
 			"runtime": gin.H{
-				"supported_actions": []string{
-					"account.register", "account.authorize", "account.refresh",
-					"account.liveness", "asset.liveness", "account.quota",
-					productionAction, "production.team_json.existing_result",
-				},
+				"supported_actions": actions,
 				"protocol_capabilities": []string{
 					"account-node.work.v1",
 					"account-node.receipt.v1",
 					"work.inventory-relay.v1",
 					"account-node.accounts.v1",
+					productionResumeProtocol,
 				},
 			},
 		})
@@ -124,6 +127,7 @@ func (h *Handler) Register(r *gin.Engine) {
 	}
 	group := r.Group("/internal/work/v1")
 	group.POST("/tasks", h.acceptTask)
+	group.POST("/production/resume", h.resumeProduction)
 	group.GET("/tasks/:task_id", h.taskStatus)
 	group.POST("/tasks/:task_id/result", h.taskReceipt)
 	group.POST("/tasks/:task_id/events", h.executionEvents)
