@@ -239,6 +239,45 @@ class Run:
                     (self.operation,row['oauth_attempts'],sealed,int(time.time())))
             self.db.execute('UPDATE production_runs SET output_artifact=? WHERE operation_id=?',(sealed,self.operation))
 
+    def restart_input(self):
+        """A fresh signed generation can reclaim only its own absent member.
+
+        Ordinary candidate selection still excludes all issued TEAM history.
+        The prior executor must be fenced and its stop readback settled; successful
+        or uncertain outputs can never become input to another authorization.
+        """
+        material = self.open(self.row()['material'])
+        params = material['parameters']
+        if params.get('mode') != 'produce' or not params.get('production_ref'):
+            return None
+        rows = self.db.execute('''SELECT r.*,a.parameters FROM production_runs r
+            JOIN production_admissions a ON a.operation_id=r.operation_id
+            LEFT JOIN production_results p ON p.operation_id=r.operation_id
+            WHERE r.operation_id<>? AND r.stop_requested=1 AND r.status='cancelled'
+              AND r.stop_effect='none' AND r.input_artifact<>''
+              AND (p.operation_id IS NULL OR p.state='failed')
+            ORDER BY r.updated_at DESC''', (self.operation,))
+        for prior in rows:
+            if json.loads(prior['parameters']) != params:
+                continue
+            old_material = self.open(prior['material'])
+            if old_material['workspace']['account_id'] != material['workspace']['account_id']:
+                continue
+            occupied = self.db.execute('''SELECT 1 FROM production_runs WHERE email=? AND operation_id<>?
+                AND NOT (status='cancelled' AND stop_effect='none' AND stop_requested=1)''',
+                (prior['email'], self.operation)).fetchone()
+            accepted = self.db.execute("SELECT 1 FROM production_results WHERE email=? AND state<>'failed'",
+                                       (prior['email'],)).fetchone()
+            if occupied or accepted:
+                continue
+            selected = self.open(prior['input_artifact'])
+            if (selected.get('email') != prior['email'] or selected.get('source_sha') != prior['source_sha']
+                    or selected.get('source_ref') != prior['source_ref']
+                    or hashlib.sha256(canonical(selected.get('document')).encode()).hexdigest() != prior['source_sha']):
+                raise Pending('PRODUCTION_RESTART_INPUT_INVALID', manual=True)
+            return selected
+        return None
+
     def choose(self):
         self.db.execute('BEGIN IMMEDIATE')
         try:
@@ -247,7 +286,8 @@ class Run:
             if self.row()['input_artifact']:
                 self.db.commit()
                 return
-            found = candidates(self.db, self.root)
+            original = self.restart_input()
+            found = [original] if original else candidates(self.db, self.root)
             if not found:
                 raise Pending('PRODUCTION_EXISTING_FREE_UNAVAILABLE', manual=True)
             selected = found[0]

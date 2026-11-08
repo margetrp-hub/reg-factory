@@ -5,6 +5,45 @@ import (
 	"testing"
 )
 
+func TestProductionEmailClaimUpgradeRequiresConfirmedStop(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "node.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err = s.EnsureProduction(); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate the previous release's index, including a stopped issued result.
+	_, err = s.db.Exec(`DROP INDEX production_run_email;
+ CREATE UNIQUE INDEX production_run_email ON production_runs(email)
+ WHERE email<>'' AND NOT (status='cancelled' AND stop_effect='none' AND external_started=0);
+ INSERT INTO production_runs(operation_id,material,email,stage,status,external_started,stop_requested,stop_effect,updated_at)
+ VALUES('original','sealed','child@example.test','result_ready','cancelled',1,1,'none',100);`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err = s.EnsureProductionRuns(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err = s.db.Exec(`INSERT INTO production_runs(operation_id,material,email,stage,status,updated_at)
+ VALUES('restart','new-sealed','child@example.test','admitted','queued',101)`)
+	if err != nil {
+		t.Fatal("confirmed absent membership still owns the email claim", err)
+	}
+	_, err = s.db.Exec(`INSERT INTO production_runs(operation_id,material,email,stage,status,updated_at)
+ VALUES('duplicate','sealed','child@example.test','admitted','queued',102)`)
+	if err == nil {
+		t.Fatal("concurrent production reused an active email")
+	}
+	var count int
+	if err = s.db.QueryRow(`SELECT count(*) FROM production_runs WHERE operation_id='original' AND material='sealed'`).Scan(&count); err != nil || count != 1 {
+		t.Fatal("upgrade lost the original production", count, err)
+	}
+}
+
 func TestProductionCompletesAlreadyScannedResultWithoutReplacingIdentity(t *testing.T) {
 	for _, identity := range []string{"child@example.test", "other@example.test"} {
 		t.Run(identity, func(t *testing.T) {

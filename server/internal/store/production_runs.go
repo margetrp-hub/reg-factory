@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"strings"
 )
 
 func (s *Store) EnsureProductionRuns() error {
@@ -18,12 +19,34 @@ func (s *Store) EnsureProductionRuns() error {
  stop_effect TEXT NOT NULL DEFAULT '', stop_observed_at INTEGER NOT NULL DEFAULT 0,
  retry_attempts INTEGER NOT NULL DEFAULT 0, oauth_retry_base INTEGER NOT NULL DEFAULT 0,
  invite_attempts INTEGER NOT NULL DEFAULT 0, invite_observed_at INTEGER NOT NULL DEFAULT 0);
- CREATE UNIQUE INDEX IF NOT EXISTS production_run_email ON production_runs(email)
- WHERE email<>'' AND NOT (status='cancelled' AND stop_effect='none' AND external_started=0);
  CREATE TABLE IF NOT EXISTS production_stops(operation_id TEXT PRIMARY KEY, request_sha TEXT NOT NULL, stopped_at INTEGER NOT NULL);
  CREATE TABLE IF NOT EXISTS production_outputs(operation_id TEXT NOT NULL, attempt INTEGER NOT NULL, artifact TEXT NOT NULL,
  created_at INTEGER NOT NULL, PRIMARY KEY(operation_id,attempt));`)
-	return err
+	if err != nil {
+		return err
+	}
+	// Confirmed stop absence releases an execution claim, never the retained
+	// result. Upgrade the old index atomically so concurrent claims stay unique.
+	var indexSQL string
+	err = s.db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='index' AND name='production_run_email'`).Scan(&indexSQL)
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	if strings.Contains(indexSQL, "stop_requested=1") {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	_, err = tx.Exec(`DROP INDEX IF EXISTS production_run_email;
+ CREATE UNIQUE INDEX production_run_email ON production_runs(email)
+ WHERE email<>'' AND NOT (status='cancelled' AND stop_effect='none' AND stop_requested=1);`)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) ProductionMaterial(scope string) (string, error) {

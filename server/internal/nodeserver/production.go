@@ -336,7 +336,9 @@ func checkProductionDocument(document map[string]any) map[string]any {
 
 func (h *Handler) productionReceipt(v *Verified, key []byte, now time.Time) (map[string]any, error) {
 	p, err := h.st.Production(nodeTicket(v))
-	if err == sql.ErrNoRows {
+	// A retained failed/unknown output remains immutable, while a separate stop
+	// receipt reconciles its external membership and releases Core's seat hold.
+	if err == sql.ErrNoRows || err == nil && p.State != "completed" && h.st.ProductionStopped(p.OperationID) {
 		p, err = h.st.ProductionAdmission(nodeTicket(v))
 		if err == nil && p.RequestSHA == productionScope(v) {
 			if p.State == "cancelled" && h.st.ProductionStopped(p.OperationID) {

@@ -109,3 +109,48 @@ func TestProductionStopBeforeAdmissionSurvivesReplayAndRejectsLateSubmission(t *
 		t.Fatal("stopped task selected an account")
 	}
 }
+
+func TestProductionStopKeepsFailedArtifactAndReturnsSettlementEvidence(t *testing.T) {
+	key := bytes.Repeat([]byte("s"), 32)
+	db, err := store.Open(filepath.Join(t.TempDir(), "node.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err = db.EnsureProduction(); err != nil {
+		t.Fatal(err)
+	}
+	h := New(Config{Enabled: true, NodeID: "sg", Key: key, ReceiptKey: key, ArtifactKey: key}, nil, db)
+	id, slot := SubjectID("failed-output"), SubjectID("slot")
+	params := map[string]any{"production_ref": slot, "mode": "produce"}
+	payload := map[string]any{"operation_id": id, "task_id": id, "subject_id": slot, "parameters": params}
+	v := &Verified{Payload: payload, Params: params, TaskID: id, Subject: slot, Action: productionAction}
+	p := store.Production{OperationID: id, RequestSHA: productionScope(v), Parameters: `{}`, SourceKey: "source", SourceSHA: "digest", AccountRef: "production:" + id, Email: "child@example.test", Artifact: "original-sealed-output"}
+	if err = db.ReserveProductionAdmission(id, p.RequestSHA, p.Parameters); err != nil {
+		t.Fatal(err)
+	}
+	if err = db.AdmitProduction(p); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := db.ClaimProductionCheck(id, 100); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	if err = db.FinishProduction(id, "failed", `{"status":"failed","error_code":"PRODUCTION_CREDENTIAL_TOKEN_REVOKED"}`, 100); err != nil {
+		t.Fatal(err)
+	}
+	if err = db.StopProduction(id, p.RequestSHA, 101); err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := h.productionReceipt(v, key, time.Unix(102, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := receipt["payload"].(map[string]any)
+	if result["status"] != "cancelled" || result["artifact_available"] != false {
+		t.Fatal("failed production cannot settle its stop", result)
+	}
+	original, _ := db.Production(id)
+	if original.State != "failed" || original.Artifact != p.Artifact {
+		t.Fatal("stop replaced original failed result")
+	}
+}
