@@ -44,6 +44,50 @@ func TestProductionEmailClaimUpgradeRequiresConfirmedStop(t *testing.T) {
 	}
 }
 
+func TestProductionNewOutputKeepsFailedVersionAndDeduplicatesItsOwnReceipt(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "node.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err = s.EnsureProduction(); err != nil {
+		t.Fatal(err)
+	}
+	old := Production{OperationID: "old", RequestSHA: "old-request", Parameters: "{}", SourceKey: "workspace:child@example.test",
+		SourceRef: "input.json", SourceSHA: "old-input-digest", AccountRef: "production:old", Email: "child@example.test", Artifact: "old-output"}
+	if err = s.AdmitProduction(old); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.ClaimProductionCheck(old.OperationID, 100); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.FinishProduction(old.OperationID, "failed", `{"status":"failed"}`, 100); err != nil {
+		t.Fatal(err)
+	}
+	next := old
+	next.OperationID, next.RequestSHA, next.AccountRef = "new", "new-request", "production:new"
+	next.SourceSHA, next.Artifact = "new-output-digest", "new-output"
+	if err = s.AdmitProduction(next); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.AdmitProduction(next); err != nil {
+		t.Fatal(err)
+	}
+	duplicate := next
+	duplicate.OperationID, duplicate.AccountRef = "duplicate", "production:duplicate"
+	if err = s.AdmitProduction(duplicate); err == nil {
+		t.Fatal("same output admitted twice")
+	}
+	prior, err := s.Production(old.OperationID)
+	if err != nil || prior.State != "failed" || prior.Artifact != old.Artifact {
+		t.Fatal("failed output changed", err)
+	}
+	var count int
+	if err = s.db.QueryRow("SELECT count(*) FROM production_results").Scan(&count); err != nil || count != 2 {
+		t.Fatal(count, err)
+	}
+}
+
 func TestProductionCompletesAlreadyScannedResultWithoutReplacingIdentity(t *testing.T) {
 	for _, identity := range []string{"child@example.test", "other@example.test"} {
 		t.Run(identity, func(t *testing.T) {

@@ -428,7 +428,7 @@ class Run:
             raise Pending('PRODUCTION_MEMBERSHIP_PENDING')
         self.progress('result_ready', 'running')
         return {'status': 'ready', 'email': row['email'], 'artifact': row['output_artifact'],
-                'source_ref': row['source_ref'], 'source_sha256': row['source_sha'], 'workspace_id': workspace,
+                'source_ref': row['source_ref'], 'source_sha256': hashlib.sha256(canonical(doc).encode()).hexdigest(), 'workspace_id': workspace,
                 'created_at': self.db.execute('SELECT min(created_at) FROM production_outputs WHERE operation_id=?', (self.operation,)).fetchone()[0]}
 
 

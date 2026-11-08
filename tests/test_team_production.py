@@ -10,8 +10,8 @@ from cryptography.fernet import Fernet
 from tools.team_production import Run, Pending, canonical, candidates
 
 
-def token(email, workspace, plan='free'):
-    value = {'exp': int(time.time())+86400, 'iat': int(time.time()), 'email': email,
+def token(email, workspace, plan='free', nonce=0):
+    value = {'exp': int(time.time())+86400, 'iat': int(time.time()), 'jti': str(nonce), 'email': email,
              'https://api.openai.com/profile': {'email': email},
              'https://api.openai.com/auth': {'chatgpt_account_id': workspace, 'chatgpt_plan_type': plan}}
     return 'e30.' + base64.urlsafe_b64encode(canonical(value).encode()).decode().rstrip('=') + '.test'
@@ -74,7 +74,7 @@ class ProductionTests(unittest.TestCase):
                 Backend.logins+=1
                 if self.lose_oauth: raise RuntimeError('private upstream text')
                 Backend.joined=True
-                t=token(owner.email,workspace,'team')
+                t=token(owner.email,workspace,'team',Backend.logins)
                 return {'access_token':t,'id_token':t,'refresh_token':'new-synthetic-refresh'}
         self.backend=Backend
 
@@ -96,9 +96,16 @@ class ProductionTests(unittest.TestCase):
     def test_confirmed_stop_can_restart_original_input_without_replacing_failed_output(self):
         self.failed_output()
         original = dict(self.run.row())
+        import hashlib
+        old_digest = hashlib.sha256(canonical(self.run.open(original['output_artifact'])).encode()).hexdigest()
         self.assertEqual(candidates(self.db,self.root),[])
         restarted = self.restart()
-        self.assertEqual(restarted.advance(self.backend)['status'],'ready')
+        result = restarted.advance(self.backend)
+        self.assertEqual(result['status'],'ready')
+        issued_digest = hashlib.sha256(canonical(restarted.open(restarted.row()['output_artifact'])).encode()).hexdigest()
+        self.assertEqual(result['source_sha256'],issued_digest)
+        self.assertNotEqual(result['source_sha256'],original['source_sha'])
+        self.assertNotEqual(result['source_sha256'],old_digest)
         self.assertEqual(restarted.row()['email'], self.email)
         self.assertEqual(restarted.open(restarted.row()['input_artifact']), self.run.open(original['input_artifact']))
         self.assertEqual(dict(self.run.row()), original)
