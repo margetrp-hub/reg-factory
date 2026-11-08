@@ -181,6 +181,43 @@ class ProductionTests(unittest.TestCase):
         self.assertEqual(self.run.row()['stop_effect'],'occupied')
         self.assertEqual(self.backend.logins,3)
 
+    def test_oauth_failure_preserves_safe_diagnostics_and_original_retry(self):
+        from vendor.reauth_web.engine import ReauthError
+        normal = self.backend.authorize
+        def authorize(backend, *args):
+            raise ReauthError('private-provider-body', evidence={
+                'error_code':'oauth_cloudflare_challenge', 'page_type':'edge-challenge',
+                'http_status':403, 'token_exchange_started':False,
+                'access_token':'private-token', 'url':'https://private.invalid?code=secret',
+            })
+        self.backend.authorize = authorize
+        self.assertEqual(self.run.advance(self.backend)['status'],'unknown')
+        event = json.loads(self.db.execute('SELECT line FROM events ORDER BY rowid DESC LIMIT 1').fetchone()[0])
+        self.assertEqual(event['diagnostic']['error_code'],'oauth_cloudflare_challenge')
+        self.assertEqual(event['diagnostic']['http_status'],403)
+        self.assertIn('HTTP 403',event['action'])
+        self.assertIn('edge-challenge',event['action'])
+        for secret in ('private-provider-body','private-token','private.invalid','code=secret'):
+            self.assertNotIn(secret,canonical(event))
+        self.backend.authorize = normal
+        self.assertEqual(self.run.advance(self.backend)['status'],'ready')
+        self.assertEqual((self.backend.invites,self.backend.logins),(1,1))
+        self.assertEqual(self.db.execute('SELECT count(*) FROM production_outputs').fetchone()[0],1)
+
+    def test_oauth_failure_does_not_trust_unknown_diagnostic_values(self):
+        from vendor.reauth_web.engine import ReauthError
+        def authorize(backend, *args):
+            raise ReauthError('secret-message', evidence={
+                'error_code':'secret-code', 'page_type':'secret-page', 'http_status':'secret-status',
+            })
+        self.backend.authorize = authorize
+        self.assertEqual(self.run.advance(self.backend)['status'],'unknown')
+        event = json.loads(self.db.execute('SELECT line FROM events ORDER BY rowid DESC LIMIT 1').fetchone()[0])
+        self.assertEqual(event['diagnostic']['error_code'],'oauth_authorization_failed')
+        self.assertEqual(event['diagnostic']['page_type'],'unknown')
+        self.assertEqual(event['diagnostic']['http_status'],0)
+        self.assertNotIn('secret-',canonical(event))
+
     def test_saved_output_survives_failure_before_membership_confirmation(self):
         normal=self.backend.authorize
         def authorize(backend,candidate,workspace,persist,progress):

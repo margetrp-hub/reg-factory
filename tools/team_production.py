@@ -200,7 +200,7 @@ class Run:
     def open(self, value):
         return json.loads(self.box.decrypt(value.encode()))
 
-    def progress(self, stage, status='running', code='', **fields):
+    def progress(self, stage, status='running', code='', diagnostic=None, **fields):
         self.db.execute('BEGIN IMMEDIATE')
         with self.db:
             if self.row()['status'] == 'cancelled':
@@ -214,8 +214,18 @@ class Run:
             self.db.execute('UPDATE production_admissions SET state=?,error_code=?,finished_at=? WHERE operation_id=?', (status, code, finished, self.operation))
             self.db.execute('UPDATE tasks SET status=?,error=? WHERE id=?', (status, code, 'work-' + self.operation))
             action = '自动重试已用完，管理员可继续或终止本项；其他数量继续执行' if status == 'waiting_user' else '沿原任务自动推进或退避重试；保留原账号和已保存结果'
+            event = {'stage': stage, 'status': status, 'error_code': code, 'processing_owner': 'node_admin'}
+            if diagnostic:
+                # Normalize through the login engine's allowlist again. Neither
+                # exception text nor arbitrary provider fields enter task logs.
+                from vendor.reauth_web.engine import failure_evidence
+                safe = failure_evidence({'error': diagnostic.get('error_code'),
+                    'page_type': diagnostic.get('page_type'), 'status': diagnostic.get('http_status')})
+                event['diagnostic'] = safe
+                action += f"；授权诊断 {safe['error_code']}；页面 {safe['page_type']}；HTTP {safe['http_status']}"
+            event['action'] = action
             self.db.execute("INSERT INTO events(task_id,ts,stream,line) VALUES(?,?,'stage',?)",
-                ('work-' + self.operation, time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), canonical({'stage': stage, 'status': status, 'error_code': code, 'processing_owner': 'node_admin', 'action': action})))
+                ('work-' + self.operation, time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), canonical(event)))
 
     def oauth_progress(self, stage):
         # Only known phase names enter logs; provider messages may contain tokens.
@@ -362,7 +372,7 @@ class Run:
             self.progress(self.row()['stage'], 'waiting_user' if manual else 'unknown', exc.code,
                           retry_attempts=attempts, next_at=int(time.time())+min(300,30*2**min(attempts-1,3)))
             return {'status': self.row()['status'], 'error_code': exc.code}
-        except Exception:
+        except Exception as exc:
             if self.row()['stop_requested']:
                 return {'status':'cancelled','error_code':'PRODUCTION_ADMIN_STOPPED'}
             stage = self.row()['stage']
@@ -370,7 +380,10 @@ class Run:
             attempts = self.row()['retry_attempts']+1
             exhausted = (stage == 'oauth_started' and self.row()['oauth_attempts']-self.row()['oauth_retry_base'] >= 3) or attempts >= 3
             delay = min(300,30 * 2**max(0,self.row()['oauth_attempts']-1))
-            self.progress(stage, 'waiting_user' if exhausted else 'unknown', code, next_at=int(time.time())+delay, retry_attempts=attempts)
+            diagnostic = getattr(exc, 'evidence', None)
+            self.progress(stage, 'waiting_user' if exhausted else 'unknown', code,
+                          diagnostic=diagnostic if isinstance(diagnostic, dict) else None,
+                          next_at=int(time.time())+delay, retry_attempts=attempts)
             return {'status': self.row()['status'], 'error_code': code}
 
     def reconcile_stop(self, backend_factory=Backend):
