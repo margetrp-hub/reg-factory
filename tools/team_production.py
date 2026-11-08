@@ -223,7 +223,7 @@ class Run:
                     'page_type': diagnostic.get('page_type'), 'status': diagnostic.get('http_status')})
                 event['diagnostic'] = safe
                 action += f"；授权诊断 {safe['error_code']}；页面 {safe['page_type']}；HTTP {safe['http_status']}"
-            event['action'] = action
+            event['next_action'] = action
             self.db.execute("INSERT INTO events(task_id,ts,stream,line) VALUES(?,?,'stage',?)",
                 ('work-' + self.operation, time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), canonical(event)))
 
@@ -407,7 +407,7 @@ class Run:
                         self.db.execute("INSERT INTO events(task_id,ts,stream,line) VALUES(?,?,'stage',?)",
                             ('work-'+self.operation,time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),
                              canonical({'stage':'stop_readback','status':'unknown','error_code':code,
-                                        'action':'执行已停止；30秒后只读核对原邀请及席位，保留已产出凭据'})))
+                                        'next_action':'执行已停止；30秒后只读核对原邀请及席位，保留已产出凭据'})))
                     return {'status':'cancelled','error_code':code}
                 if present:
                     effect = 'occupied'

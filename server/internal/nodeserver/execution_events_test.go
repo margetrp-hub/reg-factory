@@ -33,6 +33,12 @@ func TestExecutionLogsSignedBoundedAndRedacted(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if err = st.AppendEvent("work-task-test", "stage", `{"stage":"oauth_started","status":"unknown","error_code":"PRODUCTION_OAUTH_RESULT_UNKNOWN","next_action":"授权诊断 oauth_cloudflare_challenge；页面 edge-challenge；HTTP 403"}`); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.AppendEvent("work-task-test", "stage", `{"stage":"oauth_started","status":"waiting_user","action":"原账号继续；password=private-history HTTP 503"}`); err != nil {
+		t.Fatal(err)
+	}
 	key := bytes.Repeat([]byte("k"), 32)
 	h := New(Config{NodeID: "node-sg-1", Key: key, ReceiptKey: key}, nil, st)
 	gin.SetMode(gin.TestMode)
@@ -60,7 +66,7 @@ func TestExecutionLogsSignedBoundedAndRedacted(t *testing.T) {
 	first := call(p, "", 200)
 	payload := first["payload"].(map[string]any)
 	sig, _ := signWorkEvents(payload, key)
-	if sig != first["signature"] || payload["total"] != float64(4) || payload["has_more"] != true || payload["raw_output_available"] != false {
+	if sig != first["signature"] || payload["total"] != float64(6) || payload["has_more"] != true || payload["raw_output_available"] != false {
 		t.Fatal(first)
 	}
 	raw, _ := json.Marshal(first)
@@ -80,6 +86,17 @@ func TestExecutionLogsSignedBoundedAndRedacted(t *testing.T) {
 	raw, _ = json.Marshal(second)
 	if strings.Contains(string(raw), "do-not-show") || !strings.Contains(string(raw), "last persisted line") {
 		t.Fatal("wrong second page")
+	}
+	p["page"] = 3
+	third := call(p, "", 200)
+	raw, _ = json.Marshal(third)
+	for _, diagnostic := range []string{"oauth_cloudflare_challenge", "edge-challenge", "HTTP 403", "原账号继续", "HTTP 503"} {
+		if !strings.Contains(string(raw), diagnostic) {
+			t.Fatal("production recovery diagnostic was discarded", string(raw))
+		}
+	}
+	if strings.Contains(string(raw), "private-history") {
+		t.Fatal("historical guidance was not redacted")
 	}
 	p["task_id"] = "another-task"
 	call(p, "", 403)

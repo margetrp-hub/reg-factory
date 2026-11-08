@@ -129,6 +129,16 @@ func (h *Handler) executionEvents(c *gin.Context) {
 		if event.Stream == "stage" {
 			var stage store.StageEvent
 			if json.Unmarshal([]byte(event.Line), &stage) == nil {
+				if stage.Action == "" {
+					// Earlier Python runs retained the same guidance under action.
+					// Read their original evidence without rewriting history.
+					var prior struct {
+						Action string `json:"action"`
+					}
+					if json.Unmarshal([]byte(event.Line), &prior) == nil {
+						stage.Action = prior.Action
+					}
+				}
 				text = safeExecutionText(stage.Stage + " · " + stage.Status + " · " + stage.Action)
 				if regexp.MustCompile(`^PRODUCTION_[A-Z0-9_]{1,80}$`).MatchString(stage.Code) {
 					text += " · " + stage.Code

@@ -195,8 +195,8 @@ class ProductionTests(unittest.TestCase):
         event = json.loads(self.db.execute('SELECT line FROM events ORDER BY rowid DESC LIMIT 1').fetchone()[0])
         self.assertEqual(event['diagnostic']['error_code'],'oauth_cloudflare_challenge')
         self.assertEqual(event['diagnostic']['http_status'],403)
-        self.assertIn('HTTP 403',event['action'])
-        self.assertIn('edge-challenge',event['action'])
+        self.assertIn('HTTP 403',event['next_action'])
+        self.assertIn('edge-challenge',event['next_action'])
         for secret in ('private-provider-body','private-token','private.invalid','code=secret'):
             self.assertNotIn(secret,canonical(event))
         self.backend.authorize = normal
