@@ -216,13 +216,28 @@ func (s *Store) FinishProduction(id, state, result string, stamp int64) error {
 		finished = time.Unix(stamp, 0).UTC().Format(time.RFC3339)
 	}
 	if state == "completed" {
-		_, err = tx.Exec(`INSERT INTO accounts(ref,platform,kind,identity,secret_ref,status,created_at,updated_at)
-  VALUES(?,'chatgpt','oauth',?,'production-result','normal',?,?)`, ref, email, now(), now())
+		// The asset scanner may already have projected this exact saved export.
+		// Preserve its file reference and flags; a colliding identity is not ours.
+		var projected sql.Result
+		projected, err = tx.Exec(`INSERT INTO accounts(ref,platform,kind,identity,secret_ref,status,created_at,updated_at)
+  VALUES(?,'chatgpt','oauth',?,'production-result','normal',?,?)
+  ON CONFLICT(ref) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at
+  WHERE accounts.platform=excluded.platform AND lower(accounts.identity)=lower(excluded.identity)
+  AND accounts.kind IN ('oauth','team')`, ref, email, now(), now())
 		if err != nil {
 			return err
 		}
+		if count, err := projected.RowsAffected(); err != nil {
+			return err
+		} else if count != 1 {
+			return errors.New("PRODUCTION_ACCOUNT_IDENTITY_CONFLICT")
+		}
 	}
 	_, err = tx.Exec(`UPDATE production_results SET state=?,result=?,finished_at=? WHERE operation_id=?`, state, result, finished, id)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(`UPDATE production_admissions SET state=?,error_code=?,finished_at=? WHERE operation_id=?`, state, safeProductionCode(result), finished, id)
 	if err != nil {
 		return err
 	}

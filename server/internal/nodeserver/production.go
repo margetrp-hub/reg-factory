@@ -411,7 +411,9 @@ func (h *Handler) productionReceipt(v *Verified, key []byte, now time.Time) (map
 		}
 		encoded, _ := Canonical(safe)
 		if err = h.st.FinishProduction(p.OperationID, status, string(encoded), now.Unix()); err != nil {
-			return nil, perr("PRODUCTION_STORAGE_UNAVAILABLE", 503)
+			_ = h.st.Stage("work-"+p.OperationID, store.StageEvent{Stage: "verification", Status: "unknown", Code: "PRODUCTION_RESULT_SETTLEMENT_FAILED",
+				DurationMS: time.Since(started).Milliseconds(), ResultSHA: p.SourceSHA, Action: "原成品已保存；修复本地入账后继续只读核验，不重新生产"})
+			return nil, perr("PRODUCTION_RESULT_SETTLEMENT_FAILED", 503)
 		}
 		_ = h.st.Stage("work-"+p.OperationID, store.StageEvent{Stage: "verification_timing", Status: status, DurationMS: time.Since(started).Milliseconds(), ResultSHA: p.SourceSHA})
 		p, err = h.st.Production(p.OperationID)
