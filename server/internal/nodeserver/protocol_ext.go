@@ -104,6 +104,9 @@ func (h *Handler) ReceiptFor(verified *Verified, nodeTaskID, nodeStatus string, 
 	if workStatus == "unknown" && exitCode == 75 {
 		full["error_code"] = "WORK_ACCOUNT_REFRESH_UNKNOWN"
 	}
+	if workStatus == "failed" && (verified.Action == "account.authorize" || verified.Action == "account.refresh") {
+		full["error_code"] = "WORK_ACCOUNT_REFRESH_FAILED"
+	}
 	var resultAccountID any
 	var resultResourceVersion any
 	versionError := ""

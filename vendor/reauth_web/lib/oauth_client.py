@@ -1692,10 +1692,7 @@ class OAuthClient:
                 self.last_oauth_error
                 and str(error or "").strip() == self.last_oauth_error
             ):
-                if self.last_oauth_status:
-                    oauth_protocol["last_http_status"] = (
-                        self.last_oauth_status
-                    )
+                oauth_protocol["last_http_status"] = self.last_oauth_status
                 if self.last_oauth_page_type:
                     oauth_protocol["last_page_type"] = (
                         self.last_oauth_page_type
@@ -2302,6 +2299,17 @@ class OAuthClient:
 
         return ""
 
+    def _login_check(self, device_id, flow, user_agent, impersonate):
+        details = {}
+        result = build_sentinel_token(self.session, device_id, flow=flow, user_agent=user_agent,
+            impersonate=impersonate, failure_details=details, on_retry=getattr(self, "on_login_retry", None))
+        if not result:
+            self.last_oauth_error = details.get("error_code") or "oauth_login_check_invalid_response"
+            self.last_oauth_status = details.get("http_status", 0)
+            self.last_oauth_page_type = "login-check"
+            self.last_oauth_endpoint = ""
+        return result
+
     def _oauth_drive_external_login_for_continue(self, *, email, password, current_url, device_id, user_agent, impersonate, mail_client=None, mfa_client=None, sms_client=None):
         email = str(email or "").strip()
         password = str(password or "")
@@ -2309,13 +2317,7 @@ class OAuthClient:
             self._log("log-in 分支缺少邮箱")
             return ""
 
-        sentinel = build_sentinel_token(
-            self.session,
-            device_id,
-            flow="authorize_continue",
-            user_agent=user_agent,
-            impersonate=impersonate,
-        )
+        sentinel = self._login_check(device_id, "authorize_continue", user_agent, impersonate)
         if not sentinel:
             self._log("log-in 分支无法获取 authorize_continue sentinel")
             return ""
@@ -2438,13 +2440,7 @@ class OAuthClient:
                     baseline_message_ids=baseline_ids,
                 )
 
-            sentinel_pwd = build_sentinel_token(
-                self.session,
-                device_id,
-                flow="password_verify",
-                user_agent=user_agent,
-                impersonate=impersonate,
-            )
+            sentinel_pwd = self._login_check(device_id, "password_verify", user_agent, impersonate)
             if not sentinel_pwd:
                 self._log("log-in 分支无法获取 password_verify sentinel")
                 return ""

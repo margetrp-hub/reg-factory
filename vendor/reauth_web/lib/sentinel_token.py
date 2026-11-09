@@ -138,7 +138,7 @@ class SentinelTokenGenerator:
         return "gAAAAAC" + data
 
 
-def fetch_sentinel_challenge(session, device_id, flow="authorize_continue", user_agent=None, sec_ch_ua=None, impersonate=None):
+def fetch_sentinel_challenge(session, device_id, flow="authorize_continue", user_agent=None, sec_ch_ua=None, impersonate=None, *, failure_details=None, on_retry=None):
     """调用 sentinel 后端 API 获取 challenge 数据"""
     generator = SentinelTokenGenerator(device_id=device_id, user_agent=user_agent)
     req_body = {
@@ -165,19 +165,46 @@ def fetch_sentinel_challenge(session, device_id, flow="authorize_continue", user
     if impersonate:
         kwargs["impersonate"] = impersonate
 
-    try:
-        resp = session.post("https://sentinel.openai.com/backend-api/sentinel/req", **kwargs)
-        if resp.status_code == 200:
-            return resp.json()
-    except Exception:
-        pass
-
+    # This request submits no account credentials or token grant. Retry only
+    # this transport boundary; never restart a completed OAuth grant.
+    details = failure_details if failure_details is not None else {}
+    for attempt in range(1, 4):
+        status, retryable = 0, False
+        try:
+            resp = session.post("https://sentinel.openai.com/backend-api/sentinel/req", **kwargs)
+            status = int(resp.status_code)
+            if status == 200:
+                try:
+                    value = resp.json()
+                except (ValueError, TypeError):
+                    value = None
+                if isinstance(value, dict) and value.get("token"):
+                    details.clear()
+                    return value
+                code = "oauth_login_check_invalid_response"
+            else:
+                code = "oauth_login_check_http_error"
+                retryable = status in {408, 502, 503, 504}
+        except Exception as exc:
+            transport_code = getattr(exc, "code", 0)
+            code = {35: "oauth_tls_handshake_failed", 60: "oauth_certificate_verification_failed",
+                    28: "oauth_network_timeout"}.get(transport_code, "oauth_network_unavailable")
+            retryable = transport_code in {6, 7, 28, 35, 52, 56} or isinstance(exc, (TimeoutError, ConnectionError))
+        details.update(error_code=code, http_status=status, page_type="login-check", attempts=attempt)
+        if not retryable or attempt == 3:
+            return None
+        delay = 1 if attempt == 1 else 3
+        if on_retry is not None:
+            on_retry({"stage": "authorize", "status": "retrying", "error_code": code,
+                      "http_status": status, "page_type": "login-check", "attempt": attempt,
+                      "max_attempts": 3, "retry_in_seconds": delay, "token_exchange_started": False})
+        time.sleep(delay)
     return None
 
 
-def build_sentinel_token(session, device_id, flow="authorize_continue", user_agent=None, sec_ch_ua=None, impersonate=None):
+def build_sentinel_token(session, device_id, flow="authorize_continue", user_agent=None, sec_ch_ua=None, impersonate=None, *, failure_details=None, on_retry=None):
     """构建完整的 openai-sentinel-token JSON 字符串"""
-    challenge = fetch_sentinel_challenge(session, device_id, flow=flow, user_agent=user_agent, sec_ch_ua=sec_ch_ua, impersonate=impersonate)
+    challenge = fetch_sentinel_challenge(session, device_id, flow=flow, user_agent=user_agent, sec_ch_ua=sec_ch_ua, impersonate=impersonate, failure_details=failure_details, on_retry=on_retry)
 
     if not challenge:
         return None

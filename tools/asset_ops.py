@@ -540,6 +540,13 @@ def _reauthorize_chatgpt(ref: str, email: str = "", timeout: int = 600) -> dict:
         updates = asyncio.run(authorize_document(login_document, timeout=timeout))
         written = _refresh_document_copies(ref, _json_email(document), path, document, updates)
     except Exception as exc:
+        from vendor.reauth_web.engine import ERROR_HINTS, ReauthError
+        evidence = exc.evidence if isinstance(exc, ReauthError) else {}
+        if evidence.get("stage") == "authorize" and evidence.get("token_exchange_started") is False:
+            code = evidence.get("error_code")
+            reason = ERROR_HINTS.get(code, "登录授权未完成，请查看执行日志")
+            return {"ref": ref, "result": "failed", "message": f"SG重新授权失败：{reason}；原凭据保留",
+                    "error_code": code if code in ERROR_HINTS else "oauth_authorization_failed"}
         # Browser/transport failures can leave an external result unknown. Do
         # not replay automatically or print provider responses/credentials.
         return {"ref": ref, "result": "unknown", "message": f"SG重新授权未完成：{type(exc).__name__}"}

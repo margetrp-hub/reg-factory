@@ -129,6 +129,32 @@ func TestExecutionLogSanitizerLimitsAndSensitiveForms(t *testing.T) {
 	}
 }
 
+func TestAuthorizationDiagnosticPreservesRetryAndDropsProviderSecrets(t *testing.T) {
+	line := safeExecutionText(`[reauthorize] {"stage":"authorize","status":"retrying","error_code":"oauth_tls_handshake_failed","page_type":"login-check","http_status":0,"token_exchange_started":false,"attempt":1,"max_attempts":3,"retry_in_seconds":1,"password":"private-password","message":"private-provider-body"}`)
+	for _, want := range []string{"oauth_tls_handshake_failed", "第1/3次", "1秒后自动重试", "尚未交换凭据"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("missing %s in %s", want, line)
+		}
+	}
+	for _, secret := range []string{"private-password", "private-provider-body", "HTTP 302"} {
+		if strings.Contains(line, secret) {
+			t.Fatal("invalid diagnostic", line)
+		}
+	}
+	old := safeExecutionText(`[reauthorize] {"stage":"authorize","error_code":"login_continue_failed","page_type":"log-in","http_status":302,"token_exchange_started":false}`)
+	if !strings.Contains(old, "login_continue_failed") || !strings.Contains(old, "HTTP 302") {
+		t.Fatal(old)
+	}
+	malformed := safeExecutionText(`[reauthorize] {"stage":"authorize","error_code":"oauth_tls_handshake_failed","page_type":"password=private-page","http_status":999999,"token_exchange_started":false}`)
+	if strings.Contains(malformed, "private-page") || strings.Contains(malformed, "999999") {
+		t.Fatal(malformed)
+	}
+	unknown := safeExecutionText(`[reauthorize] {"stage":"authorize","error_code":"password=private-error","token":"private-token","token_exchange_started":false}`)
+	if strings.Contains(unknown, "private-error") || strings.Contains(unknown, "private-token") {
+		t.Fatal(unknown)
+	}
+}
+
 func TestExecutionLogsUnicodeSignatureMatchesWorkCanonical(t *testing.T) {
 	payload := map[string]any{"page": 1, "items": []map[string]any{{"text": "正在刷新 🚀 <ready> &\nnext"}}}
 	signature, err := signWorkEvents(payload, bytes.Repeat([]byte("k"), 32))

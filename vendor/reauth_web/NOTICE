@@ -13,3 +13,7 @@ accounts and serializes downloads to reuse cached exports. Conversion and
 regression tests use the local package namespace.
 Accounts within one reauthentication batch use the bounded worker pool.
 K12 supplies its own routes, lifecycle, configuration and frontend.
+
+Login-check transport now has bounded retries and allowlisted failure evidence.
+Failures preserve the actual failing request status rather than an earlier redirect.
+No changes are made to challenge generation or token exchange semantics.

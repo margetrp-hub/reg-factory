@@ -78,6 +78,9 @@ func TestRefreshUnknownExitPreservesUnknownWithoutAdvancingSource(t *testing.T) 
 		if payload["status"] != sample.expected || payload["artifact_available"] != false || payload["result_resource_version"] != nil {
 			t.Fatalf("unexpected uncertain result: %v", payload)
 		}
+		if sample.expected == "failed" && payload["result"].(map[string]any)["error_code"] != "WORK_ACCOUNT_REFRESH_FAILED" {
+			t.Fatal("terminal failure has no actionable error code", payload)
+		}
 	}
 	account, err := st.GetAccount("creds:test")
 	if err != nil || account.Version != 1 {

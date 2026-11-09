@@ -28,6 +28,27 @@ def test_unknown_provider_result_has_distinct_exit_code():
     assert asset_ops._emit({'result': 'relogin_required'}) == 1
 
 
+@pytest.mark.parametrize('exchange_started,expected,exit_code', [(False, 'failed', 1), (True, 'unknown', 75)])
+def test_authorization_failure_releases_task_only_when_no_tokens_exchanged(tmp_path, monkeypatch, exchange_started, expected, exit_code):
+    from vendor.reauth_web.engine import ReauthError
+    monkeypatch.setenv('REG_FACTORY_DATA_DIR', str(tmp_path))
+    directory = tmp_path / 'assets/chatgpt/oauth'
+    directory.mkdir(parents=True)
+    path = directory / 'original.json'
+    original = {'ref': 'import:original', 'payload': {'email': 'original@example.test', 'refresh_token': 'original-refresh', 'access_token': 'original-access'}}
+    path.write_text(json.dumps(original))
+    before = path.read_bytes()
+    failure = ReauthError('private-provider-body', evidence={'stage': 'authorize',
+        'error_code': 'oauth_tls_handshake_failed', 'token_exchange_started': exchange_started})
+    with patch('tools.chatgpt_reauthorize.authorize_document', new=AsyncMock(side_effect=failure)):
+        result = asset_ops._reauthorize_chatgpt('import:original')
+    assert result['result'] == expected and asset_ops._emit(result) == exit_code
+    assert 'private-provider-body' not in json.dumps(result) and path.read_bytes() == before
+    with patch('tools.chatgpt_reauthorize.authorize_document', new=AsyncMock(return_value={'refresh_token': 'new-refresh', 'access_token': 'new-access'})):
+        assert asset_ops._reauthorize_chatgpt('import:original')['result'] == 'refreshed'
+    assert json.loads(path.read_text())['payload']['refresh_token'] == 'new-refresh'
+
+
 def test_icloud_login_does_not_reuse_openai_refresh_token():
     record = login_record({'payload': {'email': 'original@icloud.com', 'refresh_token': 'old-openai', 'session_token': 'old-session', 'chatgpt_password': 'password'}})
     assert record['source_type'] == 'mailbox'
@@ -55,6 +76,34 @@ def test_password_totp_uses_supplier_protocol_and_preserves_workspace():
     assert account.totp_secret == 'JBSWY3DPEHPK3PXP'
     assert settings.extra['workspace_id'] == 'original-workspace'
     assert result['refresh_token'] == 'fresh'
+
+
+@pytest.mark.parametrize('production_proxy', ['', 'http://production.example.test:8888'])
+def test_work_authorization_uses_production_egress_without_inheriting_registration_proxy(monkeypatch, production_proxy):
+    monkeypatch.setenv('REG_FACTORY_PRODUCTION_PROXY', production_proxy)
+    monkeypatch.setenv('PROXY_MODE', 'residential')
+    monkeypatch.setenv('REG_FACTORY_PROXY', 'http://registration.example.test:8889')
+    doc = {'payload': {'email': 'original@icloud.com', 'password': 'original-password', 'totp': 'JBSWY3DPEHPK3PXP'}}
+    token = jwt({'email': doc['payload']['email'], 'exp': 4102444800})
+    with patch('vendor.reauth_web.engine.reauth_account', return_value={'payloads': {'cpa': {'access_token': token, 'refresh_token': 'fresh'}}}) as reauth:
+        asyncio.run(authorize_document(doc))
+    assert reauth.call_args.args[1].proxy == production_proxy
+    assert callable(reauth.call_args.kwargs['on_retry'])
+
+
+def test_exchange_uses_same_production_proxy_and_no_ambient_proxy(monkeypatch):
+    from unittest.mock import MagicMock
+    from tools.chatgpt_reauthorize import _exchange
+    monkeypatch.setenv('REG_FACTORY_PRODUCTION_PROXY', 'http://production.example.test:8888')
+    monkeypatch.setenv('REG_FACTORY_PROXY_URL', 'http://registration.example.test:8889')
+    session = MagicMock()
+    session.proxies = {}
+    session.post.return_value.json.return_value = {'access_token': 'new-access', 'refresh_token': 'new-refresh'}
+    with patch('requests.Session') as factory:
+        factory.return_value.__enter__.return_value = session
+        assert _exchange('auth-code', 'verifier', 'client', 'http://localhost:1455/auth/callback')['refresh_token'] == 'new-refresh'
+    assert session.trust_env is False
+    assert session.proxies == {'http': 'http://production.example.test:8888', 'https': 'http://production.example.test:8888'}
 
 
 @pytest.mark.parametrize('ref,kind', [('import:original', 'oauth'), ('production:original-operation', 'team')])

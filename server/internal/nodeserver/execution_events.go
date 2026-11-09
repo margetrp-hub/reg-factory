@@ -30,6 +30,9 @@ var logSecrets = []*regexp.Regexp{
 var logControls = regexp.MustCompile(`[\x00-\x08\x0b-\x1f\x7f]`)
 
 func safeExecutionText(line string) string {
+	if diagnostic, ok := safeAuthorizationDiagnostic(line); ok {
+		return diagnostic
+	}
 	for _, pattern := range logSecrets {
 		line = pattern.ReplaceAllString(line, "[REDACTED]")
 	}
@@ -39,6 +42,77 @@ func safeExecutionText(line string) string {
 		return string(runes[:2048]) + "…"
 	}
 	return string(runes)
+}
+
+// Reauthorization emits an allowlisted diagnostic, not a raw provider reply.
+// Preserve that evidence without letting the generic "code" redactor consume
+// the suffix of "error_code", or permitting arbitrary values to escape it.
+func safeAuthorizationDiagnostic(line string) (string, bool) {
+	const prefix = "[reauthorize] "
+	if !strings.HasPrefix(line, prefix) || len(line) > 4096 {
+		return "", false
+	}
+	var value struct {
+		Stage       string `json:"stage"`
+		Status      string `json:"status"`
+		Code        string `json:"error_code"`
+		Page        string `json:"page_type"`
+		HTTP        int    `json:"http_status"`
+		Exchange    *bool  `json:"token_exchange_started"`
+		Attempt     int    `json:"attempt"`
+		MaxAttempts int    `json:"max_attempts"`
+		RetryIn     int    `json:"retry_in_seconds"`
+	}
+	if json.Unmarshal([]byte(strings.TrimPrefix(line, prefix)), &value) != nil || value.Stage != "authorize" || value.Exchange == nil || *value.Exchange {
+		return "", false
+	}
+	codes := map[string]string{
+		"login_continue_failed":                 "登录继续步骤未完成",
+		"oauth_tls_handshake_failed":            "登录校验连接 TLS 握手失败",
+		"oauth_certificate_verification_failed": "登录校验证书验证失败",
+		"oauth_network_timeout":                 "登录校验连接超时",
+		"oauth_network_unavailable":             "登录校验连接不可用",
+		"oauth_login_check_http_error":          "登录校验服务响应异常",
+		"oauth_login_check_invalid_response":    "登录校验响应不完整",
+		"invalid_username_or_password":          "邮箱或密码未通过校验",
+		"rate_limit_exceeded":                   "登录请求被限流",
+		"mfa_totp_secret_required":              "缺少两步验证资料",
+		"mfa_totp_factor_not_available":         "两步验证方式不可用",
+		"mfa_totp_code_unavailable":             "两步验证码未通过",
+		"mfa_totp_verification_failed":          "两步验证未完成",
+		"mfa_primary_factor_required":           "需要主验证方式确认",
+		"email_otp_rejected_429":                "邮箱验证码被限流",
+		"email_otp_not_found":                   "未取得邮箱验证码",
+		"email_otp_provider_required":           "需要邮箱验证资料",
+		"email_otp_verification_failed":         "邮箱验证未完成",
+		"phone_required":                        "需要手机号验证",
+		"add_phone_failed":                      "手机号验证未完成",
+		"add_phone_requires_sms_client":         "需要手机号验证",
+		"oauth_cloudflare_challenge":            "登录页需要额外验证",
+		"oauth_callback_not_found":              "未取得授权回调",
+		"oauth_callback_timeout":                "等待授权回调超时",
+		"oauth_authorization_failed":            "授权未完成",
+		"choose_account_failed":                 "选择账号未完成",
+		"about_you_failed":                      "账号资料确认未完成",
+	}
+	label, ok := codes[value.Code]
+	if !ok {
+		return "", false
+	}
+	pages := map[string]bool{"start": true, "log-in": true, "login-check": true, "login_password": true,
+		"mfa-challenge": true, "email-verification": true, "workspace": true, "consent": true,
+		"edge-challenge": true, "http-page": true, "choose-an-account": true, "add-phone": true}
+	if !pages[value.Page] {
+		value.Page = "unknown"
+	}
+	result := prefix + label + " · " + value.Code + " · " + value.Page
+	if value.HTTP >= 100 && value.HTTP <= 599 {
+		result += fmt.Sprintf(" · HTTP %d", value.HTTP)
+	}
+	if value.Status == "retrying" && value.MaxAttempts == 3 && value.Attempt >= 1 && value.Attempt < 3 && value.RetryIn >= 0 && value.RetryIn <= 30 {
+		result += fmt.Sprintf(" · 第%d/%d次未完成，%d秒后自动重试", value.Attempt, value.MaxAttempts, value.RetryIn)
+	}
+	return result + " · 尚未交换凭据", true
 }
 
 func signWorkEvents(payload map[string]any, key []byte) (string, error) {

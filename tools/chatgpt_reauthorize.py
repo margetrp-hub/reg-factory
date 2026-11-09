@@ -66,6 +66,7 @@ async def authorize_document(document: dict, *, timeout: int = 600, on_tokens=No
     from common.browser import open_and_connect, teardown
     from common.oauth_codex import drive_authorize, REDIRECT_URI
     from tools.import_plus_codex import MailCodeProvider
+    from common.proxy_switch import browser_proxy_fields
 
     value = document.get("payload", document)
     verifier, state = secrets.token_urlsafe(48), secrets.token_urlsafe(32)
@@ -82,6 +83,10 @@ async def authorize_document(document: dict, *, timeout: int = 600, on_tokens=No
         try:
             handle, profile_id, _, context, page = await open_and_connect(
                 name="work_reauthorize_" + secrets.token_hex(6), p=playwright,
+                browser_options=browser_proxy_fields({
+                    "PROXY_MODE": "residential" if os.environ.get("REG_FACTORY_PRODUCTION_PROXY", "").strip() else "none",
+                    "REG_FACTORY_PROXY": os.environ.get("REG_FACTORY_PRODUCTION_PROXY", "").strip(),
+                }),
             )
             mail = MailCodeProvider(record, context, page, max_wait=min(timeout, 150))
             await mail.prepare()
@@ -113,11 +118,10 @@ def _authorize_protocol(document: dict, record: dict, timeout: int, on_tokens=No
     from vendor.reauth_web.config import Settings
     from vendor.reauth_web.engine import ReauthError, reauth_account
     from vendor.reauth_web.parsing import AccountLine
-    from common import proxy_switch
 
     value = document.get("payload", document)
     settings = Settings(data_dir=Path(os.environ.get("REG_FACTORY_DATA_DIR") or "."),
-        proxy=proxy_switch.effective_proxy_url() or "", account_timeout_seconds=timeout,
+        proxy=os.environ.get("REG_FACTORY_PRODUCTION_PROXY", "").strip(), account_timeout_seconds=timeout,
         extra={"workspace_id": str(value.get("workspace_account_id") or value.get("chatgpt_account_id") or value.get("account_id") or "")})
     account = AccountLine(email=record["email"], password=record["account_password"],
         totp_secret=record["two_factor"], raw="")
@@ -130,8 +134,12 @@ def _authorize_protocol(document: dict, record: dict, timeout: int, on_tokens=No
         if step != "mfa":
             print(f"[reauthorize] SG授权步骤 {'authorize' if step == 'login' else step}", flush=True)
 
+    def retry(evidence):
+        import json
+        print("[reauthorize] " + json.dumps(evidence, sort_keys=True), flush=True)
+
     try:
-        result = reauth_account(account, settings, on_step=progress)
+        result = reauth_account(account, settings, on_step=progress, on_retry=retry)
     except ReauthError as exc:
         if exc.evidence:
             import json
@@ -151,7 +159,7 @@ def _exchange(code: str, verifier: str, client_id: str, redirect_uri: str) -> di
     import requests
     with requests.Session() as session:
         session.trust_env = False
-        proxy = os.environ.get("REG_FACTORY_PROXY_URL", "").strip()
+        proxy = os.environ.get("REG_FACTORY_PRODUCTION_PROXY", "").strip()
         if proxy:
             session.proxies.update({"http": proxy, "https": proxy})
         response = session.post("https://auth.openai.com/oauth/token", data={

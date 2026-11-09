@@ -103,6 +103,12 @@ PHONE_FAILURES = {
 PHONE_MESSAGE = "该账号被要求手机号验证｜本站不提供手机号，请换其他方式处理"
 
 ERROR_HINTS = {
+    "oauth_tls_handshake_failed": "登录校验连接的 TLS 握手失败，网络重试已用尽",
+    "oauth_certificate_verification_failed": "登录校验连接的证书验证失败，请检查出口证书",
+    "oauth_network_timeout": "登录校验连接超时，网络重试已用尽",
+    "oauth_network_unavailable": "登录校验服务暂时不可达，请检查网络出口",
+    "oauth_login_check_http_error": "登录校验服务返回异常状态，请查看 HTTP 状态",
+    "oauth_login_check_invalid_response": "登录校验服务未返回有效校验结果",
     "phone_required": PHONE_MESSAGE,
     "add_phone_failed": PHONE_MESSAGE,
     "add_phone_requires_sms_client": PHONE_MESSAGE,
@@ -158,7 +164,7 @@ def failure_evidence(result: dict) -> dict:
     }
     code = result.get("error")
     page = protocol.get("last_page_type") or result.get("page_type")
-    pages = {"start", "log-in", "mfa-challenge", "email-verification", "workspace",
+    pages = {"start", "log-in", "login-check", "login_password", "mfa-challenge", "email-verification", "workspace",
              "consent", "edge-challenge", "http-page", "choose-an-account", "add-phone"}
     status = protocol.get("last_http_status") or protocol.get("last_status") or result.get("status")
     return {"stage": "authorize", "error_code": code if code in known else "oauth_authorization_failed",
@@ -172,6 +178,7 @@ def reauth_account(
     settings: Settings,
     *,
     on_step=None,
+    on_retry=None,
 ) -> dict:
     """跑完一个账号的协议重登，返回 payloads。"""
     impersonate = random.choice(settings.impersonate_pool)
@@ -185,6 +192,7 @@ def reauth_account(
     oauth_client = None
     try:
         oauth_client = OAuthClient(_oauth_config(settings), proxy=proxy, verbose=False)
+        oauth_client.on_login_retry = on_retry
         oauth_client.session.close()
         oauth_client.session = chatgpt_client.session
         return _reauth_with_clients(account, settings, chatgpt_client, oauth_client, on_step=on_step)
