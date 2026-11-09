@@ -473,6 +473,56 @@ def _refresh_chatgpt(ref: str, email: str = "") -> dict:
     return {"ref": ref, "result": "unknown", "message": f"OAuth HTTP {response.status_code}"}
 
 
+def _reauthorization_document(document: dict) -> dict:
+    """Resolve login metadata without joining independent OAuth results.
+
+    Production gives the result a new ref. Password/TOTP still belong to the
+    original OpenAI identity. Prove that relationship with both ID-token subject
+    and email; email alone never grants access to another record's secrets.
+    """
+    from tools.chatgpt_reauthorize import _claims
+
+    candidates = []
+    for directory in _credential_dirs():
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.glob("*.json")):
+            try:
+                candidate = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(candidate, dict):
+                candidates.append(candidate)
+
+    identity = _claims(str((_token_map(document) or {}).get("id_token") or ""))
+    email = _json_email(document).strip().lower()
+    source_refs = set()
+    if email and identity.get("sub") and str(identity.get("email") or "").lower() == email:
+        for candidate in candidates:
+            token = _claims(str((_token_map(candidate) or {}).get("id_token") or ""))
+            ref = candidate.get("ref")
+            if (isinstance(ref, str) and ref and token.get("sub") == identity["sub"]
+                    and str(token.get("email") or "").lower() == email
+                    and _json_email(candidate).strip().lower() == email):
+                source_refs.add(ref)
+
+    result = copy.deepcopy(document)
+    payload = result.get("payload", result)
+    keys = ("password", "account_password", "chatgpt_password", "totp", "two_factor",
+            "otp_secret", "reauthorization", "notes", "mail_api_url", "mail_api_key")
+    for candidate in candidates:
+        same_source = _same_oauth_source(document, candidate)
+        same_identity = (candidate.get("ref") in source_refs
+                         and _json_email(candidate).strip().lower() == email)
+        if not same_source and not same_identity:
+            continue
+        original = candidate.get("payload", candidate)
+        for key in keys:
+            if original.get(key) and not payload.get(key):
+                payload[key] = original[key]
+    return result
+
+
 def _reauthorize_chatgpt(ref: str, email: str = "", timeout: int = 600) -> dict:
     """An authorize command must perform a fresh supplier-owned OAuth login."""
     import asyncio
@@ -486,24 +536,7 @@ def _reauthorize_chatgpt(ref: str, email: str = "", timeout: int = 600) -> dict:
         return {"ref": ref, "result": "relogin_required", "message": "找不到原账号登录资料"}
     path, document = found
     try:
-        login_document = copy.deepcopy(document)
-        login_payload = login_document.get("payload", login_document)
-        # OAuth exports omit password/TOTP; the original imported record owns
-        # these. Match the same source ref, never merely a shared email.
-        for directory in _credential_dirs():
-            if not directory.is_dir():
-                continue
-            for candidate_path in directory.glob("*.json"):
-                try:
-                    candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
-                except (OSError, ValueError):
-                    continue
-                if not isinstance(candidate, dict) or not _same_oauth_source(document, candidate):
-                    continue
-                original = candidate.get("payload", candidate)
-                for key in ("password", "account_password", "chatgpt_password", "totp", "two_factor", "otp_secret", "reauthorization", "notes", "mail_api_url", "mail_api_key"):
-                    if original.get(key) and not login_payload.get(key):
-                        login_payload[key] = original[key]
+        login_document = _reauthorization_document(document)
         updates = asyncio.run(authorize_document(login_document, timeout=timeout))
         written = _refresh_document_copies(ref, _json_email(document), path, document, updates)
     except Exception as exc:

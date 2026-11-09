@@ -80,3 +80,50 @@ def test_fresh_authorization_persists_original_copies_but_unknown_preserves_them
     payload = json.loads(path.read_text())['payload']
     assert payload['refresh_token'] == 'new'
     assert payload['access_token'] == payload['oauth_access_token'] == 'new-access'
+
+
+def test_produced_result_reuses_proven_login_identity_after_repeated_rotations(tmp_path, monkeypatch):
+    monkeypatch.setenv('REG_FACTORY_DATA_DIR', str(tmp_path))
+    email = 'original@icloud.com'
+    identity = jwt({'sub': 'original-openai-subject', 'email': email})
+    original = {'email': email, 'workspace_account_id': 'original-workspace',
+                'access_token': 'old-access', 'refresh_token': 'old-refresh', 'id_token': identity}
+    def save(kind, ref, payload):
+        path = tmp_path / 'assets' / 'chatgpt' / kind / (ref.replace(':', '_') + '.json')
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({'ref': ref, 'email': email, 'payload': payload}))
+        return path
+    produced = save('team', 'production:original-operation', original)
+    source = save('oauth', 'import:original', original)
+    login = save('imported', 'import:original', {'email': email,
+        'reauthorization': {'account_password': 'original-password', 'two_factor': 'JBSWY3DPEHPK3PXP'}})
+    source_before, login_before = source.read_bytes(), login.read_bytes()
+    for revision in (1, 2):
+        rotated = {'access_token': f'new-access-{revision}', 'refresh_token': f'new-refresh-{revision}',
+                   'id_token': jwt({'sub': 'original-openai-subject', 'email': email, 'iat': revision})}
+        with patch('tools.chatgpt_reauthorize.authorize_document', new=AsyncMock(return_value=rotated)) as authorize:
+            assert asset_ops._reauthorize_chatgpt('production:original-operation')['result'] == 'refreshed'
+            record = login_record(authorize.call_args.args[0])
+            assert record['account_password'] == 'original-password'
+            assert record['two_factor'] == 'JBSWY3DPEHPK3PXP'
+            assert authorize.call_args.args[0]['payload']['workspace_account_id'] == 'original-workspace'
+        current = json.loads(produced.read_text())['payload']
+        assert current['refresh_token'] == rotated['refresh_token']
+        assert 'reauthorization' not in current and 'password' not in current
+        # Other references remain independent OAuth results and login metadata.
+        assert source.read_bytes() == source_before
+        assert login.read_bytes() == login_before
+
+
+@pytest.mark.parametrize('sub,email', [('other-subject', 'same@icloud.com'), ('original-subject', 'other@icloud.com'), ('', 'same@icloud.com')])
+def test_login_material_never_links_by_email_alone(tmp_path, monkeypatch, sub, email):
+    monkeypatch.setenv('REG_FACTORY_DATA_DIR', str(tmp_path))
+    selected = {'ref': 'production:original', 'payload': {'email': 'same@icloud.com',
+        'refresh_token': 'original-refresh', 'id_token': jwt({'sub': 'original-subject', 'email': 'same@icloud.com'})}}
+    for kind, payload in [('oauth', {'email': 'same@icloud.com', 'refresh_token': 'other-refresh',
+                                   'id_token': jwt({'sub': sub, 'email': email})}),
+                          ('imported', {'email': 'same@icloud.com', 'password': 'must-not-use'})]:
+        path = tmp_path / 'assets/chatgpt' / kind / 'decoy.json'
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({'ref': 'import:decoy', 'payload': payload}))
+    assert not login_record(asset_ops._reauthorization_document(selected))['account_password']
