@@ -6,7 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { api, ApiError, type CredentialCheckDetail, type CredentialCheckHistory, type RefreshDetail } from "@/lib/api";
 import { accountAction, pendingCredentialCheck, startCredentialCheck } from "@/lib/account-actions";
 import { PLATFORM_TASKS } from "@/lib/task-catalog";
-import { AccountNavigation, CHECK_LABELS, checkTone } from "@/components/account-navigation";
+import { AccountNavigation, CHECK_LABELS, LIBRARY_LABELS, checkTone } from "@/components/account-navigation";
 import { Badge, ErrorNote, StatusBadge } from "@/components/ui";
 import { TaskTable } from "@/components/task-table";
 import { LogView } from "@/components/log-view";
@@ -177,6 +177,7 @@ export function CredentialChecks({slug, view="history"}: {slug: string; view?: "
       <header className="sg-account-toolbar"><div className="min-w-0"><h2 className="break-all text-base font-semibold">{refresh.title}</h2><p className="sg-description mt-1">{datetime(refresh.created_at)}</p></div><StatusBadge status={refresh.status}/></header>
       {refresh.error && <p className="sg-check-context">{refresh.error}</p>}
       {refreshDetail?.evidence.resolution && <p className="sg-check-context">{refreshDetail.evidence.resolution}</p>}
+      {refreshDetail && <div className="sg-account-toolbar"><span className="sg-description">生产账号库：{LIBRARY_LABELS[refreshDetail.library_status] || "待准备"}</span>{refreshDetail.verification_task_id ? <Link className="btn-ghost" href={`/platform/${slug}/runs/?batch=${encodeURIComponent(refreshDetail.verification_task_id)}`}>查看自动 AT 测试</Link> : refresh.status === "succeeded" && refreshDetail.library_status !== "used" && <button className="btn-ghost" disabled={!!busy} onClick={()=>launch([refreshDetail.evidence.ref])}>测试 AT 并更新可用状态</button>}</div>}
       {refreshDetail?.can_resolve && <div className="px-5 pb-4"><p className="sg-description mb-3">先核对已经保存的凭据。确认本次未完成时，记录证据后结案，再显式发起新的刷新。</p><div className="flex flex-wrap gap-2"><button className="btn-primary" disabled={!!busy || !refreshDetail.can_reconcile} onClick={()=>recoverRefresh()}>{busy === "reconcile" ? "核对中…" : "核对已保存凭据"}</button><button className="btn-ghost" disabled={!!busy} onClick={()=>setResolveOpen(true)}>人工结案</button></div>{!refreshDetail.can_reconcile && <p className="sg-description mt-2">原记录缺少可自动核对的版本证据，请结合执行日志人工处理。</p>}</div>}
       {refreshDetail?.can_retry && <div className="px-5 pb-4 flex gap-2"><button className="btn-primary" disabled={!!busy} onClick={()=>refreshCredential(refreshDetail.evidence.ref,JSON.parse(refresh.args_json || "[]").includes("--allow-relogin") ? "authorize" : "refresh")}>重试原操作</button>{slug === "chatgpt" && <button className="btn-ghost" disabled={!!busy} onClick={()=>refreshCredential(refreshDetail.evidence.ref,"authorize")}>用密码/2FA修复凭证</button>}</div>}
       <div className="px-5 pb-5"><LogView key={refresh.id+":"+refresh.status} taskId={refresh.id}/></div>

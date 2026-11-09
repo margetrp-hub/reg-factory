@@ -8,7 +8,7 @@ import { Badge, ErrorNote } from "@/components/ui";
 import { TaskGroupView } from "@/components/task-group-view";
 import { PLATFORM_TASKS } from "@/lib/task-catalog";
 import { accountAction, pendingCredentialCheck, startCredentialCheck } from "@/lib/account-actions";
-import { AccountNavigation, CHECK_LABELS, checkTone } from "@/components/account-navigation";
+import { AccountNavigation, CHECK_LABELS, LIBRARY_LABELS, checkTone } from "@/components/account-navigation";
 
 export function PlatformSubview({ slug, tab }: { slug: string; tab: "tasks" | "accounts" }) {
   return tab === "tasks" ? <TaskGroupView key={slug} platform={slug} /> :
@@ -113,7 +113,7 @@ function PlatformAccounts({ slug }: { slug: string }) {
       </div>
       <div className="overflow-auto"><table className="tbl sg-task-table whitespace-nowrap" aria-label="账号列表"><thead><tr><th>账号</th><th>凭据状态</th><th>领取</th><th>最近核验</th><th>操作</th></tr></thead><tbody>
         {page?.accounts.map(row=><tr key={row.ref}><td><label className="flex items-center gap-3"><input type="checkbox" aria-label={`选择 ${row.identity || row.ref}`} disabled={!!busy} checked={selected.has(row.ref)} onChange={event=>setSelected(previous=>{const next=new Set(previous);if(event.target.checked)next.add(row.ref);else next.delete(row.ref);return next;})}/><span className="block max-w-72 truncate" title={row.identity || row.ref}>{row.identity || row.ref}</span></label></td>
-          <td><Badge tone={checkTone(row.status)}>{labels[row.status] || row.status}</Badge></td><td>{row.claimed ? "已领取" : "未领取"}</td><td className="text-[13px] text-muted-foreground">{row.health_checked_at ? new Date(row.health_checked_at).toLocaleString() : "尚未核验"}</td>
+          <td><Badge tone={checkTone(row.status)}>{labels[row.status] || row.status}</Badge>{slug === "chatgpt" && <span className="mt-1 block text-xs text-muted-foreground">{LIBRARY_LABELS[row.library_status || "pending"] || "待准备"}</span>}</td><td>{row.claimed ? "已领取" : "未领取"}</td><td className="text-[13px] text-muted-foreground">{row.health_checked_at ? new Date(row.health_checked_at).toLocaleString() : "尚未核验"}</td>
           <td><div className="flex gap-2"><button className="btn-ghost" disabled={!!busy} onClick={()=>check([row.ref])}>{slug === "chatgpt" ? "测试 AT" : "核对报告"}</button><button className="btn-ghost" disabled={row.claimed || !!busy} title={row.claimed ? "已领取账号在主系统原任务中修复" : undefined} onClick={()=>refresh(row)}>{slug === "chatgpt" ? "RT 刷新" : "刷新凭据"}</button>{slug === "chatgpt" && <button className="btn-ghost" disabled={row.claimed || !!busy} title="使用已保存的密码/2FA重新授权，获取完整凭据" onClick={()=>refresh(row,"authorize")}>修复凭证</button>}</div></td></tr>)}
       </tbody></table>{!page && <div className="sg-table-skeleton">正在读取账号…</div>}{page?.total===0 && <p className="p-8 text-center text-sm text-muted-foreground">没有匹配账号</p>}</div>
       <footer className="sg-task-footer"><span>{page ? `${page.total ? offset+1 : 0}–${Math.min(offset+25,page.total)} / ${page.total}` : "—"}</span><div className="flex gap-2"><button className="btn-ghost" disabled={!page || offset===0 || !!busy || navigating || loading} onClick={()=>navigateAccounts(status,Math.max(0,offset-25))}>上一页</button><button className="btn-ghost" disabled={!page || offset+25>=page.total || !!busy || navigating || loading} onClick={()=>navigateAccounts(status,offset+25)}>下一页</button></div></footer>

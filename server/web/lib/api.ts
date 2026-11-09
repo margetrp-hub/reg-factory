@@ -91,6 +91,7 @@ export type NodeReady = {
 };
 
 export type AccountRow = {
+	 library_status?: string;
   ref: string;
   platform: string;
   kind: string;
@@ -324,6 +325,9 @@ export const api = {
 };
 
 export type RefreshDetail = {
+	 library_status: string;
+	 verification_task_id: string;
+	 verification_status: string;
   task: Task;
   evidence: {ref: string; source_sha: string; result_sha: string; resolution: string};
   can_reconcile: boolean;

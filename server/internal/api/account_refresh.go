@@ -29,7 +29,12 @@ func (s *Server) getAccountRefresh(c *gin.Context) {
 	account, err := s.st.GetAccount(evidence.Ref)
 	owned := err != nil || account.Claimed
 	pending := refreshNeedsResolution(task)
+	verificationID, verificationStatus := "", ""
+	if check, err := s.st.GetTask(store.RefreshVerificationID(task.ID)); err == nil {
+		verificationID, verificationStatus = check.ID, check.Status
+	}
 	c.JSON(200, gin.H{"task": task, "evidence": evidence, "can_resolve": pending && !owned,
+		"library_status": account.LibraryStatus, "verification_task_id": verificationID, "verification_status": verificationStatus,
 		"can_reconcile": pending && !owned && account.Platform == "chatgpt" && evidence.SourceSHA != "",
 		"can_retry":     !owned && (task.Status == "failed" || ((task.Status == "stopped" || task.Status == "interrupted") && task.StartedAt == ""))})
 }

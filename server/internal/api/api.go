@@ -1246,6 +1246,10 @@ func (s *Server) submitAssetOp(op, ref, platform string, flags ...string) (strin
 // probeOAuthAccount 只使用 AT 测试，不换取或保存凭据。
 // 返回 (handled, error)：handled=true 表示已同步处理完，不再排任务。
 func (s *Server) probeOAuthAccount(ref string) (bool, error) {
+	account, accountErr := s.st.GetAccount(ref)
+	if accountErr != nil {
+		return false, accountErr
+	}
 	asset, err := s.assets.Get(ref)
 	if err != nil || asset.Platform != "chatgpt" || asset.Kind != "oauth" {
 		return false, nil
@@ -1255,7 +1259,11 @@ func (s *Server) probeOAuthAccount(ref string) (bool, error) {
 		proxy = value
 	}
 	result := probe.OAuth(asset.Payload, proxy, 30*time.Second)
-	if err := s.st.MarkHealth(ref, result.Status, result.Message); err != nil {
+	current, readErr := s.assets.Get(ref)
+	if readErr != nil || current.ResultSHA != asset.ResultSHA {
+		return true, store.ErrCheckStale
+	}
+	if err := s.st.MarkATHealth(ref, result.Status, result.Message, account.Version); err != nil {
 		return true, err
 	}
 	return true, nil
@@ -1274,6 +1282,10 @@ func (s *Server) accountLiveness(c *gin.Context) {
 	// OAuth 类账号：直接用 token 验证，同步返回结果
 	if handled, probeErr := s.probeOAuthAccount(req.Ref); handled {
 		if probeErr != nil {
+			if errors.Is(probeErr, store.ErrCheckStale) {
+				c.JSON(http.StatusConflict, gin.H{"error": "credential_changed", "detail": "凭据版本已变化或原刷新尚未结束，请稍后重测 AT"})
+				return
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": probeErr.Error()})
 			return
 		}

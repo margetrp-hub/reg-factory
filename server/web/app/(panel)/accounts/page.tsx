@@ -25,6 +25,8 @@ export default function AccountsPage() {
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const [conversionResults, setConversionResults] = useState<{ref:string;task_id:string;email:string}[]>([]);
+  const [conversionResultsOpen, setConversionResultsOpen] = useState(false);
   const [treeDrawer, setTreeDrawer] = useState<string>("");
   const [tree, setTree] = useState<{
     root: string;
@@ -60,6 +62,13 @@ export default function AccountsPage() {
     const timer = setInterval(load, 8000);
     return () => clearInterval(timer);
   }, [load]);
+
+  useEffect(() => {
+    try {
+      const saved=JSON.parse(sessionStorage.getItem("sg-last-conversion") || "[]");
+      if(Array.isArray(saved))setConversionResults(saved.filter(row=>typeof row?.task_id==="string" && typeof row?.ref==="string").slice(0,100));
+    } catch { /* Results remain in the server task history. */ }
+  }, []);
 
   const sync = async () => {
     setBusy("sync");
@@ -97,6 +106,9 @@ export default function AccountsPage() {
 
   return (
     <div className="space-y-4">
+      <Drawer open={conversionResultsOpen} title="本批修复记录" subtitle="凭据保存成功后自动测试 AT；每个账号保留独立结果和恢复操作。" onClose={()=>setConversionResultsOpen(false)} width={600}>
+        <div className="space-y-2">{conversionResults.map(row=><div key={row.task_id} className="flex items-center justify-between gap-3 rounded-lg border border-border p-3"><span className="min-w-0 truncate text-sm" title={row.email || row.ref}>{row.email || row.ref}</span><Link className="btn-ghost shrink-0" href={`/platform/chatgpt/runs/?mode=refresh&task=${encodeURIComponent(row.task_id)}`}>查看运行</Link></div>)}</div>
+      </Drawer>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-xs text-muted-foreground">账号状态与已保存的结果版本分别查看；导出时可以明确选择完整凭据。</p>
         <Link href="/assets/" className="btn-primary">结果版本与导出</Link>
@@ -212,6 +224,7 @@ export default function AccountsPage() {
               <option value="unknown">未测</option>
             </select>
             <button className="btn-ghost" onClick={() => setShowImport(true)}>导入账号</button>
+            {conversionResults.length > 0 && <button className="btn-ghost" onClick={()=>setConversionResultsOpen(true)}>本批修复记录 ({conversionResults.length})</button>}
             <button
               className="btn-primary"
               disabled={picked.size === 0 || !!busy}
@@ -219,6 +232,9 @@ export default function AccountsPage() {
                 setBusy("convert");
                 try {
                   const data = await convertAccountCredentials(Array.from(picked));
+                  setConversionResults(data.queued);
+                  try { sessionStorage.setItem("sg-last-conversion",JSON.stringify(data.queued)); } catch { /* Optional navigation context. */ }
+                  setConversionResultsOpen(data.queued.length > 0);
                   setNotice(
                     `已排队 ${data.queued.length} 个转换任务${data.skipped.length ? `，跳过 ${data.skipped.length} 个（${data.skipped[0].reason}）` : ""}`,
                   );

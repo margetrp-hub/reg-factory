@@ -74,7 +74,7 @@ func (s *Store) QueueAccountRefresh(task Task, ref string) (string, bool, error)
 		if _, err = tx.Exec(`INSERT INTO tasks(id,script,title,args_json,status,created_at,actor) VALUES(?,?,?,?,'queued',?,?)`, task.ID, task.Script, task.Title, task.ArgsJSON, now(), task.Actor); err != nil {
 			return "", false, err
 		}
-		if _, err = tx.Exec(`UPDATE accounts SET refresh_state='queued',refresh_at=? WHERE ref=?`, now(), ref); err != nil {
+		if _, err = tx.Exec(`UPDATE accounts SET refresh_state='queued',refresh_at=?,version=version+1 WHERE ref=?`, now(), ref); err != nil {
 			return "", false, err
 		}
 	}
@@ -159,7 +159,7 @@ func (s *Store) FinishAccountRefresh(taskID, ref, status string, code int, messa
 		return err
 	}
 	if status == "succeeded" && resultSHA != "" {
-		if _, err = tx.Exec(`UPDATE accounts SET kind='oauth',status='unknown',health_checked_at='',health_message='凭据已更新，可测试 AT' WHERE ref=? AND platform='chatgpt'`, ref); err != nil {
+		if err = prepareRefreshedAccount(tx, taskID, ref); err != nil {
 			return err
 		}
 	}
@@ -219,7 +219,7 @@ func (s *Store) ResolveAccountRefresh(taskID, actor, reason, outcome, resultSHA 
 		return err
 	}
 	if outcome == "succeeded" && resultSHA != "" {
-		if _, err = tx.Exec(`UPDATE accounts SET kind='oauth',status='unknown',health_checked_at='',health_message='凭据已更新，可测试 AT' WHERE ref=? AND platform='chatgpt'`, ref); err != nil {
+		if err = prepareRefreshedAccount(tx, taskID, ref); err != nil {
 			return err
 		}
 	}

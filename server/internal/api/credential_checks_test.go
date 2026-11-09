@@ -128,6 +128,9 @@ func TestCredentialCheckStopAndRestartPreserveReturnedItems(t *testing.T) {
 	}
 	defer st.Close()
 	accounts := []store.Account{{Ref: "one", Platform: "chatgpt"}, {Ref: "two", Platform: "chatgpt"}}
+	if _, err = st.UpsertAccounts([]store.AccountSeed{{Ref: "one", Platform: "chatgpt", Kind: "oauth"}, {Ref: "two", Platform: "chatgpt", Kind: "oauth"}}); err != nil {
+		t.Fatal(err)
+	}
 	task := store.Task{ID: "stop-batch", Script: store.CredentialCheckScript, ArgsJSON: `{"platform":"chatgpt"}`}
 	if err = st.CreateCredentialCheck(task, accounts); err != nil {
 		t.Fatal(err)

@@ -116,9 +116,9 @@ func (h *Handler) accountReference(c *gin.Context) {
 		return
 	}
 
-	status := libraryStatus(account.OAuthStatus, account.LivenessStatus, account.JoinStatus)
+	status := account.LibraryStatus
 	// joined/switched 表示该号已进入某个 workspace，不能再被当作空闲源派单。
-	joined := account.JoinStatus == "joined" || account.JoinStatus == "switched"
+	joined := status == "used"
 	version := account.Version
 	if version < 1 {
 		version = 1
@@ -135,9 +135,9 @@ func (h *Handler) accountReference(c *gin.Context) {
 		// Team 比对 owner.workspace 用的是母号那一侧，不是这一侧。
 		"workspace_account_id":  "",
 		"enabled":               status == "available" || status == "pending",
-		"busy":                  joined,
+		"busy":                  joined || status == "leased",
 		"ever_used":             joined,
-		"business_locked":       joined,
+		"business_locked":       joined || status == "leased",
 		"ever_attempted":        account.OAuthStatus != "" && account.OAuthStatus != "pending",
 		"issued_at":             stamp,
 		"expires_at":            stamp + 120,

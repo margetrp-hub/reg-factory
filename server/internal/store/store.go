@@ -357,7 +357,8 @@ func (s *Store) RecoverInterrupted() (int64, error) {
 	}
 	res, err := tx.Exec(
 		`UPDATE tasks SET status='interrupted', error='regd restarted', finished_at=?, pid=0
-		 WHERE status IN ('running','queued','stopping') AND script <> 'production.team_json'`, now(),
+		 WHERE status IN ('running','queued','stopping') AND script <> 'production.team_json'
+		 AND NOT (script='credential.check' AND status='queued')`, now(),
 	)
 	if err != nil {
 		return 0, err
@@ -664,6 +665,7 @@ type Account struct {
 	JoinStatus        string `json:"join_status"`
 	LivenessStatus    string `json:"liveness_status"`
 	LivenessCheckedAt string `json:"liveness_checked_at"`
+	LibraryStatus     string `json:"library_status"`
 
 	PasswordState     string `json:"password_state"`
 	PasswordChangedAt string `json:"password_changed_at"`
@@ -772,7 +774,7 @@ func (s *Store) ListAccountsPage(kind, platform, status string, limit, offset in
 		return nil, 0, err
 	}
 	q := `SELECT ref, platform, kind, identity, secret_ref, status, health_checked_at, health_message,
-	             claimed, claimed_at, refresh_state, refresh_at, note, updated_at` + where + " ORDER BY updated_at DESC, ref DESC LIMIT ? OFFSET ?"
+	             claimed, claimed_at, refresh_state, refresh_at, note, updated_at, ` + accountLibraryStatusSQL + where + " ORDER BY updated_at DESC, ref DESC LIMIT ? OFFSET ?"
 	args = append(args, limit, offset)
 	rows, err := tx.Query(q, args...)
 	if err != nil {
@@ -784,7 +786,7 @@ func (s *Store) ListAccountsPage(kind, platform, status string, limit, offset in
 		var a Account
 		if err := rows.Scan(&a.Ref, &a.Platform, &a.Kind, &a.Identity, &a.SecretRef, &a.Status,
 			&a.HealthCheckedAt, &a.HealthMessage, &a.Claimed, &a.ClaimedAt,
-			&a.RefreshState, &a.RefreshAt, &a.Note, &a.UpdatedAt); err != nil {
+			&a.RefreshState, &a.RefreshAt, &a.Note, &a.UpdatedAt, &a.LibraryStatus); err != nil {
 			return nil, 0, err
 		}
 		out = append(out, a)
@@ -804,19 +806,17 @@ func (s *Store) GetAccount(ref string) (Account, error) {
 	// Team 只能把每个候选号判成 pending，生产单永远起不来。
 	err := s.db.QueryRow(`SELECT ref, platform, kind, identity, secret_ref, status, health_checked_at,
 		health_message, claimed, claimed_at, refresh_state, refresh_at, note, version,
-		oauth_status, join_status, liveness_status, liveness_checked_at, updated_at
+		oauth_status, join_status, liveness_status, liveness_checked_at, updated_at, `+accountLibraryStatusSQL+`
 		FROM accounts WHERE ref=?`, ref).Scan(&a.Ref, &a.Platform, &a.Kind, &a.Identity, &a.SecretRef,
 		&a.Status, &a.HealthCheckedAt, &a.HealthMessage, &a.Claimed, &a.ClaimedAt,
 		&a.RefreshState, &a.RefreshAt, &a.Note, &a.Version,
-		&a.OAuthStatus, &a.JoinStatus, &a.LivenessStatus, &a.LivenessCheckedAt, &a.UpdatedAt)
+		&a.OAuthStatus, &a.JoinStatus, &a.LivenessStatus, &a.LivenessCheckedAt, &a.UpdatedAt, &a.LibraryStatus)
 	return a, err
 }
 
 // MarkHealth 写入测活结果。
 func (s *Store) MarkHealth(ref, status, message string) error {
-	_, err := s.db.Exec(`UPDATE accounts SET status=?, health_checked_at=?, health_message=?, updated_at=? WHERE ref=?`,
-		status, now(), message, now(), ref)
-	return err
+	return s.MarkATHealth(ref, status, message, 0)
 }
 
 // MarkRefresh 写入刷新/修复结果。
@@ -907,7 +907,7 @@ func (s *Store) LibraryAccounts(query, status, platform string, page, pageSize i
 		args = append(args, like, like)
 	}
 	if st := strings.TrimSpace(status); st != "" {
-		where = append(where, "status = ?")
+		where = append(where, "("+accountLibraryStatusSQL+") = ?")
 		args = append(args, st)
 	}
 	if p := strings.TrimSpace(platform); p != "" {
@@ -916,8 +916,13 @@ func (s *Store) LibraryAccounts(query, status, platform string, page, pageSize i
 	}
 	cond := strings.Join(where, " AND ")
 
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, 0, err
+	}
+	defer tx.Rollback()
 	var total int
-	if err := s.db.QueryRow("SELECT COUNT(*) FROM accounts WHERE "+cond, args...).Scan(&total); err != nil {
+	if err := tx.QueryRow("SELECT COUNT(*) FROM accounts WHERE "+cond, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	if page < 1 {
@@ -928,10 +933,10 @@ func (s *Store) LibraryAccounts(query, status, platform string, page, pageSize i
 	}
 	offset := (page - 1) * pageSize
 
-	rows, err := s.db.Query(`SELECT ref, platform, kind, identity, secret_ref, status, health_checked_at,
+	rows, err := tx.Query(`SELECT ref, platform, kind, identity, secret_ref, status, health_checked_at,
 		health_message, claimed, claimed_at, refresh_state, refresh_at, note, version,
-		oauth_status, join_status, liveness_status, liveness_checked_at, updated_at
-		FROM accounts WHERE `+cond+` ORDER BY updated_at DESC LIMIT ? OFFSET ?`,
+		oauth_status, join_status, liveness_status, liveness_checked_at, updated_at, `+accountLibraryStatusSQL+`
+		FROM accounts WHERE `+cond+` ORDER BY updated_at DESC, ref DESC LIMIT ? OFFSET ?`,
 		append(args, pageSize, offset)...)
 	if err != nil {
 		return nil, 0, err
@@ -944,12 +949,16 @@ func (s *Store) LibraryAccounts(query, status, platform string, page, pageSize i
 		if err := rows.Scan(&a.Ref, &a.Platform, &a.Kind, &a.Identity, &a.SecretRef, &a.Status,
 			&a.HealthCheckedAt, &a.HealthMessage, &a.Claimed, &a.ClaimedAt,
 			&a.RefreshState, &a.RefreshAt, &a.Note, &a.Version,
-			&a.OAuthStatus, &a.JoinStatus, &a.LivenessStatus, &a.LivenessCheckedAt, &a.UpdatedAt); err != nil {
+			&a.OAuthStatus, &a.JoinStatus, &a.LivenessStatus, &a.LivenessCheckedAt, &a.UpdatedAt, &a.LibraryStatus); err != nil {
 			return nil, 0, err
 		}
 		out = append(out, a)
 	}
-	return out, total, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	rows.Close()
+	return out, total, tx.Commit()
 }
 
 // MarkPassword 记录改密码结果（能力化：账号状态的一部分）。

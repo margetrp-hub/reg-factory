@@ -9,15 +9,16 @@ import (
 const CredentialCheckScript = "credential.check"
 
 type CredentialCheckItem struct {
-	Ordinal     int    `json:"ordinal"`
-	Ref         string `json:"ref"`
-	Identity    string `json:"identity"`
-	Status      string `json:"status"`
-	Message     string `json:"message"`
-	CheckedAt   string `json:"checked_at"`
-	ChildTaskID string `json:"child_task_id"`
-	Mode        string `json:"mode"`
-	CanRefresh  bool   `json:"can_refresh"`
+	Ordinal      int    `json:"ordinal"`
+	Ref          string `json:"ref"`
+	Identity     string `json:"identity"`
+	Status       string `json:"status"`
+	Message      string `json:"message"`
+	CheckedAt    string `json:"checked_at"`
+	ChildTaskID  string `json:"child_task_id"`
+	Mode         string `json:"mode"`
+	CanRefresh   bool   `json:"can_refresh"`
+	CheckVersion int    `json:"-"`
 }
 
 type CredentialCheckCounts struct {
@@ -138,6 +139,15 @@ func (s *Store) CompleteCredentialCheckItem(taskID string, item CredentialCheckI
 		item.CheckedAt = now()
 	}
 	item.Message = RedactLog(item.Message)
+	if item.Mode == "at" {
+		written, err := recordATHealth(tx, item.Ref, item.Status, item.Message, item.CheckedAt, item.CheckVersion)
+		if err != nil {
+			return err
+		}
+		if !written {
+			item.Status, item.Message = "unknown", "凭据版本已变化或原刷新尚未结束；请稍后重测 AT"
+		}
+	}
 	res, err := tx.Exec(`UPDATE credential_check_items SET status=?,message=?,checked_at=?,child_task_id=? WHERE task_id=? AND ordinal=? AND status='running'`, item.Status, item.Message, item.CheckedAt, item.ChildTaskID, taskID, item.Ordinal)
 	if err != nil {
 		return err
@@ -148,11 +158,6 @@ func (s *Store) CompleteCredentialCheckItem(taskID string, item CredentialCheckI
 	}
 	if n != 1 {
 		return errors.New("check_item_not_running")
-	}
-	if item.Mode == "at" {
-		if _, err = tx.Exec(`UPDATE accounts SET status=?,health_checked_at=?,health_message=?,updated_at=? WHERE ref=?`, item.Status, item.CheckedAt, item.Message, now(), item.Ref); err != nil {
-			return err
-		}
 	}
 	if _, err = tx.Exec(`INSERT INTO events(task_id,ts,stream,line) VALUES(?,?,'check',?)`, taskID, now(), fmt.Sprintf("第 %d 项 · %s · %s", item.Ordinal+1, item.Status, item.Message)); err != nil {
 		return err

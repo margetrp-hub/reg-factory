@@ -144,10 +144,7 @@ func (h *Handler) accountLibrary(c *gin.Context) {
 	}
 	items := make([]map[string]any, 0, len(rows))
 	for _, a := range rows {
-		st := libraryStatus(a.OAuthStatus, a.LivenessStatus, a.JoinStatus)
-		if wantStatus != "" && wantStatus != st {
-			continue
-		}
+		st := a.LibraryStatus
 		ver := a.Version
 		if ver < 1 {
 			ver = 1

@@ -1,5 +1,7 @@
 import Link from "next/link";
 
+export const LIBRARY_LABELS: Record<string,string> = {available:"生产可用",pending:"待准备",leased:"处理中",used:"已使用",invalid:"需修复"};
+
 export function AccountNavigation({slug, active, accountsHref, checksHref, runHref}: {slug: string; active: "accounts" | "checks" | "run"; accountsHref?: string; checksHref?: string; runHref?: string}) {
   return <nav aria-label="账号工作区" className="sg-account-nav">
     <Link href={accountsHref || `/platform/${slug}/accounts/`} aria-current={active === "accounts" ? "page" : undefined}>账号管理</Link>
