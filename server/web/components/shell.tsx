@@ -26,7 +26,6 @@ const CONTEXT_LINKS: Record<NavSection, { href: string; label: string }[]> = {
   ],
   runtime: [
     { href: "/tasks/", label: "任务队列" },
-    { href: "/audit/", label: "操作审计" },
   ],
   assets: [{ href: "/accounts/", label: "账号主数据" }, { href: "/assets/", label: "结果版本与导出" }],
   supply: [
@@ -36,11 +35,10 @@ const CONTEXT_LINKS: Record<NavSection, { href: string; label: string }[]> = {
   nodes: [
     { href: "/nodes/", label: "节点总览" },
     { href: "/nodes/config/", label: "节点配置" },
-    { href: "/tasks/", label: "节点运行日志" },
   ],
   system: [
     { href: "/settings/", label: "配置" },
-    { href: "/audit/", label: "审计" },
+    { href: "/audit/", label: "操作审计" },
   ],
 };
 
@@ -117,7 +115,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
     (pathname.startsWith("/assets") ? "assets" : pathname.startsWith("/platform/") ? "production" :
       pathname.startsWith("/apps/icmail") || pathname.startsWith("/materials") ? "supply" :
       pathname.startsWith("/nodes") ? "nodes" :
-        pathname.startsWith("/audit") ? "runtime" : "workspace");
+        pathname.startsWith("/audit") ? "system" : "workspace");
   const activeContext = CONTEXT_LINKS[activeSection]
     .filter((item) => pathname === item.href.replace(/\/$/, "") || pathname.startsWith(item.href))
     .sort((a, b) => b.href.length - a.href.length)[0];
@@ -163,7 +161,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
                           href={link.href}
                           aria-current={selected ? "page" : undefined}
                           onClick={() => setOpen(false)}
-                          className={`block rounded-md px-2.5 py-1.5 text-[12px] transition-colors ${
+                          className={`block rounded-md px-2.5 py-2 text-[14px] transition-colors ${
                             selected ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground" : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
                           }`}
                         >

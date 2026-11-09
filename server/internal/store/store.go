@@ -666,6 +666,7 @@ type Account struct {
 	LivenessStatus    string `json:"liveness_status"`
 	LivenessCheckedAt string `json:"liveness_checked_at"`
 	LibraryStatus     string `json:"library_status"`
+	SourceCount       int    `json:"source_count,omitempty"`
 
 	PasswordState     string `json:"password_state"`
 	PasswordChangedAt string `json:"password_changed_at"`
@@ -750,9 +751,13 @@ func (s *Store) ListAccountsPage(kind, platform, status string, limit, offset in
 	if offset < 0 {
 		offset = 0
 	}
-	where := " FROM accounts WHERE 1=1"
+	where := " FROM account_projection WHERE 1=1"
+	projection := accountProjectionSQL
 	var args []any
 	if kind != "" {
+		// Rank a source of the requested kind, retaining all-source custody facts.
+		projection = accountProjectionPrefix + "CASE WHEN kind=? THEN 0 ELSE 1 END," + accountProjectionSuffix
+		args = append(args, kind)
 		where += " AND kind=?"
 		args = append(args, kind)
 	}
@@ -770,11 +775,12 @@ func (s *Store) ListAccountsPage(kind, platform, status string, limit, offset in
 	}
 	defer tx.Rollback()
 	var total int
-	if err := tx.QueryRow("SELECT COUNT(*)"+where, args...).Scan(&total); err != nil {
+	if err := tx.QueryRow(projection+"SELECT COUNT(*)"+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	q := `SELECT ref, platform, kind, identity, secret_ref, status, health_checked_at, health_message,
-	             claimed, claimed_at, refresh_state, refresh_at, note, updated_at, ` + accountLibraryStatusSQL + where + " ORDER BY updated_at DESC, ref DESC LIMIT ? OFFSET ?"
+	q := projection + `SELECT ref, platform, kind, identity, secret_ref, status, health_checked_at, health_message,
+	             identity_claimed, claimed_at, refresh_state, refresh_at, note, updated_at, projected_library_status, source_count,
+	             version,oauth_status,join_status,liveness_status,liveness_checked_at` + where + " ORDER BY updated_at DESC, ref DESC LIMIT ? OFFSET ?"
 	args = append(args, limit, offset)
 	rows, err := tx.Query(q, args...)
 	if err != nil {
@@ -786,7 +792,8 @@ func (s *Store) ListAccountsPage(kind, platform, status string, limit, offset in
 		var a Account
 		if err := rows.Scan(&a.Ref, &a.Platform, &a.Kind, &a.Identity, &a.SecretRef, &a.Status,
 			&a.HealthCheckedAt, &a.HealthMessage, &a.Claimed, &a.ClaimedAt,
-			&a.RefreshState, &a.RefreshAt, &a.Note, &a.UpdatedAt, &a.LibraryStatus); err != nil {
+			&a.RefreshState, &a.RefreshAt, &a.Note, &a.UpdatedAt, &a.LibraryStatus, &a.SourceCount,
+			&a.Version, &a.OAuthStatus, &a.JoinStatus, &a.LivenessStatus, &a.LivenessCheckedAt); err != nil {
 			return nil, 0, err
 		}
 		out = append(out, a)

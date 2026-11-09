@@ -44,7 +44,7 @@ export type CredentialCheckCounts = { total: number; checked: number; ok: number
 export type CredentialCheckDetail = { task: Task; items: CredentialCheckItem[] };
 export type CredentialCheckHistory = { page: TaskPage; counts: Record<string, CredentialCheckCounts> };
 export type TaskFilter = { status?: string; q?: string; scripts?: string[]; offset?: number };
-export type AccountSummary = { platform: string; total: number; available: number; abnormal: number; unknown: number };
+export type AccountSummary = { platform: string; total: number; available: number; abnormal: number; unknown: number; used: number; leased: number; source_count: number };
 export type ConfigEntry = { key: string; value: string; secret: boolean; line: number; label?: string; help?: string; type?: string; choices?: string[]; default?: unknown; apply?: string; readonly?: boolean; area?: string };
 
 export type SystemInfo = {
@@ -92,6 +92,12 @@ export type NodeReady = {
 
 export type AccountRow = {
 	 library_status?: string;
+  source_count?: number;
+  version?: number;
+  oauth_status?: string;
+  join_status?: string;
+  liveness_status?: string;
+  liveness_checked_at?: string;
   ref: string;
   platform: string;
   kind: string;
@@ -300,9 +306,10 @@ export const api = {
       groups: { platform: string; kind: string; count: number; items: { ref: string; email: string; kind: string; source: string; created_at?: string; result_sha256: string }[] }[];
     }>("/api/assets/tree"),
   assetResults: (ref: string, query = "") => request<{items: {ref: string; email: string; kind: string; source: string; created_at?: string; result_sha256: string; is_current?: boolean}[]}>(`/api/assets/results?ref=${encodeURIComponent(ref)}&query=${encodeURIComponent(query)}`),
-  accountDetail: (ref: string) =>
-    request<{ account: AccountRow }>(`/api/accounts/detail?ref=${encodeURIComponent(ref)}`),
+  accountDetail: (ref: string, signal?: AbortSignal) =>
+    request<{ account: AccountRow }>(`/api/accounts/detail?ref=${encodeURIComponent(ref)}`, {signal}),
   accountSummary: (platform = "", signal?: AbortSignal) => request<{ platforms: AccountSummary[] }>(`/api/accounts/summary?platform=${encodeURIComponent(platform)}`, { signal }),
+  accountSources: (ref: string, signal?: AbortSignal) => request<{accounts: AccountRow[]; total: number}>(`/api/accounts/sources?ref=${encodeURIComponent(ref)}`, {signal}),
   syncAccounts: () => request<{ ok: boolean; synced: number }>("/api/accounts/sync", { method: "POST" }),
   accountLiveness: (ref: string, platform: string, refreshScan = false) =>
     request<{ ok: boolean; task_id?: string; status?: string; message?: string }>("/api/accounts/liveness", {

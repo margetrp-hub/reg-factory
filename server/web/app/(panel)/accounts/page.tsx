@@ -1,11 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { api, type AccountRow } from "@/lib/api";
-import { Badge, Card, Empty, Stat, timeAgo } from "@/components/ui";
+import { api, type AccountRow, type AccountSummary } from "@/lib/api";
+import { Badge, Card, Empty, timeAgo } from "@/components/ui";
 import { Drawer } from "@/components/drawer";
 import { accountAction, convertAccountCredentials } from "@/lib/account-actions";
+import { AccountSources } from "@/components/account-sources";
+import { AccountSummaryStrip } from "@/components/account-summary-strip";
+import { LIBRARY_LABELS } from "@/components/account-navigation";
+import { PLATFORMS } from "@/lib/task-catalog";
 
 const STATUS_LABEL: Record<string, { text: string; tone: "ok" | "warn" | "bad" | "neutral" | "info" }> = {
   ok: { text: "正常", tone: "ok" },
@@ -18,7 +22,11 @@ const STATUS_LABEL: Record<string, { text: string; tone: "ok" | "warn" | "bad" |
 
 export default function AccountsPage() {
   const [rows, setRows] = useState<AccountRow[]>([]);
-  const [all, setAll] = useState<AccountRow[]>([]);
+  const [summaries,setSummaries]=useState<AccountSummary[] | null>(null);
+  const [total,setTotal]=useState(0);
+  const [offset,setOffset]=useState(0);
+  const [loading,setLoading]=useState(false);
+  const requestSequence=useRef(0);
   const [kind, setKind] = useState("");
   const [platform, setPlatform] = useState("");
   const [status, setStatus] = useState("");
@@ -27,13 +35,10 @@ export default function AccountsPage() {
   const [error, setError] = useState("");
   const [conversionResults, setConversionResults] = useState<{ref:string;task_id:string;email:string}[]>([]);
   const [conversionResultsOpen, setConversionResultsOpen] = useState(false);
-  const [treeDrawer, setTreeDrawer] = useState<string>("");
-  const [tree, setTree] = useState<{
-    root: string;
-    total: number;
-    groups: { platform: string; kind: string; count: number; items?: { ref: string; email: string; source: string }[] }[];
-  } | null>(null);
   const [detail, setDetail] = useState<AccountRow | null>(null);
+  const [detailTarget, setDetailTarget] = useState<AccountRow | null>(null);
+  const [detailError, setDetailError] = useState("");
+  const detailRequest = useRef<AbortController | null>(null);
   const [showImport, setShowImport] = useState(false);
   const [importText, setImportText] = useState("");
   const [importPlatform, setImportPlatform] = useState("chatgpt");
@@ -43,25 +48,50 @@ export default function AccountsPage() {
   const [showPwd, setShowPwd] = useState(false);
   const [pwdValue, setPwdValue] = useState("");
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (signal?: AbortSignal) => {
+    const sequence=++requestSequence.current;
+    setLoading(true);
     try {
       const [data, full] = await Promise.all([
-        api.accounts({ kind, platform, status, limit: 300 }),
-        api.accounts({ limit: 1000 }),
+        api.accounts({ kind, platform, status, limit: 50, offset },signal),
+        api.accountSummary("",signal),
       ]);
+      if(signal?.aborted || sequence!==requestSequence.current)return;
       setRows(data.accounts);
-      setAll(full.accounts);
+      setTotal(data.total);
+      if(offset > 0 && offset >= data.total)setOffset(Math.max(0,Math.ceil(data.total/50)-1)*50);
+      setSummaries(full.platforms);
       setError("");
     } catch (err) {
-      setError((err as Error).message);
-    }
-  }, [kind, platform, status]);
+      if(!signal?.aborted && sequence===requestSequence.current)setError(`读取失败，保留上次结果。${(err as Error).message}`);
+    } finally { if(!signal?.aborted && sequence===requestSequence.current)setLoading(false); }
+  }, [kind, platform, status,offset]);
 
   useEffect(() => {
-    load();
-    const timer = setInterval(load, 8000);
-    return () => clearInterval(timer);
+    const controller=new AbortController();
+    let timer:ReturnType<typeof setTimeout>;
+    const poll=async()=>{await load(controller.signal);if(!controller.signal.aborted)timer=setTimeout(poll,document.hidden?30000:15000);};
+    void poll();
+    return () => {controller.abort();clearTimeout(timer);};
   }, [load]);
+
+  useEffect(()=>{const value=new URLSearchParams(window.location.search).get("platform");if(value)setPlatform(value);},[]);
+  useEffect(()=>{setPicked(new Set());},[kind,platform,status,offset]);
+  useEffect(()=>()=>detailRequest.current?.abort(),[]);
+
+  const openDetail = async (row: AccountRow) => {
+    detailRequest.current?.abort();
+    const controller=new AbortController();
+    detailRequest.current=controller;
+    setDetailTarget(row);setDetail(null);setDetailError("");
+    try {
+      const result=await api.accountDetail(row.ref,controller.signal);
+      if(!controller.signal.aborted)setDetail(result.account);
+    } catch(err) {
+      if(!controller.signal.aborted)setDetailError(`详情读取失败，可重试。${(err as Error).message}`);
+    }
+  };
+  const closeDetail = () => {detailRequest.current?.abort();setDetailTarget(null);setDetail(null);};
 
   useEffect(() => {
     try {
@@ -91,7 +121,10 @@ export default function AccountsPage() {
       const result = await accountAction(ref, plat, action === "liveness" ? "check" : action);
       setNotice(result.task_id ? `已受理原任务 ${result.task_id}，请到任务中心查看结果` : result.message || "测试已返回");
       await load();
-      if (detail?.ref === ref) setDetail((await api.accountDetail(ref)).account);
+      if (detail?.ref === ref) {
+        const updated=(await api.accountDetail(ref)).account;
+        setDetail(current=>current?.ref===ref ? updated : current);
+      }
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -99,10 +132,7 @@ export default function AccountsPage() {
     }
   };
 
-  const counts = rows.reduce<Record<string, number>>((acc, row) => {
-    acc[row.status] = (acc[row.status] || 0) + 1;
-    return acc;
-  }, {});
+  const summary=useMemo<AccountSummary | null>(()=>summaries ? summaries.filter(item=>!platform || item.platform===platform).reduce((sum,item)=>({platform,total:sum.total+item.total,available:sum.available+item.available,abnormal:sum.abnormal+item.abnormal,unknown:sum.unknown+item.unknown,used:sum.used+item.used,leased:sum.leased+item.leased,source_count:sum.source_count+item.source_count}),{platform,total:0,available:0,abnormal:0,unknown:0,used:0,leased:0,source_count:0}) : null,[summaries,platform]);
 
   return (
     <div className="space-y-4">
@@ -113,109 +143,29 @@ export default function AccountsPage() {
         <p className="text-xs text-muted-foreground">账号状态与已保存的结果版本分别查看；导出时可以明确选择完整凭据。</p>
         <Link href="/assets/" className="btn-primary">结果版本与导出</Link>
       </div>
-      {(() => {
-        const platformCards = [
-          { slug: "claude", name: "Claude", tone: "bg-[#d97757]" },
-          { slug: "chatgpt", name: "ChatGPT", tone: "bg-[#10a37f]" },
-          { slug: "grok", name: "Grok", tone: "bg-foreground" },
-          { slug: "outlook", name: "Outlook", tone: "bg-[#0078d4]" },
-        ];
-        return (
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-            {platformCards.map((card) => {
-              const items = all.filter((row) => (row.platform || "") === card.slug);
-              const ok = items.filter((row) => row.status === "ok").length;
-              const active = platform === card.slug;
-              return (
-                <button
-                  key={card.slug}
-                  onClick={() => setPlatform(active ? "" : card.slug)}
-                  className={`rounded-[var(--radius)] border p-3 text-left transition-colors ${
-                    active ? "border-brand bg-brand/10" : "border-border bg-card hover:border-brand/40 hover:bg-accent/40"
-                  }`}
-                >
-                  <div className="flex items-center gap-2">
-                    <span className={`grid h-6 w-6 place-items-center rounded ${card.tone} text-[11px] font-semibold text-primary-foreground`}>
-                      {card.name.slice(0, 1)}
-                    </span>
-                    <span className="flex-1 text-[13px] font-medium">{card.name}</span>
-                    <span className="font-mono text-[12px]">{items.length}</span>
-                  </div>
-                  <div className="mt-1.5 flex items-center justify-between text-[11px] text-muted-foreground">
-                    <span>可用 {ok}</span>
-                    <span>{items.length === 0 ? "暂无资产" : `${items.length - ok} 待处理`}</span>
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        );
-      })()}
+      <nav aria-label="平台筛选" className="flex flex-wrap gap-2">
+        {[{slug:"",name:"全部平台"},...PLATFORMS].map(item=><button key={item.slug} aria-pressed={platform===item.slug} className={platform===item.slug ? "btn-primary" : "btn-ghost"} onClick={()=>{setPlatform(item.slug);setOffset(0);}}>{item.name}<span className="ml-2 tabular-nums opacity-75">{summaries ? (item.slug ? summaries.find(row=>row.platform===item.slug)?.total || 0 : summaries.reduce((sum,row)=>sum+row.total,0)) : "—"}</span></button>)}
+      </nav>
+      <AccountSummaryStrip summary={summary}/>
 
       <Card
-        title="统一资产库"
-        actions={<span className="font-mono text-[11px] text-muted-foreground">{tree?.root ?? "/data/assets"}</span>}
-        bodyClass="p-0"
-      >
-        <div className="grid gap-2 p-3 sm:grid-cols-2 xl:grid-cols-4">
-          {["claude", "chatgpt", "grok", "outlook"].map((slug) => {
-            const groups = (tree?.groups || []).filter((g) => g.platform === slug);
-            const total = groups.reduce((sum, g) => sum + g.count, 0);
-            return (
-              <button
-                key={slug}
-                onClick={() => {
-                  setPlatform(slug);
-                  setTreeDrawer(slug);
-                }}
-                className={`rounded-[var(--radius)] border p-3 text-left transition-colors ${platform === slug ? "border-brand bg-brand/10" : "border-border bg-card hover:border-brand/40 hover:bg-accent/40"}`}
-              >
-                <div className="flex items-center justify-between">
-                  <span className="text-[13px] font-medium">{slug}</span>
-                  <span className="font-mono text-[12px]">{total}</span>
-                </div>
-                <div className="mt-1.5 flex flex-wrap gap-1">
-                  {groups.length === 0 ? (
-                    <span className="text-[11px] text-muted-foreground">暂无资产</span>
-                  ) : (
-                    groups.map((group) => (
-                      <Badge key={group.kind} tone="info">{group.kind} {group.count}</Badge>
-                    ))
-                  )}
-                </div>
-              </button>
-            );
-          })}
-        </div>
-      </Card>
-
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
-        <Stat label="账号总数" value={rows.length} hint="accounts 表" />
-        <Stat label="正常" value={counts.ok ?? 0} tone="neutral" />
-        <Stat label="过期/受限" value={counts.expired ?? 0} tone="warn" />
-        <Stat label="封禁/失效" value={(counts.banned ?? 0) + (counts.invalid ?? 0)} tone="bad" />
-        <Stat label="未测活" value={counts.unknown ?? 0} />
-      </div>
-
-      <Card
-        title="账号主数据"
+        className="sg-account-management"
+        title={`账号记录 · ${total} 个匹配账号`}
         actions={
           <>
-            <select className="field w-[110px] py-1 text-[12px]" value={kind} onChange={(e) => setKind(e.target.value)}>
+            <select aria-label="来源类型" className="field w-[110px] py-1 text-[12px]" value={kind} onChange={(e) => {setKind(e.target.value);setOffset(0);}}>
               <option value="">全部类型</option>
+              <option value="oauth">OAuth</option>
+              <option value="imported">导入资料</option>
+              <option value="free">Free</option>
+              <option value="team">Team</option>
+              <option value="mail">邮箱账号</option>
               <option value="emails">邮箱</option>
               <option value="cookies">Cookie</option>
               <option value="tokens">Token</option>
               <option value="outlook">Outlook</option>
             </select>
-            <select className="field w-[110px] py-1 text-[12px]" value={platform} onChange={(e) => setPlatform(e.target.value)}>
-              <option value="">全部平台</option>
-              <option value="claude">claude</option>
-              <option value="chatgpt">chatgpt</option>
-              <option value="grok">grok</option>
-              <option value="outlook">outlook</option>
-            </select>
-            <select className="field w-[110px] py-1 text-[12px]" value={status} onChange={(e) => setStatus(e.target.value)}>
+            <select aria-label="凭据状态" className="field w-[110px] py-1 text-[12px]" value={status} onChange={(e) => {setStatus(e.target.value);setOffset(0);}}>
               <option value="">全部状态</option>
               <option value="ok">正常</option>
               <option value="expired">过期</option>
@@ -261,52 +211,49 @@ export default function AccountsPage() {
             <button className="btn-ghost" onClick={sync} disabled={busy === "sync"}>
               同步资产
             </button>
+            <button className="btn-ghost" onClick={()=>void load()} disabled={loading}>{loading ? "读取中…" : "更新列表"}</button>
           </>
         }
         bodyClass="p-0"
       >
-        {error && <div className="px-4 py-2 text-[12px] text-destructive">{error}</div>}
+        {error && <div className="px-4 py-2 text-[12px] text-destructive" role="alert">{error}</div>}
         {notice && <div className="px-4 py-2 text-[12px] text-success">{notice}</div>}
-        {rows.length === 0 ? (
+        {!summaries ? <p className="p-6 text-sm text-muted-foreground" role="status">{error ? "数据尚未加载，请重试更新列表。" : "正在读取账号…"}</p> : rows.length === 0 ? (
           <div className="p-4">
             <Empty>
-              {platform
-                ? `${platform} 还没有资产。去「生产 → ${platform}」跑一轮流程，产出会自动进这里。`
-                : "暂无账号主数据。点「同步资产」把邮箱池 / Cookie / Token 写进 accounts 表。"}
+              当前筛选下没有账号。可以调整筛选，或导入账号资料。
             </Empty>
           </div>
         ) : (
           <div className="max-h-[560px] overflow-auto">
-            <table className="tbl">
+            <table className="tbl whitespace-nowrap" aria-label="全部账号列表" aria-busy={loading}>
               <thead>
                 <tr className="border-b border-border">
+                  <th className="px-3 py-2"><span className="sr-only">选择</span></th>
                   <th className="px-4 py-2 text-left font-medium">账号</th>
                   <th className="px-2 py-2 text-left font-medium">平台</th>
                   <th className="px-2 py-2 text-left font-medium">状态</th>
                   <th className="px-2 py-2 text-left font-medium">测活</th>
-                  <th className="px-2 py-2 text-left font-medium">领取</th>
+                  <th className="px-2 py-2 text-left font-medium">密码</th>
+                  <th className="px-2 py-2 text-left font-medium">业务状态</th>
+                  <th className="px-2 py-2 text-left font-medium">来源</th>
                   <th className="px-4 py-2 text-right font-medium">操作</th>
                 </tr>
               </thead>
               <tbody>
                 {rows.map((row) => {
                   const meta = STATUS_LABEL[row.status] || STATUS_LABEL.unknown;
+                  const used=row.claimed || row.library_status==="used";
                   return (
                     <tr
                       key={row.ref}
-                      onClick={async () => {
-                        try {
-                          const data = await api.accountDetail(row.ref);
-                          setDetail(data.account);
-                        } catch {
-                          setDetail(row);
-                        }
-                      }}
+                      onClick={() => void openDetail(row)}
                       className="cursor-pointer border-b border-border/60 last:border-0 hover:bg-accent/40"
                     >
                       <td className="px-3 py-1.5" onClick={(e) => e.stopPropagation()}>
                         <input
                           type="checkbox"
+                          aria-label={`选择 ${row.identity || row.ref}`}
                           checked={picked.has(row.ref)}
                           onChange={(e) => {
                             const next = new Set(picked);
@@ -333,20 +280,21 @@ export default function AccountsPage() {
                         </Badge>
                       </td>
                       <td className="px-2 py-1.5">
-                        {row.claimed ? <Badge tone="neutral">已领</Badge> : <Badge tone="ok">可供应</Badge>}
+                        <Badge tone={row.library_status==="available" ? "ok" : row.library_status==="leased" ? "warn" : "neutral"}>{LIBRARY_LABELS[row.library_status || (used ? "used" : "pending")] || "待核验"}</Badge>
                       </td>
-                      <td className="px-4 py-1.5 text-right">
+                      <td className="px-2 py-1.5" onClick={event=>event.stopPropagation()}><button className="btn-ghost tabular-nums" onClick={()=>void openDetail(row)} aria-label={`查看 ${row.identity || row.ref} 的来源`}>{row.source_count ?? 1} 份来源</button></td>
+                      <td className="px-4 py-1.5 text-right" onClick={event=>event.stopPropagation()}>
                         <button
                           className="btn-ghost mr-1 px-2 py-0.5 text-[11px]"
-                          disabled={busy === row.ref + "liveness"}
+                          disabled={!!busy}
                           onClick={() => act(row.ref, row.platform, "liveness")}
                         >
                           测活
                         </button>
                         <button
                           className="btn-ghost px-2 py-0.5 text-[11px]"
-                          disabled={!!busy || row.claimed}
-                          title={row.claimed ? "已领取账号在主系统原任务中刷新" : undefined}
+                          disabled={!!busy || used}
+                          title={used ? "已使用账号在主系统原任务中刷新" : undefined}
                           onClick={() => act(row.ref, row.platform, "refresh")}
                         >
                           刷新
@@ -359,56 +307,8 @@ export default function AccountsPage() {
             </table>
           </div>
         )}
+        <footer className="sg-task-footer"><span>{summaries ? `${total ? offset+1 : 0}–${Math.min(offset+50,total)} / ${total}` : "—"}</span><div className="flex gap-2"><button className="btn-ghost" disabled={offset===0 || loading || !!busy} onClick={()=>setOffset(Math.max(0,offset-50))}>上一页</button><button className="btn-ghost" disabled={offset+50>=total || loading || !!busy} onClick={()=>setOffset(offset+50)}>下一页</button></div></footer>
       </Card>
-
-      <Drawer
-        open={!!treeDrawer}
-        title={`${treeDrawer} 全部资产`}
-        subtitle={tree?.root ? `${tree.root}/${treeDrawer}` : ""}
-        onClose={() => setTreeDrawer("")}
-        width={520}
-      >
-        <div className="space-y-3">
-          {(tree?.groups || []).filter((g) => g.platform === treeDrawer).map((group) => (
-            <div key={group.kind}>
-              <div className="mb-1 flex items-center gap-2">
-                <span className="text-[12px] font-medium">{group.kind}</span>
-                <Badge tone="info">{group.count}</Badge>
-              </div>
-              <table className="tbl">
-                <thead>
-                  <tr>
-                    <th>ref</th>
-                    <th>邮箱</th>
-                    <th>来源</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(group.items || []).map((item) => (
-                    <tr key={item.ref} className="cursor-pointer hover:bg-accent/40"
-                        onClick={async () => {
-                          try {
-                            const data = await api.accountDetail(item.ref);
-                            setDetail(data.account);
-                            setTreeDrawer("");
-                          } catch {
-                            /* 没有索引条目时忽略 */
-                          }
-                        }}>
-                      <td className="max-w-[200px] truncate font-mono text-[11px]">{item.ref}</td>
-                      <td className="max-w-[180px] truncate text-[11px] text-muted-foreground">{item.email || "-"}</td>
-                      <td className="text-[11px] text-muted-foreground">{item.source || "-"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ))}
-          {(tree?.groups || []).filter((g) => g.platform === treeDrawer).length === 0 && (
-            <Empty>该平台还没有资产。去「生产 → {treeDrawer}」跑一轮流程。</Empty>
-          )}
-        </div>
-      </Drawer>
 
       <Drawer
         open={showPwd}
@@ -528,10 +428,11 @@ export default function AccountsPage() {
       </Drawer>
 
       <Drawer
-        open={!!detail}
-        title={detail?.identity || detail?.ref || "账号"}
+        open={!!detailTarget}
+        title={detailTarget?.identity || detailTarget?.ref || "账号"}
         subtitle={detail ? `${detail.platform || "-"} · ${detail.kind || "-"}` : ""}
-        onClose={() => setDetail(null)}
+        onClose={closeDetail}
+        width={600}
         footer={
           detail ? (
             <>
@@ -544,26 +445,29 @@ export default function AccountsPage() {
               </button>
               <button
                 className="btn-primary px-3 py-1 text-[11px]"
-                disabled={!!busy || detail.claimed}
-                title={detail.claimed ? "已领取账号在主系统原任务中刷新" : undefined}
+                disabled={!!busy || detail.claimed || detail.library_status==="used"}
+                title={detail.claimed || detail.library_status==="used" ? "已使用账号在主系统原任务中刷新" : undefined}
                 onClick={() => act(detail.ref, detail.platform, "refresh")}
               >
                 RT 刷新
               </button>
-              {detail.platform === "chatgpt" && <button className="btn-primary" disabled={!!busy || detail.claimed} onClick={() => act(detail.ref,detail.platform,"authorize")}>用密码/2FA修复凭证</button>}
+              {detail.platform === "chatgpt" && <button className="btn-primary" disabled={!!busy || detail.claimed || detail.library_status==="used"} onClick={() => act(detail.ref,detail.platform,"authorize")}>用密码/2FA修复凭证</button>}
             </>
           ) : null
         }
       >
+        {detailError ? <div role="alert"><p className="text-sm text-destructive">{detailError}</p><button className="btn-ghost mt-3" onClick={()=>detailTarget && void openDetail(detailTarget)}>重试读取详情</button></div> : detailTarget && !detail && <p className="text-sm text-muted-foreground" role="status">正在读取账号详情…</p>}
         {detail && (
-          <table className="tbl">
+          <><table className="tbl">
             <tbody>
               {[
                 { k: "ref", v: detail.ref },
                 { k: "平台", v: detail.platform || "-" },
                 { k: "类型", v: detail.kind || "-" },
                 { k: "状态", v: detail.status || "unknown" },
-                { k: "领取", v: detail.claimed ? `已领（${detail.claimed_at || "-"}）` : "可供应" },
+                { k: "业务状态", v: LIBRARY_LABELS[detail.library_status || (detail.claimed ? "used" : "pending")] || "待核验" },
+                { k: "领取", v: detail.claimed ? `已领（${detail.claimed_at || "-"}）` : "未领取" },
+                { k: "版本", v: String(detail.version ?? "—") },
                 { k: "刷新状态", v: detail.refresh_state || "-" },
                 { k: "刷新时间", v: detail.refresh_at || "-" },
                 { k: "测活时间", v: detail.health_checked_at || "从未" },
@@ -578,7 +482,7 @@ export default function AccountsPage() {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table><AccountSources account={detail} onSelect={source=>void openDetail(source)}/></>
         )}
       </Drawer>
 

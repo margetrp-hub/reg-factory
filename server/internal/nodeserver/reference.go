@@ -40,24 +40,24 @@ func (h *Handler) subjectRef(subject string) (string, bool) {
 	if strings.Contains(subject, ":") {
 		return subject, true
 	}
-	rows, err := h.st.ListAccounts("", "", "", 10000)
+	refs, err := h.st.AccountSourceRefs()
 	if err != nil {
 		return "", false
 	}
-	for _, a := range rows {
+	for _, ref := range refs {
 		// Core may use the canonical account UUID directly for local intake.
 		// Keep accepting the older deterministic SubjectID(ref) projection too.
-		if a.Ref == subject {
-			if alias != "" && alias != a.Ref {
+		if ref == subject {
+			if alias != "" && alias != ref {
 				return "", false
 			}
-			return a.Ref, true
+			return ref, true
 		}
-		if SubjectID(a.Ref) == subject {
-			if alias != "" && alias != a.Ref {
+		if SubjectID(ref) == subject {
+			if alias != "" && alias != ref {
 				return "", false
 			}
-			return a.Ref, true
+			return ref, true
 		}
 	}
 	return alias, alias != ""

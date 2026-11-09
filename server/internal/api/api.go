@@ -125,6 +125,7 @@ func (s *Server) Register(r *gin.Engine) {
 	r.POST("/api/accounts/change-password", s.changePasswords)
 	r.POST("/api/accounts/convert", s.convertAccounts)
 	r.GET("/api/accounts/detail", s.accountDetail)
+	r.GET("/api/accounts/sources", s.accountSources)
 	r.GET("/api/accounts/summary", s.accountSummary)
 	r.GET("/api/accounts", s.listAccounts)
 	r.POST("/api/accounts/sync", s.syncAccountsHandler)
