@@ -181,6 +181,16 @@ func Open(path string) (*Store, error) {
 		"result_resource_version": "INTEGER NOT NULL DEFAULT 0",
 		"completed_at":            "TEXT NOT NULL DEFAULT ''",
 	})
+	// File scans must know which records are owned by production/custody even
+	// before the Work routes are registered.
+	if err := st.EnsureInventoryRelay(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("initialize inventory storage: %w", err)
+	}
+	if err := st.EnsureProduction(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("initialize production storage: %w", err)
+	}
 	if err := st.RecoverLegacyQuota(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("recover read-only quota records: %w", err)
@@ -629,9 +639,13 @@ func (s *Store) SyncAccounts(seeds []AccountSeed) (int, error) {
 		}
 		count++
 	}
-	// 源文件已删除的条目一并清掉（本次未被 upsert 的 updated_at 仍为旧值）；
-	// 人工导入（imported/creds）不参与文件同步清理。
-	if _, err := tx.Exec(`DELETE FROM accounts WHERE updated_at < ? AND kind NOT IN ('imported','creds')`, ts); err != nil {
+	// A missing file is not authority to remove a production result, a claimed
+	// account or a durable custody/reference binding. Their owners retire them.
+	if _, err := tx.Exec(`DELETE FROM accounts WHERE updated_at < ? AND kind NOT IN ('imported','creds')
+ AND claimed=0
+ AND NOT EXISTS (SELECT 1 FROM production_results p WHERE p.account_ref=accounts.ref)
+ AND NOT EXISTS (SELECT 1 FROM inventory_relay_bindings b WHERE b.account_ref=accounts.ref)
+ AND NOT EXISTS (SELECT 1 FROM account_subject_aliases a WHERE a.account_ref=accounts.ref)`, ts); err != nil {
 		return count, err
 	}
 	return count, tx.Commit()

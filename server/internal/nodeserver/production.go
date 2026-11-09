@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tiantianGPU/reg-factory/server/internal/assetstore"
 	"github.com/tiantianGPU/reg-factory/server/internal/store"
 )
 
@@ -400,6 +401,14 @@ func (h *Handler) productionReceipt(v *Verified, key []byte, now time.Time) (map
 			if err != nil {
 				return nil, err
 			}
+			// Existing-result intake needs the same exact-ref working document
+			// as newly produced output. Later customer repair must not guess a
+			// different account/workspace by email from legacy files.
+			if err := h.projectProductionDocument(p, document); err != nil {
+				_ = h.st.Stage("work-"+p.OperationID, store.StageEvent{Stage: "projection", Status: "unknown", Code: "PRODUCTION_RESULT_EXPORT_FAILED",
+					Action: "原成品已保留；修复本地资产存储后继续原任务，不重新生产或登录"})
+				return nil, perr("PRODUCTION_RESULT_EXPORT_FAILED", 503)
+			}
 			var params map[string]any
 			_ = json.Unmarshal([]byte(p.Parameters), &params)
 			for _, field := range []string{"production_ref", "mode", "source_ref", "source_sha256"} {
@@ -424,6 +433,23 @@ func (h *Handler) productionReceipt(v *Verified, key []byte, now time.Time) (map
 		}
 	}
 	return productionSignedReceipt(v, p, key)
+}
+
+func (h *Handler) projectProductionDocument(p store.Production, document map[string]any) error {
+	assets := assetstore.New(dataDir())
+	current, err := assets.Get(p.AccountRef)
+	if err == nil {
+		if current.Platform != "chatgpt" || !strings.EqualFold(current.Email, p.Email) ||
+			productionDigest(current.Payload) != productionDigest(document) {
+			return perr("PRODUCTION_ACCOUNT_IDENTITY_CONFLICT", 409)
+		}
+		return nil
+	}
+	if !os.IsNotExist(err) {
+		return err
+	}
+	return assets.Put(assetstore.Asset{Ref: p.AccountRef, Platform: "chatgpt", Kind: "team", Email: p.Email,
+		Source: "production.team_json", Payload: document})
 }
 
 func productionSignedReceipt(v *Verified, p store.Production, key []byte) (map[string]any, error) {

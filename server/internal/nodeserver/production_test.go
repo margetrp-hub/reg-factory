@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tiantianGPU/reg-factory/server/internal/assetstore"
 	"github.com/tiantianGPU/reg-factory/server/internal/store"
 )
 
@@ -182,6 +183,54 @@ func TestProductionRetainsOriginalAcrossUnknownLostAckAndChangedSource(t *testin
 	frozen, err := h.accountDocument(accountRef)
 	if err != nil || productionDigest(frozen) != productionDigest(document) {
 		t.Fatal("custody did not use retained output", err)
+	}
+	current, err := assetstore.New(root).Get(accountRef)
+	if err != nil || current.Ref != accountRef || productionDigest(current.Payload) != productionDigest(document) {
+		t.Fatal("existing result has no exact-ref repair document", err)
+	}
+	// The directory scanner is independent of Work. Its next scan must not
+	// strand a sale or let a lost response consume another account revision.
+	assetID := SubjectID("customer-asset")
+	for i, state := range []string{"prepared", "stocked", "sold", "delivered"} {
+		if _, err = db.SyncAccounts(nil); err != nil {
+			t.Fatal(err)
+		}
+		pending := map[string]any{"schema": teamBusinessSchema, "issuer": "team-inventory", "node_id": "sg",
+			"event_id": SubjectID("event-" + state), "event_type": "inventory." + state,
+			"account_id": done["result_account_id"], "source_asset_id": done["result_account_id"],
+			"team_asset_uuid": assetID, "state": state, "revision": i + 1, "expected_resource_version": i + 1,
+			"issued_at": stamp.Unix(), "expires_at": stamp.Unix() + 120, "customer_expires_at": nil}
+		event, err := signInventory(pending, key, teamBusinessDomain)
+		if err != nil {
+			t.Fatal(err)
+		}
+		first, err := h.inventoryEvent(map[string]any{"event": event})
+		if err != nil {
+			t.Fatalf("%s did not advance: %v", state, err)
+		}
+		pending["issued_at"], pending["expires_at"] = stamp.Unix()+1, stamp.Unix()+121
+		event, _ = signInventory(pending, key, teamBusinessDomain)
+		repeated, err := h.inventoryEvent(map[string]any{"event": event})
+		if err != nil || productionDigest(first) != productionDigest(repeated) {
+			t.Fatalf("%s lost receipt changed on retry: %v", state, err)
+		}
+	}
+	account, err := db.GetAccount(accountRef)
+	if err != nil || account.Version != 5 || !account.Claimed {
+		t.Fatal("delivered account did not retain its custody version", err)
+	}
+	// A later customer result outranks the frozen production document. Polling
+	// the old completed production cannot roll its current credentials back.
+	current.Payload = map[string]any{"email": email, "refresh_token": "synthetic-customer-rotated"}
+	if err = assetstore.New(root).Put(current); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = h.productionReceipt(v, key, stamp.Add(90*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	current, err = assetstore.New(root).Get(accountRef)
+	if err != nil || current.Payload["refresh_token"] != "synthetic-customer-rotated" {
+		t.Fatal("old production poll replaced customer credentials", err)
 	}
 	// Another task may not claim the same source under a different filename.
 	if err = os.WriteFile(filepath.Join(dir, "duplicate.json"), raw, 0600); err != nil {

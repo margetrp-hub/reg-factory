@@ -57,22 +57,23 @@ def test_password_totp_uses_supplier_protocol_and_preserves_workspace():
     assert result['refresh_token'] == 'fresh'
 
 
-def test_fresh_authorization_persists_original_copies_but_unknown_preserves_them(tmp_path, monkeypatch):
+@pytest.mark.parametrize('ref,kind', [('import:original', 'oauth'), ('production:original-operation', 'team')])
+def test_fresh_authorization_persists_original_copies_but_unknown_preserves_them(tmp_path, monkeypatch, ref, kind):
     monkeypatch.setenv('REG_FACTORY_DATA_DIR', str(tmp_path))
-    directory = tmp_path / 'assets' / 'chatgpt' / 'oauth'
+    directory = tmp_path / 'assets' / 'chatgpt' / kind
     directory.mkdir(parents=True)
     path = directory / 'original.json'
-    doc = {'ref': 'import:original', 'payload': {'email': 'original@icloud.com', 'refresh_token': 'old', 'access_token': 'old-access', 'oauth_access_token': 'old-access'}}
+    doc = {'ref': ref, 'payload': {'email': 'original@icloud.com', 'refresh_token': 'old', 'access_token': 'old-access', 'oauth_access_token': 'old-access'}}
     path.write_text(json.dumps(doc))
     imported = tmp_path / 'assets' / 'chatgpt' / 'imported'
     imported.mkdir()
     (imported / 'original.json').write_text(json.dumps({'ref': doc['ref'], 'payload': {'password': 'original-password', 'totp': 'JBSWY3DPEHPK3PXP'}}))
     (imported / 'decoy.json').write_text(json.dumps({'ref': 'another-ref', 'payload': {'email': 'original@icloud.com', 'password': 'wrong-password'}}))
     with patch('tools.chatgpt_reauthorize.authorize_document', new=AsyncMock(side_effect=TimeoutError)):
-        assert asset_ops._reauthorize_chatgpt('import:original')['result'] == 'unknown'
+        assert asset_ops._reauthorize_chatgpt(ref)['result'] == 'unknown'
     assert json.loads(path.read_text()) == doc
     with patch('tools.chatgpt_reauthorize.authorize_document', new=AsyncMock(return_value={'refresh_token': 'new', 'access_token': 'new-access'})) as authorize:
-        assert asset_ops._reauthorize_chatgpt('import:original')['result'] == 'refreshed'
+        assert asset_ops._reauthorize_chatgpt(ref)['result'] == 'refreshed'
         source = authorize.call_args.args[0]['payload']
         assert source['password'] == 'original-password'
         assert source['totp'] == 'JBSWY3DPEHPK3PXP'
