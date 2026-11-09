@@ -27,7 +27,7 @@ const CONTEXT_LINKS: Record<NavSection, { href: string; label: string }[]> = {
   runtime: [
     { href: "/tasks/", label: "任务队列" },
   ],
-  assets: [{ href: "/accounts/", label: "账号主数据" }, { href: "/assets/", label: "结果版本与导出" }],
+  assets: [{ href: "/accounts/", label: "账号主数据" }, { href: "/assets/", label: "当前凭据与导出" }],
   supply: [
     { href: "/materials/", label: "物料总览" },
     { href: "/apps/icmail/", label: "邮箱池管理" },

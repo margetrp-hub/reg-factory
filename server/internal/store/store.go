@@ -367,6 +367,24 @@ func (s *Store) RecoverInterrupted() (int64, error) {
 	if err != nil {
 		return 0, err
 	}
+	// A credential worker which ended without a confirmed result is failed.
+	// Keep the previous state in its events, but never hold an account forever.
+	credentialEnded := `script='asset_ops' AND json_valid(args_json) AND json_extract(args_json,'$[0]')='refresh'
+ AND (status IN ('unknown','interrupted') OR (status='stopped' AND started_at<>''))`
+	if _, err = tx.Exec(`INSERT INTO events(task_id,ts,stream,line)
+ SELECT id,?,'system','凭据任务未确认完成，按失败结案；原状态='||status||'，原反馈='||error FROM tasks WHERE `+credentialEnded, now()); err != nil {
+		return 0, err
+	}
+	if _, err = tx.Exec(`UPDATE accounts SET refresh_state='failed',refresh_at=?
+ WHERE refresh_state IN ('unknown','interrupted','stopped') AND ref IN
+ (SELECT r.ref FROM account_refreshes r JOIN tasks t ON t.id=r.task_id WHERE t.`+credentialEnded+`)`, now()); err != nil {
+		return 0, err
+	}
+	if _, err = tx.Exec(`UPDATE tasks SET status='failed',exit_code=CASE WHEN started_at<>'' THEN 75 ELSE 1 END,
+ error='未取得可确认的成功结果，本次失败；可重新发起授权修复',pid=0,
+ finished_at=CASE WHEN finished_at='' THEN ? ELSE finished_at END WHERE `+credentialEnded, now()); err != nil {
+		return 0, err
+	}
 	return n, tx.Commit()
 }
 
@@ -644,20 +662,22 @@ type AccountSeed struct {
 
 // Account 是账号主数据（对齐 account-node 的 identity/secret/business/health 分组语义）。
 type Account struct {
-	Ref             string `json:"ref"`
-	Platform        string `json:"platform"`
-	Kind            string `json:"kind"`
-	Identity        string `json:"identity"`
-	SecretRef       string `json:"secret_ref"`
-	Status          string `json:"status"`
-	HealthCheckedAt string `json:"health_checked_at"`
-	HealthMessage   string `json:"health_message"`
-	Claimed         bool   `json:"claimed"`
-	ClaimedAt       string `json:"claimed_at"`
-	RefreshState    string `json:"refresh_state"`
-	RefreshAt       string `json:"refresh_at"`
-	Note            string `json:"note"`
-	UpdatedAt       string `json:"updated_at"`
+	Ref                 string `json:"ref"`
+	Platform            string `json:"platform"`
+	Kind                string `json:"kind"`
+	Identity            string `json:"identity"`
+	SecretRef           string `json:"secret_ref"`
+	Status              string `json:"status"`
+	HealthCheckedAt     string `json:"health_checked_at"`
+	HealthMessage       string `json:"health_message"`
+	Claimed             bool   `json:"claimed"`
+	ClaimedAt           string `json:"claimed_at"`
+	RefreshState        string `json:"refresh_state"`
+	RefreshAt           string `json:"refresh_at"`
+	Note                string `json:"note"`
+	UpdatedAt           string `json:"updated_at"`
+	CredentialUpdatedAt string `json:"credential_updated_at,omitempty"`
+	CredentialRef       string `json:"credential_ref,omitempty"`
 
 	// Team 参考协议需要的判定字段（源号是否可派单）
 	Version           int    `json:"version"`

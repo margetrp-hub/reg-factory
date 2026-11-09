@@ -216,7 +216,7 @@ func (s *Server) checkCredential(ctx context.Context, batchID string, item store
 	}
 	if account.Platform == "chatgpt" {
 		item.CheckVersion = account.Version
-		asset, err := s.assets.Get(item.Ref)
+		asset, err := s.assets.Get(item.Ref, item.Identity)
 		if err != nil || asset.Platform != "chatgpt" {
 			return item
 		}
@@ -226,7 +226,7 @@ func (s *Server) checkCredential(ctx context.Context, batchID string, item store
 		}
 		result := probe.OAuthContext(ctx, asset.Payload, proxy, 30*time.Second)
 		item.Status, item.Message = result.Status, result.Message
-		current, readErr := s.assets.Get(item.Ref)
+		current, readErr := s.assets.Get(item.Ref, item.Identity)
 		if readErr != nil || current.ResultSHA != asset.ResultSHA {
 			item.Status, item.Message, item.CheckVersion = "unknown", "核验期间凭据已变化，请重测 AT", -1
 		}

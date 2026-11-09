@@ -24,5 +24,8 @@ func (s *Server) accountSources(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "account_sources_unavailable"})
 		return
 	}
+	for i := range items {
+		s.credentialMetadata(&items[i])
+	}
 	c.JSON(http.StatusOK, gin.H{"accounts": items, "total": len(items)})
 }

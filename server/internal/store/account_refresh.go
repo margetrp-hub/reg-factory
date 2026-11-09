@@ -11,10 +11,17 @@ var ErrAccountOwned = errors.New("account_owned_by_core")
 var ErrRefreshState = errors.New("refresh_not_awaiting_resolution")
 
 func AccountRefreshRef(task Task) string {
-	var args []string
 	// Work owns delivered-account authorization and its signed recovery protocol.
 	// Panel locks must not take over or reject those already-authorized tasks.
-	if strings.HasPrefix(task.ID, "work-") || task.Script != "asset_ops" || json.Unmarshal([]byte(task.ArgsJSON), &args) != nil || len(args) < 3 || args[0] != "refresh" {
+	if strings.HasPrefix(task.ID, "work-") {
+		return ""
+	}
+	return CredentialTaskRef(task)
+}
+
+func CredentialTaskRef(task Task) string {
+	var args []string
+	if task.Script != "asset_ops" || json.Unmarshal([]byte(task.ArgsJSON), &args) != nil || len(args) < 3 || args[0] != "refresh" {
 		return ""
 	}
 	for i := 1; i+1 < len(args); i++ {
@@ -33,7 +40,7 @@ type RefreshEvidence struct {
 }
 
 // QueueAccountRefresh serializes both request replays and distinct requests for
-// the same account. Unknown or interrupted exchanges retain their ownership.
+// the same account. Ended failures release ownership for a fresh repair request.
 func (s *Store) QueueAccountRefresh(task Task, ref string) (string, bool, error) {
 	if AccountRefreshRef(task) != ref || ref == "" {
 		return "", false, errors.New("invalid_refresh_task")
@@ -55,19 +62,27 @@ func (s *Store) QueueAccountRefresh(task Task, ref string) (string, bool, error)
 		return "", false, err
 	}
 	var claimed bool
-	if err = tx.QueryRow(`SELECT claimed FROM accounts WHERE ref=?`, ref).Scan(&claimed); err != nil {
+	var platform, identity string
+	if err = tx.QueryRow(`SELECT claimed,platform,`+accountIdentitySQL+` FROM accounts WHERE ref=?`, ref).Scan(&claimed, &platform, &identity); err != nil {
+		return "", false, err
+	}
+	if err = tx.QueryRow(`SELECT MAX(claimed) FROM accounts WHERE platform=? AND (`+accountIdentitySQL+`)=?`, platform, identity).Scan(&claimed); err != nil {
 		return "", false, err
 	}
 	if claimed {
 		return "", false, ErrAccountOwned
 	}
 	err = tx.QueryRow(`SELECT id FROM tasks WHERE script='asset_ops' AND json_valid(args_json)
- AND json_extract(args_json,'$[0]')='refresh' AND json_extract(args_json,'$[2]')=?
- AND (status IN ('queued','running','unknown','stopping') OR (status IN ('stopped','interrupted') AND started_at<>''))
- ORDER BY created_at,id LIMIT 1`, ref).Scan(&old)
+ AND json_extract(args_json,'$[0]')='refresh' AND json_extract(args_json,'$[2]') IN
+ (SELECT ref FROM accounts WHERE platform=? AND (`+accountIdentitySQL+`)=?)
+ AND status IN ('queued','running','stopping')
+ ORDER BY created_at,id LIMIT 1`, platform, identity).Scan(&old)
 	created := errors.Is(err, sql.ErrNoRows)
 	if err != nil && !created {
 		return "", false, err
+	}
+	if !created && strings.HasPrefix(old, "work-") {
+		return "", false, ErrAccountOwned
 	}
 	if created {
 		old = task.ID
@@ -78,8 +93,10 @@ func (s *Store) QueueAccountRefresh(task Task, ref string) (string, bool, error)
 			return "", false, err
 		}
 	}
-	if _, err = tx.Exec(`INSERT OR IGNORE INTO account_refreshes(task_id,ref) VALUES(?,?)`, old, ref); err != nil {
-		return "", false, err
+	if created {
+		if _, err = tx.Exec(`INSERT OR IGNORE INTO account_refreshes(task_id,ref) VALUES(?,?)`, old, ref); err != nil {
+			return "", false, err
+		}
 	}
 	// Persist coalesced request IDs too, including after the original finishes.
 	if _, err = tx.Exec(`INSERT INTO account_refresh_requests(request_id,task_id,args_json,actor) VALUES(?,?,?,?)`, task.ID, old, task.ArgsJSON, task.Actor); err != nil {

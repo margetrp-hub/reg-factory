@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestRefreshAutomaticallyVerifiesWithoutReleasingUnknownOrCustody(t *testing.T) {
+func TestRefreshAutomaticallyVerifiesAfterFailureWithoutChangingCustody(t *testing.T) {
 	s, task := refreshFixture(t)
 	if err := s.MarkHealth("one", "ok", "original AT"); err != nil {
 		t.Fatal(err)
@@ -21,20 +21,24 @@ func TestRefreshAutomaticallyVerifiesWithoutReleasingUnknownOrCustody(t *testing
 	if err := s.MarkATHealth("one", "ok", "old probe", before.Version); !errors.Is(err, ErrCheckStale) {
 		t.Fatal("stale check accepted", err)
 	}
-	if err := s.FinishAccountRefresh(task.ID, "one", "unknown", 75, "exchange uncertain", ""); err != nil {
+	if err := s.FinishAccountRefresh(task.ID, "one", "failed", 75, "exchange failed", ""); err != nil {
 		t.Fatal(err)
 	}
 	locked, _ := s.GetAccount("one")
-	if locked.LibraryStatus != "leased" {
-		t.Fatal("unknown exchange offered", locked.LibraryStatus)
+	if locked.LibraryStatus == "leased" {
+		t.Fatal("failed task kept its account lock", locked.LibraryStatus)
 	}
-	if err := s.MarkHealth("one", "ok", "old AT still works"); !errors.Is(err, ErrCheckStale) {
-		t.Fatal("uncertainty unlocked", err)
+	if err := s.MarkHealth("one", "ok", "old AT still works"); err != nil {
+		t.Fatal("ended task blocked testing", err)
 	}
-	if err := s.ResolveAccountRefresh(task.ID, "operator", "", "succeeded", "new-sha"); err != nil {
+	task.ID = "new-repair"
+	if _, _, err := s.QueueAccountRefresh(task, "one"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ResolveAccountRefresh(task.ID, "operator", "", "succeeded", "new-sha"); err != nil {
+	if err := s.BeginAccountRefresh(task.ID, "one", "source-sha"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.FinishAccountRefresh(task.ID, "one", "succeeded", 0, "", "new-sha"); err != nil {
 		t.Fatal(err)
 	}
 	checkID := RefreshVerificationID(task.ID)

@@ -508,15 +508,24 @@ func (s *Server) assetExport(c *gin.Context) {
 	platform := strings.TrimSpace(c.DefaultQuery("platform", "chatgpt"))
 	kind := strings.TrimSpace(c.DefaultQuery("kind", ""))
 
-	list, err := s.assets.List()
+	var list []assetstore.Asset
+	var err error
 	if ref := c.Query("ref"); ref != "" {
 		var selected assetstore.Asset
-		if digest := c.Query("result_sha256"); digest != "" {
-			selected, err = s.assets.Result(ref, digest)
-		} else {
-			selected, err = s.assets.Get(ref)
+		email := ""
+		if s.st != nil {
+			if account, e := s.st.GetAccount(ref); e == nil {
+				email = account.Identity
+			}
+		}
+		selected, err = s.assets.Get(ref, email)
+		if digest := c.Query("result_sha256"); err == nil && digest != "" && digest != selected.ResultSHA {
+			c.JSON(http.StatusConflict, gin.H{"error": "CREDENTIAL_SUPERSEDED", "detail": "凭据已更新，请下载账号当前凭据"})
+			return
 		}
 		list = []assetstore.Asset{selected}
+	} else {
+		list, err = s.assets.Current()
 	}
 	if err != nil {
 		c.JSON(http.StatusConflict, gin.H{"error": "RESULT_SELECTION_REQUIRED", "detail": err.Error()})
@@ -564,7 +573,18 @@ func (s *Server) assetExport(c *gin.Context) {
 
 func (s *Server) assetResults(c *gin.Context) {
 	ref := strings.TrimSpace(c.Query("ref"))
-	items, err := s.assets.History(ref)
+	items, err := s.assets.Current()
+	if ref != "" {
+		email := ""
+		if s.st != nil {
+			if account, e := s.st.GetAccount(ref); e == nil {
+				email = account.Identity
+			}
+		}
+		var selected assetstore.Asset
+		selected, err = s.assets.Get(ref, email)
+		items = []assetstore.Asset{selected}
+	}
 	if err != nil {
 		c.JSON(503, gin.H{"error": "result_history_unavailable"})
 		return
@@ -585,6 +605,10 @@ func (s *Server) assetResults(c *gin.Context) {
 			}
 		}
 		items = selected
+	}
+	for i := range items {
+		items[i].Payload = nil
+		items[i].Current = true
 	}
 	c.Header("Cache-Control", "no-store")
 	c.JSON(200, gin.H{"ref": ref, "items": items})
@@ -1194,6 +1218,7 @@ func (s *Server) accountDetail(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not_found", "detail": err.Error()})
 		return
 	}
+	s.credentialMetadata(&account)
 	c.JSON(http.StatusOK, gin.H{"account": account})
 }
 
@@ -1208,7 +1233,20 @@ func (s *Server) listAccounts(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	for i := range list {
+		s.credentialMetadata(&list[i])
+	}
 	c.JSON(http.StatusOK, gin.H{"accounts": list, "count": len(list), "total": total, "offset": offset, "limit": limit})
+}
+
+func (s *Server) credentialMetadata(account *store.Account) {
+	if s.assets == nil || account.Platform != "chatgpt" {
+		return
+	}
+	if current, err := s.assets.Get(account.Ref, account.Identity); err == nil {
+		account.CredentialUpdatedAt = current.CredentialUpdatedAt
+		account.CredentialRef = current.CredentialRef
+	}
 }
 
 func (s *Server) accountSummary(c *gin.Context) {
@@ -1251,7 +1289,7 @@ func (s *Server) probeOAuthAccount(ref string) (bool, error) {
 	if accountErr != nil {
 		return false, accountErr
 	}
-	asset, err := s.assets.Get(ref)
+	asset, err := s.assets.Get(ref, account.Identity)
 	if err != nil || asset.Platform != "chatgpt" || asset.Kind != "oauth" {
 		return false, nil
 	}
@@ -1260,7 +1298,7 @@ func (s *Server) probeOAuthAccount(ref string) (bool, error) {
 		proxy = value
 	}
 	result := probe.OAuth(asset.Payload, proxy, 30*time.Second)
-	current, readErr := s.assets.Get(ref)
+	current, readErr := s.assets.Get(ref, account.Identity)
 	if readErr != nil || current.ResultSHA != asset.ResultSHA {
 		return true, store.ErrCheckStale
 	}

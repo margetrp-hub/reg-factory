@@ -22,7 +22,7 @@ func TestRefreshFailureReceiptReasonAndHistoricalDigest(t *testing.T) {
 		{"legacy", "", "mfa_totp_verification_failed", "stdout", "WORK_ACCOUNT_REFRESH_FAILED", 1},
 		{"untrusted", "account.failure.v1", "provider-private", "stdout", "WORK_ACCOUNT_REFRESH_FAILED", 1},
 		{"stderr", "account.failure.v1", "mfa_totp_verification_failed", "stderr", "WORK_ACCOUNT_REFRESH_FAILED", 1},
-		{"unknown", "account.failure.v1", "mfa_totp_verification_failed", "stdout", "WORK_ACCOUNT_REFRESH_UNKNOWN", 75},
+		{"unconfirmed", "account.failure.v1", "mfa_totp_verification_failed", "stdout", "WORK_ACCOUNT_MFA_TOTP_VERIFICATION_FAILED", 75},
 	} {
 		t.Run(sample.name, func(t *testing.T) {
 			st, err := store.Open(filepath.Join(t.TempDir(), "node.db"))
@@ -51,8 +51,8 @@ func TestRefreshFailureReceiptReasonAndHistoricalDigest(t *testing.T) {
 			if payload["result"].(map[string]any)["error_code"] != sample.expected || payload["artifact_available"] != false || payload["result_resource_version"] != nil {
 				t.Fatal("incorrect failure evidence", payload)
 			}
-			if sample.exit == 75 && payload["status"] != "unknown" {
-				t.Fatal("unknown became retryable", payload)
+			if sample.exit == 75 && payload["status"] != "failed" {
+				t.Fatal("unconfirmed result did not end as failure", payload)
 			}
 			raw, _ := json.Marshal(doc)
 			if strings.Contains(string(raw), "provider-private") {

@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestIdentityCountsRetainSourcesKindsAndUnknownOwnership(t *testing.T) {
+func TestIdentityCountsRetainSourcesKindsAndRunningOwnership(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "identities.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -42,9 +42,6 @@ func TestIdentityCountsRetainSourcesKindsAndUnknownOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err = s.BeginAccountRefresh(task.ID, "lease", "source-digest"); err != nil {
-		t.Fatal(err)
-	}
-	if err = s.FinishAccountRefresh(task.ID, "lease", "unknown", 75, "exchange uncertain", ""); err != nil {
 		t.Fatal(err)
 	}
 	beforeLease, err := s.GetAccount("lease")

@@ -78,7 +78,7 @@ func (s *Server) reconcileAccountRefresh(c *gin.Context) {
 		return
 	}
 	// Do not settle a different version if an operator replaced it during the probe.
-	selected, err := s.assets.Get(evidence.Ref)
+	selected, err := s.assets.Get(evidence.Ref, account.Identity)
 	if err != nil || selected.ResultSHA != current.ResultSHA {
 		c.JSON(409, gin.H{"error": "credential_changed", "detail": "核对期间凭据版本变化，请重新核对"})
 		return
@@ -88,6 +88,7 @@ func (s *Server) reconcileAccountRefresh(c *gin.Context) {
 		c.JSON(409, gin.H{"error": err.Error()})
 		return
 	}
+	_ = s.assets.ReleaseSnapshot(evidence.SourceSHA)
 	s.getAccountRefresh(c)
 }
 
@@ -103,6 +104,9 @@ func (s *Server) resolveAccountRefresh(c *gin.Context) {
 	if err := s.st.ResolveAccountRefresh(c.Param("id"), toString(actor), req.Reason, "failed", ""); err != nil {
 		c.JSON(409, gin.H{"error": err.Error(), "detail": "状态已变化或该账号由主系统管理，请更新记录"})
 		return
+	}
+	if evidence, err := s.st.RefreshEvidence(c.Param("id")); err == nil && s.assets != nil {
+		_ = s.assets.ReleaseSnapshot(evidence.SourceSHA)
 	}
 	s.getAccountRefresh(c)
 }

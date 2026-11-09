@@ -2,12 +2,34 @@ package nodeserver
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/tiantianGPU/reg-factory/server/internal/assetstore"
 	"github.com/tiantianGPU/reg-factory/server/internal/store"
 )
+
+func saveRefreshTaskFixture(t *testing.T, st *store.Store, id string) {
+	t.Helper()
+	root := t.TempDir()
+	t.Setenv("REG_FACTORY_DATA_DIR", root)
+	if err := st.CreateTask(store.Task{ID: id, Script: "asset_ops", ArgsJSON: `["refresh","--ref","creds:test"]`}); err != nil {
+		t.Fatal(err)
+	}
+	doc := map[string]any{"task_id": id, "ref": "creds:test", "email": "test@example.com",
+		"document": map[string]any{"email": "test@example.com", "access_token": "task-at", "refresh_token": "task-rt"}}
+	raw, _ := json.Marshal(doc)
+	dir := filepath.Join(root, "credential-task-results")
+	os.MkdirAll(dir, 0700)
+	if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("%x.json", sha256.Sum256([]byte(id)))), raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestReceiptForRefreshUsesDurableVersionOnReplay(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "state.db"))
@@ -15,6 +37,7 @@ func TestReceiptForRefreshUsesDurableVersionOnReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
+	saveRefreshTaskFixture(t, st, "work-task")
 	if _, err = st.UpsertAccounts([]store.AccountSeed{{Ref: "creds:test", Identity: "test@example.com"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -36,12 +59,18 @@ func TestReceiptForRefreshUsesDurableVersionOnReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Reuse changes the account's current credentials, never the old receipt.
+	assets := assetstore.New(dataDir())
+	assets.Put(assetstore.Asset{Ref: "creds:test", Platform: "chatgpt", Kind: "oauth", Email: "test@example.com", Payload: map[string]any{"access_token": "reuse-at", "refresh_token": "reuse-rt"}})
 	second, err := New(Config{NodeID: "node-sg-1", Key: key}, nil, st).ReceiptFor(verified, "task-refresh", "succeeded", 0, key, now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if first["payload"].(map[string]any)["result_resource_version"] != int64(2) || second["payload"].(map[string]any)["result_resource_version"] != int64(2) {
 		t.Fatalf("refresh receipt did not reuse durable version: first=%v second=%v", first, second)
+	}
+	if first["payload"].(map[string]any)["result_sha256"] != second["payload"].(map[string]any)["result_sha256"] {
+		t.Fatal("account reuse changed old receipt")
 	}
 	account, err := st.GetAccount("creds:test")
 	if err != nil {
@@ -52,7 +81,7 @@ func TestReceiptForRefreshUsesDurableVersionOnReplay(t *testing.T) {
 	}
 }
 
-func TestRefreshUnknownExitPreservesUnknownWithoutAdvancingSource(t *testing.T) {
+func TestRefreshUnknownExitFailsWithoutAdvancingSource(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -69,7 +98,7 @@ func TestRefreshUnknownExitPreservesUnknownWithoutAdvancingSource(t *testing.T) 
 	for _, sample := range []struct {
 		exit     int
 		expected string
-	}{{75, "unknown"}, {1, "failed"}} {
+	}{{75, "failed"}, {1, "failed"}} {
 		doc, err := h.ReceiptFor(verified, "unknown-task", "failed", sample.exit, bytes.Repeat([]byte("k"), 32), time.Now())
 		if err != nil {
 			t.Fatal(err)
@@ -94,6 +123,7 @@ func TestReceiptForVersionConflictReturnsTerminalEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
+	saveRefreshTaskFixture(t, st, "work-conflict")
 	if _, err = st.UpsertAccounts([]store.AccountSeed{{Ref: "creds:test", Identity: "test@example.com"}}); err != nil {
 		t.Fatal(err)
 	}

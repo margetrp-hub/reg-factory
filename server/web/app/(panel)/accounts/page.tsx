@@ -140,8 +140,8 @@ export default function AccountsPage() {
         <div className="space-y-2">{conversionResults.map(row=><div key={row.task_id} className="flex items-center justify-between gap-3 rounded-lg border border-border p-3"><span className="min-w-0 truncate text-sm" title={row.email || row.ref}>{row.email || row.ref}</span><Link className="btn-ghost shrink-0" href={`/platform/chatgpt/runs/?mode=refresh&task=${encodeURIComponent(row.task_id)}`}>查看运行</Link></div>)}</div>
       </Drawer>
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className="text-xs text-muted-foreground">账号状态与已保存的结果版本分别查看；导出时可以明确选择完整凭据。</p>
-        <Link href="/assets/" className="btn-primary">结果版本与导出</Link>
+        <p className="text-xs text-muted-foreground">账号执行和下载使用最近一次成功保存的凭据，旧任务保留执行记录。</p>
+        <Link href="/assets/" className="btn-primary">当前凭据与导出</Link>
       </div>
       <nav aria-label="平台筛选" className="flex flex-wrap gap-2">
         {[{slug:"",name:"全部平台"},...PLATFORMS].map(item=><button key={item.slug} aria-pressed={platform===item.slug} className={platform===item.slug ? "btn-primary" : "btn-ghost"} onClick={()=>{setPlatform(item.slug);setOffset(0);}}>{item.name}<span className="ml-2 tabular-nums opacity-75">{summaries ? (item.slug ? summaries.find(row=>row.platform===item.slug)?.total || 0 : summaries.reduce((sum,row)=>sum+row.total,0)) : "—"}</span></button>)}
@@ -474,7 +474,8 @@ export default function AccountsPage() {
                 { k: "测活信息", v: detail.health_message || "-" },
                 { k: "源文件", v: detail.secret_ref || "-" },
                 { k: "备注", v: detail.note || "-" },
-                { k: "更新时间", v: detail.updated_at || "-" },
+                  { k: "凭据保存", v: detail.credential_updated_at || "历史资料未记录" },
+                  { k: "状态更新", v: detail.updated_at || "-" },
               ].map((row) => (
                 <tr key={row.k}>
                   <td className="w-[86px] text-[11px] text-muted-foreground">{row.k}</td>
@@ -490,7 +491,7 @@ export default function AccountsPage() {
         <ul className="space-y-1.5 text-[11.5px] leading-relaxed text-muted-foreground">
           <li>· OAuth 测试只使用 AT，不交换 RT；401 表示需要刷新后复测，不代表账号或订阅失效。</li>
           <li>· 显式刷新通过任务队列使用 RT 并保存新凭据；已领取账号由主系统原任务完成更新。</li>
-          <li>· 封禁类只标记不可修；超时/断连标 unknown，不自动重试。</li>
+          <li>· 凭据任务超时或断连按失败结束并释放占用；可重新发起修复，不重复提交可能已消耗的 RT。</li>
           <li>· 定时巡检开关与频率在「配置」页：REG_FACTORY_LIVENESS_*。</li>
         </ul>
       </Card>

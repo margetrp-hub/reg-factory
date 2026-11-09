@@ -77,6 +77,20 @@ func (s *Store) Result(ref, digest string) (Asset, error) {
 	return a, nil
 }
 
+// ReleaseSnapshot removes only a settled operation's temporary credential input.
+// The task retains its digest, timestamps and outcome as ordinary metadata.
+func (s *Store) ReleaseSnapshot(digest string) error {
+	decoded, err := hex.DecodeString(digest)
+	if err != nil || len(decoded) != 32 || digest != strings.ToLower(digest) {
+		return os.ErrInvalid
+	}
+	err = os.Remove(filepath.Join(filepath.Dir(s.root), "asset-results", digest+".json"))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
 // History exposes metadata only. Reading a list never exports credentials.
 func (s *Store) History(ref string) ([]Asset, error) {
 	current, err := s.List()
@@ -148,16 +162,76 @@ func OAuthDocument(payload map[string]any, email string) (map[string]any, error)
 		}
 	}
 	visit(payload)
+	expected := strings.ToLower(strings.TrimSpace(email))
+	if expected == "" {
+		expected = strings.ToLower(documentEmail(payload))
+	}
+	if expected != "" {
+		valid := []map[string]any{}
+		for _, c := range candidates {
+			belongs := true
+			for _, key := range []string{"access_token", "id_token"} {
+				claims := credentialClaims(credentialString(c, key))
+				profile, _ := claims["https://api.openai.com/profile"].(map[string]any)
+				identity := credentialString(claims, "email")
+				if identity == "" {
+					identity = credentialString(profile, "email")
+				}
+				if identity != "" && strings.ToLower(identity) != expected {
+					belongs = false
+				}
+			}
+			if belongs {
+				valid = append(valid, c)
+			}
+		}
+		candidates = valid
+	}
 	if len(candidates) == 0 {
 		return nil, errors.New("CREDENTIAL_RESULT_INCOMPLETE")
 	}
+	// An AT-only web session cannot replace a complete OAuth grant. Select the
+	// complete bundle as a whole; never borrow its RT for a different AT.
+	complete := []map[string]any{}
+	for _, candidate := range candidates {
+		if credentialString(candidate, "refresh_token") != "" {
+			complete = append(complete, candidate)
+		}
+	}
+	if len(complete) > 0 {
+		candidates = complete
+	}
 	chosen := candidates[0]
 	for _, c := range candidates[1:] {
+		equal := true
 		for _, k := range []string{"access_token", "refresh_token", "id_token"} {
 			if c[k] != chosen[k] {
-				return nil, ErrAmbiguous
+				equal = false
 			}
 		}
+		if equal {
+			continue
+		}
+		before, after := credentialClaims(credentialString(chosen, "access_token")), credentialClaims(credentialString(c, "access_token"))
+		left, _ := before["iat"].(float64)
+		right, _ := after["iat"].(float64)
+		oldSub := credentialString(credentialClaims(credentialString(chosen, "id_token")), "sub")
+		newSub := credentialString(credentialClaims(credentialString(c, "id_token")), "sub")
+		if oldSub == "" {
+			oldSub = credentialString(before, "sub")
+		}
+		if newSub == "" {
+			newSub = credentialString(after, "sub")
+		}
+		if left == 0 || right == 0 || left == right || oldSub == "" || oldSub != newSub {
+			return nil, ErrAmbiguous
+		}
+		if right > left {
+			chosen = c
+		}
+	}
+	for _, key := range []string{"payload", "credentials", "oauth", "token", "tokens"} {
+		delete(chosen, key)
 	}
 	if value, _ := chosen["email"].(string); value == "" {
 		chosen["email"] = email

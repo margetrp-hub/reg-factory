@@ -183,12 +183,14 @@ func (h *Handler) credDocument(verified *Verified) (map[string]any, string) {
 	// source before historical producer files, which may still hold old tokens.
 	if h.st != nil {
 		if ref, ok := h.subjectRef(verified.Subject); ok {
-			if asset, err := assetstore.New(dataDir()).Get(ref); err == nil && asset.Payload != nil {
+			if asset, err := assetstore.New(dataDir()).Get(ref, email); err == nil && asset.Payload != nil {
 				doc := normalizeDocument(asset.Payload, asset.Email)
 				if doc != nil && strings.EqualFold(emailFromDocument(doc), email) {
 					return doc, email
 				}
 			}
+			// A known reference must not silently fall back to an old export.
+			return nil, email
 		}
 	}
 	doc, path := findCredential(email)

@@ -11,7 +11,7 @@
   * 测活默认低频：单平台串行，命中风控就停，不硬刷；
   * 刷新只处理“可修”的类型，封禁类直接返回 banned，不做无意义重试；
   * 结果只做结构化输出，不打印任何 cookie / token；
-  * unknown（超时/断连）不自动重试，留给人工或对账。
+  * 超时/断连由任务记为失败；新尝试重新授权，不重放可能已消耗的 RT。
 """
 from __future__ import annotations
 
@@ -23,12 +23,15 @@ import os
 import sys
 import tempfile
 import time
+from functools import wraps
 from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+from common import credential_versions as versions
 
 PLATFORMS = ("claude", "chatgpt", "grok", "kiro", "outlook")
 OPENAI_TOKEN_URL = "https://auth.openai.com/oauth/token"
@@ -39,7 +42,7 @@ def _emit(payload: dict) -> int:
     print(json.dumps(payload, ensure_ascii=False))
     if payload.get("result") == "unknown":
         # Distinguish an uncertain provider result from a confirmed rejection.
-        # Work must reconcile it instead of authorizing another fresh login.
+        # The runner records a failure; a new task must reauthorize rather than replay the RT.
         return 75
     # The runner maps the process exit code to the Work receipt.  Returning
     # zero for relogin/unknown made a refresh look successful even though no
@@ -207,12 +210,13 @@ def _token_map(value: object) -> dict | None:
     return value if any(value.get(name) for name in ("refresh_token", "refreshToken", "oauth_refresh_token")) else None
 
 
-def _credential_dirs() -> list[Path]:
-    root = Path(os.environ.get("REG_FACTORY_DATA_DIR") or ROOT).resolve()
+def _credential_dirs(root=None) -> list[Path]:
+    root = Path(root or os.environ.get("REG_FACTORY_DATA_DIR") or ROOT).resolve()
     return [
         root / "assets" / "chatgpt" / "oauth",
         root / "assets" / "chatgpt" / "team",
         root / "assets" / "chatgpt" / "imported",
+        root / "assets" / "chatgpt" / "free",
         root / "plus-import" / "team-json",
         root / "plus-import",
         root / "creds",
@@ -260,9 +264,9 @@ def _credential_matches(ref: str, path: Path, document: dict) -> bool:
     return target in candidates
 
 
-def _find_credential(ref: str) -> tuple[Path, dict] | None:
-    matches = []
-    for directory in _credential_dirs():
+def _find_credential(ref: str, root=None) -> tuple[Path, dict] | None:
+    matches, all_documents = [], []
+    for directory in _credential_dirs(root):
         if not directory.is_dir():
             continue
         for path in sorted(directory.glob("*.json")):
@@ -270,20 +274,50 @@ def _find_credential(ref: str) -> tuple[Path, dict] | None:
                 document = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, UnicodeError, json.JSONDecodeError):
                 continue
-            if isinstance(document, dict) and _credential_matches(ref, path, document):
-                matches.append((path, document))
+            if isinstance(document, dict):
+                all_documents.append((path, document))
+                if _credential_matches(ref, path, document):
+                    matches.append((path, document))
     # Explicit unified OAuth refs are the selected projection. Legacy files
     # are evidence only; they do not become current by directory order.
-    selected = [(p, d) for p, d in matches if p.parent.name == "oauth"
+    selected = [(p, d) for p, d in matches if p.parent.name in {"oauth", "team"}
                 and p.parent.parent.name == "chatgpt"
                 and (d.get("ref") == ref or _subject_id(str(d.get("ref") or "")) == ref)]
     candidates = selected or [(p, d) for p, d in matches if _token_map(d)] or matches
     if not candidates:
-        return None
-    fingerprints = {json.dumps(_token_map(d) or d, sort_keys=True) for _, d in candidates}
-    if len(fingerprints) > 1:
-        raise ValueError("CREDENTIAL_RESULT_AMBIGUOUS: select a retained result in assets")
-    return candidates[0]
+        # A retired source file may still have an authorized Core subject.
+        # Resolve only an existing account row, never a caller-supplied email.
+        import sqlite3
+        root = Path(root or os.environ.get('REG_FACTORY_DATA_DIR') or ROOT)
+        database = root / 'regd.db'
+        if not database.is_file():
+            return None
+        with sqlite3.connect(database.resolve().as_uri() + '?mode=ro', uri=True) as db:
+            rows = db.execute("SELECT ref,identity FROM accounts WHERE platform='chatgpt'").fetchall()
+        verified = [(key, identity) for key, identity in rows if key == ref or _subject_id(key) == ref]
+        if len(verified) != 1 or not verified[0][1]:
+            return None
+        key, identity = verified[0]
+        candidates = [(root / 'assets/chatgpt/imported' / (hashlib.sha256(key.encode()).hexdigest() + '.json'),
+                       {'ref': key, 'email': identity, 'kind': 'imported', 'platform': 'chatgpt', 'payload': {}})]
+    complete = [(p, d) for p, d in candidates if (versions.tokens(d) or {}).get('refresh_token')]
+    anchor_path, anchor = versions.newest(complete) if complete else candidates[0]
+    email = _json_email(anchor).lower()
+    related = [(p, d) for p, d in all_documents
+               if (anchor.get('ref') and d.get('ref') == anchor.get('ref') or email and _json_email(d).lower() == email)
+               and (versions.tokens(d) or {}).get('refresh_token')]
+    # Canonical assets outrank legacy export copies. The latter never regain
+    # authority because an old exporter rewrote their filesystem timestamp.
+    unified = [(p, d) for p, d in related if p.parent.parent.name == 'chatgpt' and p.parent.parent.parent.name == 'assets']
+    path, document = versions.select(anchor, unified or related) or (anchor_path, anchor)
+    if document.get('ref') and isinstance(document.get('payload'), dict):
+        bundle = versions.tokens(document)
+        if bundle:
+            document = copy.deepcopy(document)
+            for key in ('access_token', 'refresh_token', 'id_token', 'accessToken', 'refreshToken', 'idToken'):
+                document.pop(key, None)
+            document['payload'] = bundle
+    return path, document
 
 
 def _atomic_json_write(path: Path, document: dict) -> None:
@@ -341,48 +375,31 @@ def _update_oauth_document(document: dict, tokens: dict) -> dict:
 
 def _refresh_document_copies(ref: str, email: str, selected_path: Path,
                              selected_document: dict, updates: dict) -> list[str]:
-    """Persist one refresh result to every local copy of the account JSON.
-
-    The unified asset store and the historical ``plus-import/team-json`` tree
-    are both read by deployed SG images. Updating only the first match makes a
-    customer download the old document after a successful 401 repair. Match
-    by the original source credentials, never email alone, then write atomically.
-    """
-    targets: list[tuple[Path, dict]] = [(selected_path, selected_document)]
-    seen = {str(selected_path.resolve())}
-    for directory in _credential_dirs():
-        if not directory.is_dir():
-            continue
-        for path in sorted(directory.glob("*.json")):
-            try:
-                key = str(path.resolve())
-            except OSError:
-                key = str(path)
-            if key in seen:
-                continue
-            try:
-                document = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, UnicodeError, json.JSONDecodeError):
-                continue
-            if not isinstance(document, dict):
-                continue
-            if _same_oauth_source(selected_document, document):
-                targets.append((path, document))
-                seen.add(key)
-
+    """Publish one complete result atomically; every alias resolves this version."""
+    current = _find_credential(ref)
+    if current is None or versions.fingerprint(versions.tokens(current[1]) or {}) != versions.fingerprint(versions.tokens(selected_document) or {}):
+        raise OSError('CREDENTIAL_CHANGED_BEFORE_SAVE')
     root = Path(os.environ.get("REG_FACTORY_DATA_DIR") or ROOT).resolve()
-    prepared = []
-    for path, document in targets:
-        updated = _update_oauth_document(copy.deepcopy(document), updates)
-        prepared.append((path, document, updated))
+    updated = _update_oauth_document(copy.deepcopy(selected_document), updates)
+    updated['credential_updated_at'] = datetime.now(timezone.utc).isoformat()
+    updated.setdefault('platform', 'chatgpt')
+    updated.setdefault('kind', 'oauth')
+    updated.setdefault('email', email)
+    if not versions.compatible(selected_document, updated):
+        raise OSError('CREDENTIAL_IDENTITY_CHANGED')
+    prepared = [(selected_path, selected_document, updated)]
     # First authorization of imported login material publishes a complete OAuth
     # asset. Keep the original login record and use the same stable account ref.
-    if selected_document.get("kind") in {"imported", "free", "password"}:
+    if selected_document.get("kind") in {"imported", "free", "password"} or root / 'assets' not in selected_path.parents:
         oauth_path = root / "assets" / "chatgpt" / "oauth" / (hashlib.sha256(ref.encode()).hexdigest() + ".json")
         oauth = {"ref": ref, "platform": "chatgpt", "kind": "oauth", "email": email,
                  "source": "authorized:import", "created_at": datetime.now(timezone.utc).isoformat(),
                  "payload": {**updates, "email": email}}
-        prepared.append((oauth_path, None, oauth))
+        for key in ('workspace_account_id', 'account_id', 'chatgpt_account_id', 'chatgpt_user_id', 'user_id', 'client_id'):
+            if updated.get('payload', updated).get(key):
+                oauth['payload'].setdefault(key, updated.get('payload', updated)[key])
+        oauth['credential_updated_at'] = datetime.now(timezone.utc).isoformat()
+        prepared = [(oauth_path, None, oauth)]
     # Persist the entire supplier response and intended write set first. If a
     # projection fails halfway through, the new token is still recoverable
     # without replaying the consumed refresh grant.
@@ -392,20 +409,24 @@ def _refresh_document_copies(ref: str, email: str, selected_path: Path,
     result_raw = json.dumps(result, ensure_ascii=False, sort_keys=True).encode()
     result_id = hashlib.sha256(result_raw).hexdigest()
     _atomic_json_write(root / "oauth-results" / (result_id + ".json"), result)
-    for path, before, after in prepared:
-        for snapshot in (before, after):
-            if snapshot is None:
-                continue
-            envelope = snapshot if snapshot.get("ref") else {
-                "ref": ref, "platform": "chatgpt", "kind": "oauth", "email": email,
-                "source": "oauth-result:" + result_id, "payload": snapshot}
-            raw = json.dumps(envelope, ensure_ascii=False, indent=2) + "\n"
-            digest = hashlib.sha256(raw.encode()).hexdigest()
-            _atomic_json_write(root / "asset-results" / (digest + ".json"), envelope)
     written: list[str] = []
+    # Freeze the task output before publishing. A later account reuse must not
+    # change this task's signed receipt or the artifact being received by Core.
+    task_id = os.environ.get('REG_FACTORY_RUN_ID', '').strip()
+    if task_id.startswith('work-'):
+        document = versions.tokens(prepared[-1][2])
+        if not document or not document.get('refresh_token'):
+            raise OSError('CREDENTIAL_RESULT_INCOMPLETE')
+        task_result = {'task_id': task_id, 'ref': ref, 'email': email,
+                       'credential_updated_at': prepared[-1][2]['credential_updated_at'], 'document': document}
+        name = hashlib.sha256(task_id.encode()).hexdigest() + '.json'
+        _atomic_json_write(root / 'credential-task-results' / name, task_result)
     for path, _, updated in prepared:
         _atomic_json_write(path, updated)
         written.append(str(path))
+    # Recovery material is only needed until the atomic publication completes.
+    # Work keeps its own immutable response until the receiving operation settles.
+    (root / "oauth-results" / (result_id + ".json")).unlink()
     return written
 
 
@@ -428,6 +449,72 @@ def _same_oauth_source(selected: dict, candidate: dict) -> bool:
     return bool(left_refresh and left_refresh == right_refresh)
 
 
+def _credential_operation(fn):
+    @wraps(fn)
+    def guarded(ref, email='', *args, **kwargs):
+        try:
+            found = _find_credential(ref or email)
+            identity = _json_email(found[1]) if found else email
+            root = Path(os.environ.get('REG_FACTORY_DATA_DIR') or ROOT)
+            with versions.account_lock(root, identity, ref):
+                if _other_credential_task(root, identity, ref):
+                    return {'ref': ref, 'result': 'failed', 'message': '原账号凭据任务尚未结案，本次未执行；请从原任务核对或恢复'}
+                if fn.__name__ == '_refresh_chatgpt' and _retry_needs_authorization(root, identity, ref):
+                    return _reauthorize_chatgpt.__wrapped__(ref, email, *args, **kwargs)
+                return fn(ref, email, *args, **kwargs)
+        except BlockingIOError:
+            return {'ref': ref, 'result': 'failed', 'message': '该账号已有凭据任务执行中，本次未执行；请查看原任务'}
+        except ValueError:
+            return {'ref': ref, 'result': 'failed', 'message': '账号工作区或凭据版本不明确，请核对当前资料后重试'}
+    return guarded
+
+
+def _other_credential_task(root, email, ref):
+    import sqlite3
+    path = root / 'regd.db'
+    if not path.is_file():
+        return False
+    with sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True) as db:
+        aliases = {ref}
+        if email:
+            aliases.update(row[0] for row in db.execute("SELECT ref FROM accounts WHERE platform='chatgpt' AND lower(trim(identity))=?", (email.lower().strip(),)))
+        own = os.environ.get('REG_FACTORY_RUN_ID', '')
+        rows = db.execute("SELECT id,args_json FROM tasks WHERE script='asset_ops' AND id<>? AND status IN ('running','stopping')", (own,))
+        for _, raw in rows:
+            try:
+                args = json.loads(raw)
+                if args[0] == 'refresh' and args[args.index('--ref') + 1] in aliases:
+                    return True
+            except (ValueError, IndexError, TypeError):
+                continue
+    return False
+
+
+def _retry_needs_authorization(root, email, ref):
+    """A lost RT response is a failed task; a new attempt must not replay that RT."""
+    import sqlite3
+    path = root / 'regd.db'
+    if not path.is_file():
+        return False
+    with sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True) as db:
+        aliases = {ref}
+        if email:
+            aliases.update(row[0] for row in db.execute("SELECT ref FROM accounts WHERE platform='chatgpt' AND lower(trim(identity))=?", (email.lower().strip(),)))
+        own = os.environ.get('REG_FACTORY_RUN_ID', '')
+        for state, code, raw in db.execute("SELECT status,exit_code,args_json FROM tasks WHERE script='asset_ops' AND id<>? AND status IN ('succeeded','failed','unknown','interrupted','stopped') ORDER BY finished_at DESC,created_at DESC,id DESC", (own,)):
+            try:
+                args = json.loads(raw)
+                if args[0] == 'refresh' and args[args.index('--ref') + 1] in aliases:
+                    if state == 'succeeded':
+                        return False
+                    if state in ('unknown','interrupted','stopped') or state == 'failed' and code == 75:
+                        return True
+            except (ValueError,IndexError,TypeError):
+                continue
+    return False
+
+
+@_credential_operation
 def _refresh_chatgpt(ref: str, email: str = "") -> dict:
     """Refresh a ChatGPT OAuth record and atomically persist the new JSON."""
     import requests
@@ -476,7 +563,7 @@ def _refresh_chatgpt(ref: str, email: str = "") -> dict:
         except OSError as exc:
             return {"ref": ref, "result": "unknown", "message": f"刷新成功但 JSON 写回失败：{type(exc).__name__}"}
         return {"ref": ref, "result": "refreshed", "expires_in": expires_in,
-                "updated_files": len(written), "message": "ChatGPT OAuth 已刷新并写回全部 JSON"}
+                "updated_files": len(written), "message": "最新凭据已保存，原账号引用已同步"}
     code = str(payload.get("error") or "") if isinstance(payload, dict) else ""
     if response.status_code in {400, 401} and code in {"invalid_grant", "invalid_token", "account_deactivated", "account_banned"}:
         return {"ref": ref, "result": "relogin_required", "message": f"refresh_token 无效（{code or response.status_code}）"}
@@ -511,8 +598,10 @@ def _reauthorization_document(document: dict) -> dict:
         for candidate in candidates:
             token = _claims(str((_token_map(candidate) or {}).get("id_token") or ""))
             ref = candidate.get("ref")
-            if (isinstance(ref, str) and ref and token.get("sub") == identity["sub"]
-                    and str(token.get("email") or "").lower() == email
+            candidate_subject = token.get('sub') or versions.scope(candidate)[1]
+            candidate_email = token.get('email') or _json_email(candidate)
+            if (isinstance(ref, str) and ref and candidate_subject == identity["sub"]
+                    and str(candidate_email or "").lower() == email
                     and _json_email(candidate).strip().lower() == email):
                 source_refs.add(ref)
 
@@ -533,6 +622,7 @@ def _reauthorization_document(document: dict) -> dict:
     return result
 
 
+@_credential_operation
 def _reauthorize_chatgpt(ref: str, email: str = "", timeout: int = 600) -> dict:
     """An authorize command must perform a fresh supplier-owned OAuth login."""
     import asyncio

@@ -2,7 +2,6 @@ package assetstore
 
 import (
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -24,7 +23,7 @@ func TestLegacyScanCannotReplaceCurrentResultAndHistoryExportsExactVersion(t *te
 	if _, err := s.Migrate(root); err != nil {
 		t.Fatal(err)
 	}
-	old, err := s.Get(a.Ref)
+	old, err := s.Snapshot(a.Ref)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +46,7 @@ func TestLegacyScanCannotReplaceCurrentResultAndHistoryExportsExactVersion(t *te
 		t.Fatal("cross-account result accepted")
 	}
 	items, err := s.History(a.Ref)
-	if err != nil || len(items) < 2 {
+	if err != nil || len(items) != 1 {
 		t.Fatal("missing history", err)
 	}
 	for _, item := range items {
@@ -62,10 +61,10 @@ func TestLegacyScanCannotReplaceCurrentResultAndHistoryExportsExactVersion(t *te
 }
 
 func TestExportNeverStitchesCredentialSets(t *testing.T) {
-	_, err := OAuthDocument(map[string]any{"access_token": "web-session", "tokens": map[string]any{
+	selected, err := OAuthDocument(map[string]any{"access_token": "web-session", "tokens": map[string]any{
 		"access_token": "oauth-session", "refresh_token": "oauth-refresh"}}, "test@example.test")
-	if !errors.Is(err, ErrAmbiguous) {
-		t.Fatal("mixed sessions exported", err)
+	if err != nil || selected["access_token"] != "oauth-session" || selected["refresh_token"] != "oauth-refresh" {
+		t.Fatal("whole OAuth bundle was not selected", err)
 	}
 	doc, err := OAuthDocument(map[string]any{"tokens": map[string]any{"access_token": "oauth", "refresh_token": "rt", "account_id": "workspace"}}, "test@example.test")
 	if err != nil || doc["account_id"] != "workspace" || doc["client_id"] != nil {

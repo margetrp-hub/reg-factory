@@ -21,7 +21,7 @@ func (m *Manager) finishRefresh(task store.Task, result, status string, code int
 		if account.Platform == "chatgpt" {
 			current, _, err := assetstore.New(m.cfg.DataDir).RefreshedOAuth(ref, evidence.SourceSHA)
 			if err != nil {
-				status, code, message = "unknown", 75, err.Error()
+				status, code, message = "failed", 75, "凭据保存未确认，本次失败；可重新发起授权修复"
 			} else {
 				digest = current.ResultSHA
 			}
@@ -29,8 +29,13 @@ func (m *Manager) finishRefresh(task store.Task, result, status string, code int
 	case status == "failed" && (result == "failed" || result == "relogin_required" || result == "banned"):
 		message = "上游明确拒绝或刷新前失败；查看原执行反馈后处理"
 	default:
-		status, code, message = "unknown", 75, "执行已结束但刷新结果未确认；请核对已保存凭据，或根据证据人工结案"
+		status, code, message = "failed", 75, "未取得可确认的成功结果，本次失败；可重新发起授权修复"
 	}
 	err = m.st.FinishAccountRefresh(task.ID, ref, status, code, message, digest)
+	if err == nil && (status == "succeeded" || status == "failed") && evidence.SourceSHA != "" {
+		if cleanupErr := assetstore.New(m.cfg.DataDir).ReleaseSnapshot(evidence.SourceSHA); cleanupErr != nil {
+			m.record(task.ID, "system", "任务已结案，临时凭据清理失败；可在运维清理中重试")
+		}
+	}
 	return status, code, message, err
 }

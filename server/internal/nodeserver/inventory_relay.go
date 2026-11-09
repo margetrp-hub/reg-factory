@@ -411,28 +411,21 @@ func (h *Handler) inventoryAccountRef(subject string) (string, bool) {
 }
 
 func (h *Handler) accountDocument(ref string) (map[string]any, error) {
-	if strings.HasPrefix(ref, "production:") {
-		sealed, err := h.st.ProductionArtifact(ref)
-		if err != nil {
-			return nil, err
-		}
-		return h.productionDocument(sealed)
+	account, err := h.st.GetAccount(ref)
+	if err != nil {
+		return nil, err
 	}
 	root := strings.TrimSpace(os.Getenv("REG_FACTORY_DATA_DIR"))
 	if root == "" {
 		root = "/data"
 	}
-	if asset, err := assetstore.New(root).Get(ref); err == nil && asset.Payload != nil {
+	if asset, err := assetstore.New(root).Get(ref, account.Identity); err == nil && asset.Payload != nil {
 		document := normalizeDocument(asset.Payload, asset.Email)
 		if document != nil {
 			return document, nil
 		}
 		return nil, errors.New("credential result incomplete or ambiguous")
 	} else if err != nil && !os.IsNotExist(err) {
-		return nil, err
-	}
-	account, err := h.st.GetAccount(ref)
-	if err != nil {
 		return nil, err
 	}
 	// Keep the old /data/creds path as a read-only fallback for migrated SG

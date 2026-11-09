@@ -231,14 +231,14 @@ class ProductionTests(unittest.TestCase):
         self.assertEqual(self.run.output(self.backend(self.material))['status'],'ready')
         self.assertEqual((self.backend.invites,self.backend.logins),(1,1))
 
-    def test_alias_and_retained_team_history_exclude_an_account(self):
+    def test_active_claim_excludes_account_but_retired_history_does_not(self):
         self.assertEqual(len(candidates(self.db,self.root)),1)
         self.db.execute("INSERT INTO accounts VALUES('other','chatgpt',?,1,'none','active')", (self.email,))
         self.assertEqual(candidates(self.db,self.root),[])
         self.db.execute("DELETE FROM accounts WHERE ref='other'")
         folder=self.root/'asset-results'; folder.mkdir()
         (folder/'old.json').write_text(json.dumps({'payload':{'email':self.email,'access_token':token(self.email,'old-workspace','team')}}))
-        self.assertEqual(candidates(self.db,self.root),[])
+        self.assertEqual(len(candidates(self.db,self.root)),1)
 
     def test_issued_output_is_retained_when_post_exchange_validation_raises(self):
         normal = self.backend.authorize

@@ -22,7 +22,8 @@ export function AccountSources({account,onSelect}: {account: AccountRow; onSelec
   },[account.ref,reload]);
   return <section aria-label="原始来源记录" className="mt-6 border-t border-border pt-5" aria-busy={loading}>
     <header className="flex items-center justify-between gap-3"><h3 className="text-sm font-medium">来源记录 <span className="ml-1 font-normal tabular-nums text-muted-foreground">{sources?.length ?? "—"}</span></h3><button type="button" className="btn-ghost" disabled={loading} onClick={()=>setReload(value=>value+1)}>{loading ? "读取中…" : "重新读取来源"}</button></header>
-    <p className="mt-2 text-xs leading-relaxed text-muted-foreground">保留每份资料的原始引用与版本。选择来源后，在当前面板查看其详情和处理状态。</p>
+    <p className="mt-2 text-xs leading-relaxed text-muted-foreground">旧引用用于追溯任务，执行和下载统一使用当前凭据。账号复用或修复成功后更新，失败保留上一次成功资料。</p>
+    <p className="mt-2 text-xs text-muted-foreground">凭据保存时间：{account.credential_updated_at ? new Date(account.credential_updated_at).toLocaleString() : "历史资料未记录保存时间"}</p>
     <ErrorNote message={error}/>
     {!sources && loading && <p className="py-5 text-sm text-muted-foreground" role="status">正在读取来源记录…</p>}
     {sources && <div className="mt-3 divide-y divide-border">{sources.map(source=><div key={source.ref} className="py-3">

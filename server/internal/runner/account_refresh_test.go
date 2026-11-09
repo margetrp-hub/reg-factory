@@ -20,10 +20,10 @@ func TestRefreshProcessReceiptAndSavedCredentialMustAgree(t *testing.T) {
 	}
 	for _, tc := range []struct{ name, body, status string }{
 		{"saved", `p=json.loads(path.read_text());p["payload"]["access_token"]="new-at";p["payload"]["refresh_token"]="new-rt";path.write_text(json.dumps(p));print(json.dumps({"ref":"one","result":"refreshed"}))`, "succeeded"},
-		{"false-success", `print(json.dumps({"ref":"one","result":"refreshed"}))`, "unknown"},
-		{"missing-id", `p=json.loads(path.read_text());p["payload"]["access_token"]="new-at";p["payload"].pop("id_token");path.write_text(json.dumps(p));print(json.dumps({"ref":"one","result":"refreshed"}))`, "unknown"},
-		{"unknown", `print(json.dumps({"ref":"one","result":"unknown"}));sys.exit(75)`, "unknown"},
-		{"crash", `sys.exit(1)`, "unknown"},
+		{"false-success", `print(json.dumps({"ref":"one","result":"refreshed"}))`, "failed"},
+		{"missing-id", `p=json.loads(path.read_text());p["payload"]["access_token"]="new-at";p["payload"].pop("id_token");path.write_text(json.dumps(p));print(json.dumps({"ref":"one","result":"refreshed"}))`, "failed"},
+		{"unknown", `print(json.dumps({"ref":"one","result":"unknown"}));sys.exit(75)`, "failed"},
+		{"crash", `sys.exit(1)`, "failed"},
 		{"rejected", `print(json.dumps({"ref":"one","result":"relogin_required"}));sys.exit(1)`, "failed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

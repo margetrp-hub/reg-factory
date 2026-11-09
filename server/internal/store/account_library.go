@@ -9,8 +9,9 @@ import (
 // One projection for listing, pagination, panel feedback and signed references.
 // Custody and production history outrank credential health, including revoked stock.
 const activeAccountRefreshSQL = `EXISTS (SELECT 1 FROM account_refreshes r JOIN tasks t ON t.id=r.task_id
- WHERE r.ref=accounts.ref AND (t.status IN ('queued','running','stopping','unknown')
- OR (t.status IN ('interrupted','stopped') AND t.started_at<>'')))`
+ JOIN accounts source ON source.ref=r.ref
+ WHERE (r.ref=accounts.ref OR (source.platform=accounts.platform AND trim(accounts.identity)<>'' AND lower(trim(source.identity))=lower(trim(accounts.identity))))
+ AND t.status IN ('queued','running','stopping'))`
 
 const accountLibraryStatusSQL = `CASE
  WHEN claimed=1 OR join_status IN ('joined','switched')

@@ -16,7 +16,7 @@ func (s *Store) RefreshedOAuth(ref, sourceSHA string) (Asset, map[string]any, er
 	if err != nil {
 		return Asset{}, nil, fail
 	}
-	current, err := s.Get(ref)
+	current, err := s.Get(ref, before.Email)
 	if err != nil || current.Platform != "chatgpt" || current.ResultSHA == sourceSHA {
 		return Asset{}, nil, fail
 	}

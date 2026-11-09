@@ -57,6 +57,7 @@ def document_metadata(doc):
 
 def candidates(db, root):
     """Conservatively reconcile every alias and retained result, not filenames."""
+    root = root.resolve()
     aliases = list(db.execute('SELECT a.*,c.password,c.totp FROM accounts a LEFT JOIN account_credentials c ON c.ref=a.ref WHERE platform=?', ('chatgpt',)))
     blocked = {str(r['identity']).lower() for r in aliases if r['claimed'] or r['join_status'] in ('joined', 'switched', 'verified')}
     blocked |= {r[0].lower() for r in db.execute('SELECT email FROM production_results')}
@@ -64,13 +65,18 @@ def candidates(db, root):
     paths = list((root / 'plus-import').glob('*.json'))
     paths += list((root / 'plus-import' / 'team-json').glob('*.json'))
     paths += list((root / 'assets' / 'chatgpt').glob('*/*.json'))
-    paths += list((root / 'asset-results').glob('*.json'))
     found = {}
     for path in sorted(set(paths)):
         if path.is_symlink() or path.stat().st_size > 2 * 1024 * 1024:
             continue
         try:
-            payload, email, c, auth = document_metadata(json.loads(path.read_text()))
+            raw_document = json.loads(path.read_text())
+            from tools.asset_ops import _find_credential
+            selected = _find_credential(raw_document.get('ref') or path.stem, root=root)
+            if not selected:
+                continue
+            path, raw_document = selected
+            payload, email, c, auth = document_metadata(raw_document)
         except (ValueError, TypeError, AttributeError):
             continue
         claim_email = str((c.get(PROFILE) or {}).get('email') or c.get('email') or '').lower()

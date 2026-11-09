@@ -91,6 +91,9 @@ export type NodeReady = {
 };
 
 export type AccountRow = {
+
+  credential_updated_at?: string;
+  credential_ref?: string;
 	 library_status?: string;
   source_count?: number;
   version?: number;
@@ -305,7 +308,7 @@ export const api = {
       total: number;
       groups: { platform: string; kind: string; count: number; items: { ref: string; email: string; kind: string; source: string; created_at?: string; result_sha256: string }[] }[];
     }>("/api/assets/tree"),
-  assetResults: (ref: string, query = "") => request<{items: {ref: string; email: string; kind: string; source: string; created_at?: string; result_sha256: string; is_current?: boolean}[]}>(`/api/assets/results?ref=${encodeURIComponent(ref)}&query=${encodeURIComponent(query)}`),
+  assetResults: (ref: string, query = "") => request<{items: {ref: string; email: string; kind: string; source: string; created_at?: string; credential_updated_at?: string; result_sha256: string; is_current?: boolean}[]}>(`/api/assets/results?ref=${encodeURIComponent(ref)}&query=${encodeURIComponent(query)}`),
   accountDetail: (ref: string, signal?: AbortSignal) =>
     request<{ account: AccountRow }>(`/api/accounts/detail?ref=${encodeURIComponent(ref)}`, {signal}),
   accountSummary: (platform = "", signal?: AbortSignal) => request<{ platforms: AccountSummary[] }>(`/api/accounts/summary?platform=${encodeURIComponent(platform)}`, { signal }),

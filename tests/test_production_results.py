@@ -5,15 +5,14 @@ from unittest.mock import Mock, patch
 from tools import asset_ops, team_production_check
 
 
-def test_producer_retains_each_original_and_current_export(tmp_path, monkeypatch):
+def test_producer_replaces_current_without_accumulating_old_credentials(tmp_path, monkeypatch):
     from common import session_export
     monkeypatch.setenv('REG_FACTORY_DATA_DIR', str(tmp_path))
     monkeypatch.setattr(session_export, 'TOKEN_OUTPUT_DIR', str(tmp_path / 'tokens'))
     for version in ('first', 'second'):
         assert session_export.save_codex_oauth_credentials({'access_token': version,
             'refresh_token': version+'-rt', 'workspace_account_id': 'workspace'}, 'child@example.test')
-    versions = [json.loads(p.read_text(encoding='utf-8')) for p in (tmp_path / 'asset-results').glob('*.json')]
-    assert {value['payload']['access_token'] for value in versions} == {'first', 'second'}
+    assert not list((tmp_path / 'asset-results').glob('*.json'))
     current = json.loads(next((tmp_path / 'assets/chatgpt/oauth').glob('*.json')).read_text(encoding='utf-8'))
     assert current['payload']['access_token'] == 'second'
     assert current['payload']['workspace_account_id'] == 'workspace'
@@ -44,8 +43,9 @@ def test_partial_projection_failure_keeps_supplier_result_and_both_versions(tmp_
     assert json.loads(path.read_text()) == original
     manifest = json.loads(next((tmp_path / 'oauth-results').glob('*.json')).read_text())
     assert manifest['updates']['refresh_token'] == 'after-rt'
-    versions = [json.loads(p.read_text())['payload']['access_token'] for p in (tmp_path / 'asset-results').glob('*.json')]
-    assert set(versions) == {'before', 'after'}
+    assert manifest['files'][0]['before']['payload']['access_token'] == 'before'
+    assert manifest['files'][0]['after']['payload']['access_token'] == 'after'
+    assert not list((tmp_path / 'asset-results').glob('*.json'))
     for path in (tmp_path / 'asset-results').glob('*.json'):
         assert hashlib.sha256(path.read_bytes()).hexdigest() == path.stem
 
@@ -60,7 +60,7 @@ def test_same_ref_different_session_is_not_overwritten(tmp_path, monkeypatch):
     (directory / 'b.json').write_text(json.dumps(other))
     with patch('requests.Session') as request:
         result = asset_ops._refresh_chatgpt('import:child')
-    assert result['result'] == 'unknown'
+    assert result['result'] == 'failed'  # no request was made; operator can correct and retry
     request.assert_not_called()
     assert not asset_ops._same_oauth_source(old, other)
 

@@ -13,6 +13,7 @@
 package assetstore
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -35,13 +36,15 @@ var Kinds = map[string]bool{
 
 // Asset 是一条资产记录。
 type Asset struct {
-	Ref       string         `json:"ref"`
-	Platform  string         `json:"platform"`
-	Kind      string         `json:"kind"`
-	Email     string         `json:"email"`
-	Source    string         `json:"source"`
-	CreatedAt string         `json:"created_at"`
-	Payload   map[string]any `json:"payload,omitempty"`
+	Ref                 string         `json:"ref"`
+	Platform            string         `json:"platform"`
+	Kind                string         `json:"kind"`
+	Email               string         `json:"email"`
+	Source              string         `json:"source"`
+	CreatedAt           string         `json:"created_at"`
+	CredentialUpdatedAt string         `json:"credential_updated_at,omitempty"`
+	CredentialRef       string         `json:"credential_ref,omitempty"`
+	Payload             map[string]any `json:"payload,omitempty"`
 	// Path 是文件相对 assets 根的路径（不进 JSON）
 	Path      string `json:"-"`
 	ResultSHA string `json:"result_sha256,omitempty"`
@@ -102,7 +105,8 @@ func documentEmail(value any) string {
 	return ""
 }
 
-// Put retains both versions before atomically updating the current projection.
+// Put atomically publishes the current projection. Refresh recovery explicitly
+// pins its input with Snapshot; ordinary imports do not retain old credentials.
 func (s *Store) Put(asset Asset) error {
 	if asset.Ref == "" || asset.Platform == "" || asset.Kind == "" {
 		return fmt.Errorf("asset 缺少 ref/platform/kind")
@@ -110,8 +114,18 @@ func (s *Store) Put(asset Asset) error {
 	if !Kinds[asset.Kind] {
 		return fmt.Errorf("未知资产类型: %s", asset.Kind)
 	}
+	unlock, err := s.lock(asset)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	if asset.CreatedAt == "" {
 		asset.CreatedAt = time.Now().Format(time.RFC3339)
+	}
+	if asset.Platform == "chatgpt" && !strings.HasPrefix(asset.Source, "migrated:") {
+		if doc, err := OAuthDocument(asset.Payload, asset.Email); err == nil && credentialString(doc, "refresh_token") != "" {
+			asset.CredentialUpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		}
 	}
 	dir := s.dir(asset.Platform, asset.Kind)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -125,15 +139,17 @@ func (s *Store) Put(asset Asset) error {
 	if err != nil {
 		return err
 	}
-	if old, err := os.ReadFile(path); err == nil {
-		if _, err = s.Retain(old); err != nil {
+	if asset.Platform != "chatgpt" {
+		if old, err := os.ReadFile(path); err == nil {
+			if _, err = s.Retain(old); err != nil {
+				return err
+			}
+		} else if !os.IsNotExist(err) {
 			return err
 		}
-	} else if !os.IsNotExist(err) {
-		return err
-	}
-	if _, err = s.Retain(raw); err != nil {
-		return err
+		if _, err = s.Retain(raw); err != nil {
+			return err
+		}
 	}
 	return atomicWrite(path, raw)
 }
@@ -144,6 +160,9 @@ func (s *Store) PutIfAbsent(asset Asset) (bool, error) {
 	name := safe(strings.ReplaceAll(strings.TrimPrefix(asset.Ref, "creds:"), "/", "_"))
 	path := filepath.Join(dir, name+".json")
 	if _, err := os.Stat(path); err == nil {
+		if asset.Platform == "chatgpt" {
+			return false, nil
+		}
 		// Preserve the observed legacy result without selecting it as current.
 		raw, marshalErr := json.MarshalIndent(asset, "", "  ")
 		if marshalErr != nil {
@@ -185,11 +204,15 @@ func (s *Store) List() ([]Asset, error) {
 		if asset.Ref == "" {
 			return nil
 		}
-		digest, retainErr := s.Retain(raw)
-		if retainErr != nil {
-			return retainErr
+		if asset.Platform == "chatgpt" {
+			var envelope map[string]any
+			if json.Unmarshal(raw, &envelope) == nil {
+				if current, err := OAuthDocument(envelope, asset.Email); err == nil {
+					asset.Payload = current
+				}
+			}
 		}
-		asset.ResultSHA = digest
+		asset.ResultSHA = fmt.Sprintf("%x", sha256.Sum256(raw))
 		if rel, relErr := filepath.Rel(s.root, path); relErr == nil {
 			asset.Path = rel
 		} else {
@@ -216,36 +239,22 @@ func (s *Store) List() ([]Asset, error) {
 }
 
 // Get 按 ref 取资产。
-func (s *Store) Get(ref string) (Asset, error) {
+func (s *Store) Get(ref string, knownEmail ...string) (Asset, error) {
 	list, err := s.List()
 	if err != nil {
 		return Asset{}, err
 	}
-	var found *Asset
-	for _, asset := range list {
-		if asset.Ref != ref {
-			continue
-		}
-		// Login metadata shares the account ref but is not an OAuth result.
-		if found != nil && found.Kind == "oauth" && asset.Kind != "oauth" {
-			continue
-		}
-		if found != nil && asset.Kind == found.Kind {
-			a, _ := json.Marshal(asset.Payload)
-			b, _ := json.Marshal(found.Payload)
-			if string(a) != string(b) {
-				return Asset{}, ErrAmbiguous
-			}
-		}
-		if found == nil || asset.Kind == "oauth" {
-			copy := asset
-			found = &copy
+	found := false
+	for _, item := range list {
+		if item.Ref == ref {
+			found = true
+			break
 		}
 	}
-	if found == nil {
-		return Asset{}, os.ErrNotExist
+	if !found && len(knownEmail) == 1 && strings.Contains(knownEmail[0], "@") {
+		list = append(list, Asset{Ref: ref, Platform: "chatgpt", Kind: "imported", Email: knownEmail[0]})
 	}
-	return *found, nil
+	return s.current(ref, list)
 }
 
 // Migrate 把旧路径的资产搬进统一目录（幂等，不删除源文件）。

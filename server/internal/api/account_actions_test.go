@@ -151,13 +151,7 @@ func TestImportConversionUsesDurableRepairAndRejectsDeliveredAccount(t *testing.
 	if task.Script != "asset_ops" || !strings.Contains(task.ArgsJSON, "--allow-relogin") || strings.Contains(task.ArgsJSON, "fixture-private") {
 		t.Fatal(task)
 	}
-	st.Finish(first, "unknown", 75, "fixture")
-	if id := invoke("e5f879d2-88c9-4fdc-9726-0e597246bc11"); id != first {
-		t.Fatal("unknown was replayed", id)
-	}
-	if err := st.ResolveAccountRefresh(first, "operator", "confirmed no exchange from fixture evidence", "failed", ""); err != nil {
-		t.Fatal(err)
-	}
+	st.Finish(first, "failed", 75, "fixture: result not confirmed")
 	if id := invoke("d5f879d2-88c9-4fdc-9726-0e597246bc11"); id != first {
 		t.Fatal("lost response created duplicate", id)
 	}

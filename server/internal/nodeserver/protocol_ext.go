@@ -62,10 +62,15 @@ func (h *Handler) fullResult(verified *Verified, status string, exitCode int) ma
 		}
 		return full
 	}
-	doc, _ := h.credDocument(verified)
 	full := map[string]any{"status": status, "exit_code": exitCode}
-	if doc != nil {
-		full["document"] = doc
+	if status == "completed" {
+		if verified.Action == "account.refresh" || verified.Action == "account.authorize" {
+			if doc := h.taskCredential(verified); doc != nil {
+				full["document"] = doc
+			}
+		} else if doc, _ := h.credDocument(verified); doc != nil {
+			full["document"] = doc
+		}
 	}
 	return full
 }
@@ -135,8 +140,8 @@ func (h *Handler) ReceiptFor(verified *Verified, nodeTaskID, nodeStatus string, 
 	if workStatus == "" {
 		workStatus = "unknown"
 	}
-	if nodeStatus == "failed" && exitCode == 75 && (verified.Action == "account.authorize" || verified.Action == "account.refresh") {
-		workStatus = "unknown"
+	if (workStatus == "unknown" || nodeStatus == "interrupted") && (verified.Action == "account.authorize" || verified.Action == "account.refresh") {
+		workStatus = "failed"
 	}
 	full := h.fullResult(verified, workStatus, exitCode)
 	if workStatus == "unknown" && exitCode == 75 {
@@ -148,7 +153,10 @@ func (h *Handler) ReceiptFor(verified *Verified, nodeTaskID, nodeStatus string, 
 	var resultAccountID any
 	var resultResourceVersion any
 	versionError := ""
-	if workStatus == "completed" {
+	if workStatus == "completed" && (verified.Action == "account.refresh" || verified.Action == "account.authorize") && full["document"] == nil {
+		versionError = "WORK_ACCOUNT_RESULT_UNAVAILABLE"
+	}
+	if workStatus == "completed" && versionError == "" {
 		resultAccountID = verified.Payload["subject_id"]
 		if v, ok := toInt64(verified.Payload["resource_version"]); ok {
 			resultVersion := v + 1

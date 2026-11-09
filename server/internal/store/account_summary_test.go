@@ -25,7 +25,8 @@ func TestAccountSummaryIncludesRowsBeyondListLimit(t *testing.T) {
 	if err := s.MarkHealth("sample-1103", "ok", "sample"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.SyncAccounts([]AccountSeed{{Ref: "another", Platform: "outlook", Kind: "mail"}}); err != nil {
+	// This is an additional source, not a full scan replacing the first batch.
+	if _, err := s.UpsertAccounts([]AccountSeed{{Ref: "another", Platform: "outlook", Kind: "mail"}}); err != nil {
 		t.Fatal(err)
 	}
 	rows, err := s.AccountSummaries("chatgpt")

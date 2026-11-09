@@ -63,24 +63,19 @@ func TestRefreshConcurrentRequestsRemainBoundAfterResolution(t *testing.T) {
 	if err := s.BeginAccountRefresh(original, "one", "original-digest"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.FinishAccountRefresh(original, "one", "unknown", 75, "uncertain exchange", ""); err != nil {
+	if err := s.FinishAccountRefresh(original, "one", "failed", 75, "unconfirmed result", ""); err != nil {
 		t.Fatal(err)
 	}
 	task.ID = "retry-unknown"
 	id, created, err := s.QueueAccountRefresh(task, "one")
-	if err != nil || created || id != original {
+	if err != nil || !created || id != task.ID {
 		t.Fatal(id, created, err)
 	}
-	if err = s.ResolveAccountRefresh(original, "operator", "上游证据确认请求未受理", "failed", ""); err != nil {
-		t.Fatal(err)
-	}
-	if err = s.ResolveAccountRefresh(original, "operator", "同一次结案请求重放", "failed", ""); err != nil {
-		t.Fatal(err)
-	}
 	id, created, err = s.QueueAccountRefresh(task, "one")
-	if err != nil || created || id != original {
+	if err != nil || created || id != task.ID {
 		t.Fatal("lost response replay created exchange", id, created, err)
 	}
+	s.FinishAccountRefresh(task.ID, "one", "failed", 1, "rejected", "")
 	task.ID = "new-after-resolution"
 	id, created, err = s.QueueAccountRefresh(task, "one")
 	if err != nil || !created || id != task.ID {
@@ -88,8 +83,36 @@ func TestRefreshConcurrentRequestsRemainBoundAfterResolution(t *testing.T) {
 	}
 	var count int
 	s.db.QueryRow(`SELECT count(*) FROM audit WHERE action='account.refresh.resolve'`).Scan(&count)
-	if count != 1 {
-		t.Fatal("duplicate settlement audit", count)
+	if count != 0 {
+		t.Fatal("failure should not require manual settlement", count)
+	}
+}
+
+func TestRefreshAliasesSharePendingTaskAndFailedTaskCanRetry(t *testing.T) {
+	s, task := refreshFixture(t)
+	s.db.Exec(`UPDATE accounts SET identity='same@example.test' WHERE ref='one'`)
+	s.UpsertAccounts([]AccountSeed{{Ref: "old", Platform: "chatgpt", Kind: "oauth", Identity: " SAME@example.test "}})
+	if _, _, err := s.QueueAccountRefresh(task, "one"); err != nil {
+		t.Fatal(err)
+	}
+	other := task
+	other.ID, other.ArgsJSON = "alias-request", `["refresh","--ref","old","--platform","chatgpt"]`
+	id, created, err := s.QueueAccountRefresh(other, "old")
+	if err != nil || created || id != task.ID {
+		t.Fatal("alias started duplicate", id, created, err)
+	}
+	s.BeginAccountRefresh(task.ID, "one", "old-sha")
+	s.FinishAccountRefresh(task.ID, "one", "failed", 75, "network failed", "")
+	other.ID = "unknown-alias"
+	id, created, err = s.QueueAccountRefresh(other, "old")
+	if err != nil || !created || id != other.ID {
+		t.Fatal("failed alias could not retry", id, created, err)
+	}
+	s.FinishAccountRefresh(other.ID, "old", "failed", 1, "rejected", "")
+	other.ID = "retry-alias"
+	id, created, err = s.QueueAccountRefresh(other, "old")
+	if err != nil || !created || id != other.ID {
+		t.Fatal("failure blocked retry", id, created, err)
 	}
 }
 
@@ -116,12 +139,12 @@ func TestRefreshStopRestartAndCoreOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 	account, _ = s.GetAccount("one")
-	if account.RefreshState != "interrupted" {
+	if account.RefreshState != "failed" {
 		t.Fatal(account.RefreshState)
 	}
 	original := task.ID
 	task.ID = "after-restart"
-	if id, created, err := s.QueueAccountRefresh(task, "one"); err != nil || created || id != original {
+	if id, created, err := s.QueueAccountRefresh(task, "one"); err != nil || !created || id != task.ID {
 		t.Fatal(id, created, err)
 	}
 	if err := s.MarkClaimed("one"); err != nil {

@@ -412,7 +412,14 @@ def chatgpt_session_path(email):
 
 
 def _save_chatgpt_result(path, document, email):
-    """Retain each complete supplier result before changing export projections."""
+    from common.credential_versions import account_lock
+    root = Path(os.environ.get("REG_FACTORY_DATA_DIR") or Path(TOKEN_OUTPUT_DIR).resolve().parent)
+    with account_lock(root, email, "tokens:chatgpt:" + Path(path).stem):
+        return _save_chatgpt_result_locked(path, document, email)
+
+
+def _save_chatgpt_result_locked(path, document, email):
+    """Keep a recovery result until the current credential is published."""
     destination = Path(path)
     root = Path(os.environ.get("REG_FACTORY_DATA_DIR") or Path(TOKEN_OUTPUT_DIR).resolve().parent)
     ref = "tokens:chatgpt:" + destination.stem
@@ -427,17 +434,17 @@ def _save_chatgpt_result(path, document, email):
         return digest
     if current.exists():
         # Do not discard an unreadable existing projection silently.
-        retain(json.loads(current.read_text(encoding="utf-8")))
+        json.loads(current.read_text(encoding="utf-8"))
     elif destination.exists():
-        retain({"ref": ref, "platform": "chatgpt", "kind": "oauth", "email": email,
-                "source": "legacy:" + destination.name,
-                "payload": json.loads(destination.read_text(encoding="utf-8"))})
+        json.loads(destination.read_text(encoding="utf-8"))
     envelope = {"ref": ref, "platform": "chatgpt", "kind": "oauth", "email": email,
                 "source": "producer:" + destination.name,
-                "created_at": datetime.now(timezone.utc).isoformat(), "payload": document}
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "credential_updated_at": datetime.now(timezone.utc).isoformat(), "payload": document}
     digest = retain(envelope)
     _write_json_atomic(str(destination), document)
     _write_json_atomic(str(current), envelope)
+    (history / (digest + ".json")).unlink()
     print(f"[result] saved ref={ref} result_sha256={digest}")
 
 

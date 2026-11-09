@@ -29,7 +29,7 @@ func TestRefreshReconciliationTestsNewATWithoutExchangingRT(t *testing.T) {
 	assets := assetstore.New(root)
 	original := assetstore.Asset{Ref: "one", Platform: "chatgpt", Kind: "oauth", Payload: map[string]any{"access_token": "old-at", "refresh_token": "old-rt"}}
 	assets.Put(original)
-	source, _ := assets.Get("one")
+	source, _ := assets.Snapshot("one")
 	task := store.Task{ID: "original", Script: "asset_ops", ArgsJSON: `["refresh","--ref","one","--platform","chatgpt"]`}
 	st.QueueAccountRefresh(task, "one")
 	st.BeginAccountRefresh(task.ID, "one", source.ResultSHA)

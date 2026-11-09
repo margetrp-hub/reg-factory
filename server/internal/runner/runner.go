@@ -349,6 +349,7 @@ func (m *Manager) launch(task store.Task, weight int) error {
 		return err
 	}
 	refreshRef := store.AccountRefreshRef(task)
+	credentialRef := store.CredentialTaskRef(task)
 	sourceSHA := ""
 	if refreshRef != "" {
 		account, err := m.st.GetAccount(refreshRef)
@@ -356,7 +357,7 @@ func (m *Manager) launch(task store.Task, weight int) error {
 			return errors.New("刷新账号不可读")
 		}
 		if account.Platform == "chatgpt" {
-			asset, err := assetstore.New(m.cfg.DataDir).Get(refreshRef)
+			asset, err := assetstore.New(m.cfg.DataDir).Snapshot(refreshRef, account.Identity)
 			if err != nil {
 				return errors.New("原凭据不可读，未执行 RT 刷新")
 			}
@@ -401,12 +402,12 @@ func (m *Manager) launch(task store.Task, weight int) error {
 		scanner.Buffer(make([]byte, 0, 64*1024), 512*1024)
 		for scanner.Scan() {
 			text := scanner.Text()
-			if refreshRef != "" && stream == "stdout" {
+			if credentialRef != "" && stream == "stdout" {
 				var result struct {
 					Ref    string `json:"ref"`
 					Result string `json:"result"`
 				}
-				if json.Unmarshal([]byte(text), &result) == nil && result.Ref == refreshRef {
+				if json.Unmarshal([]byte(text), &result) == nil && result.Ref == credentialRef {
 					refreshResult = result.Result
 				}
 			}
@@ -465,6 +466,9 @@ func (m *Manager) launch(task store.Task, weight int) error {
 				return
 			}
 		} else {
+			if credentialRef != "" && (status == "unknown" || (status != "succeeded" && refreshResult == "")) {
+				status, code, message = "failed", 75, "未取得可确认的成功结果，本次失败；可重新发起授权修复"
+			}
 			_ = m.st.Finish(task.ID, status, code, message)
 		}
 		m.record(task.ID, "system", fmt.Sprintf("[regd] 任务结束 status=%s exit=%d", status, code))

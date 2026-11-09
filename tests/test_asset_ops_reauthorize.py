@@ -160,11 +160,11 @@ def test_produced_result_reuses_proven_login_identity_after_repeated_rotations(t
             assert record['account_password'] == 'original-password'
             assert record['two_factor'] == 'JBSWY3DPEHPK3PXP'
             assert authorize.call_args.args[0]['payload']['workspace_account_id'] == 'original-workspace'
-        current = json.loads(produced.read_text())['payload']
+        current = asset_ops._token_map(asset_ops._find_credential('production:original-operation')[1])
         assert current['refresh_token'] == rotated['refresh_token']
         assert 'reauthorization' not in current and 'password' not in current
-        # Other references remain independent OAuth results and login metadata.
-        assert source.read_bytes() == source_before
+        # Old references follow current credentials; login metadata stays separate.
+        assert asset_ops._token_map(asset_ops._find_credential('import:original')[1])['refresh_token'] == rotated['refresh_token']
         assert login.read_bytes() == login_before
 
 
