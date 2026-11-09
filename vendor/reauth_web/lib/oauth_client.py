@@ -2210,12 +2210,7 @@ class OAuthClient:
         issue_status = int(getattr(issue_response, "status_code", 0) or 0)
         self._log(f"mfa/issue_challenge(totp) -> {issue_status}")
         if issue_status not in (200, 201, 204):
-            details = self._response_error_details(issue_response)
-            self.last_oauth_error = (
-                details["code"]
-                or details["type"]
-                or f"mfa_issue_challenge_http_{issue_status}"
-            )
+            self.last_oauth_error = "rate_limit_exceeded" if issue_status == 429 else "mfa_challenge_rejected"
             return ""
 
         max_attempts = max(
@@ -2288,12 +2283,9 @@ class OAuthClient:
                 self._log("OpenAI 2FA 动态码验证通过")
                 return next_url
 
-            details = self._response_error_details(verify_response)
-            self.last_oauth_error = (
-                details["code"]
-                or details["type"]
-                or f"mfa_totp_rejected_{verify_status}"
-            )
+            # Keep a stable, safe reason through the engine, node receipt and
+            # customer projection. Provider error text may contain secrets.
+            self.last_oauth_error = "rate_limit_exceeded" if verify_status == 429 else "mfa_totp_verification_failed"
             if verify_status == 429:
                 break
 

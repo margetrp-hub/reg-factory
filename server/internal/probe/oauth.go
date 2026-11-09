@@ -1,12 +1,9 @@
-// Package probe 用凭据本身验证账号是否还活着（不启浏览器）。
-//
-// OAuth 类账号（ChatGPT/Codex）直接用 refresh_token 调 token 端点：
-// 成功 = 账号可用，且能顺带刷新 access_token；失败按错误码判 expired/banned。
+// Package probe performs read-only credential checks. AT tests never rotate RT.
 package probe
 
 import (
+	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,91 +12,103 @@ import (
 	"time"
 )
 
-const openAITokenURL = "https://auth.openai.com/oauth/token"
+const openAIUsageURL = "https://chatgpt.com/backend-api/wham/usage"
 
-// Result 是验证结果。
 type Result struct {
-	Status       string // ok / expired / banned / unknown
-	Message      string
-	AccessToken  string
-	RefreshToken string
-	ExpiresIn    int
+	Status    string // ok / banned / needs_refresh / unknown
+	Message   string
+	retryable bool
 }
 
-// OAuth 用 refresh_token 验证一个 ChatGPT 账号。
+// OAuth tests AT only. A 401 says nothing about RT or the account's entitlement.
 func OAuth(creds map[string]any, proxyURL string, timeout time.Duration) Result {
-	refresh, _ := creds["refresh_token"].(string)
-	clientID, _ := creds["client_id"].(string)
-	if strings.TrimSpace(refresh) == "" {
-		return Result{Status: "unknown", Message: "缺少 refresh_token，无法验证"}
-	}
-	if strings.TrimSpace(clientID) == "" {
-		clientID = "app_EMoamEEZ73f0CkXaXp7hrann"
+	return OAuthContext(context.Background(), creds, proxyURL, timeout)
+}
+
+func OAuthContext(ctx context.Context, creds map[string]any, proxyURL string, timeout time.Duration) Result {
+	access, _ := creds["access_token"].(string)
+	if strings.TrimSpace(access) == "" {
+		return Result{Status: "needs_refresh", Message: "缺少 AT，请刷新凭据后复测；未使用 RT"}
 	}
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
-
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
 	if strings.TrimSpace(proxyURL) != "" {
-		if parsed, err := url.Parse(proxyURL); err == nil {
-			transport.Proxy = http.ProxyURL(parsed)
+		parsed, err := url.Parse(proxyURL)
+		if err != nil || parsed.Host == "" {
+			return Result{Status: "unknown", Message: "测试出口配置无效"}
 		}
+		transport.Proxy = http.ProxyURL(parsed)
 	}
-	client := &http.Client{Transport: transport, Timeout: timeout}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: transport, Timeout: min(timeout, 8*time.Second), CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
+	return checkAccessTokenWithRetry(ctx, client, creds, []time.Duration{time.Second, 3 * time.Second})
+}
 
-	form := url.Values{}
-	form.Set("grant_type", "refresh_token")
-	form.Set("refresh_token", refresh)
-	form.Set("client_id", clientID)
-	form.Set("scope", "openid profile email offline_access")
+func checkAccessToken(client *http.Client, creds map[string]any) Result {
+	return checkAccessTokenContext(context.Background(), client, creds)
+}
 
-	req, err := http.NewRequest(http.MethodPost, openAITokenURL, strings.NewReader(form.Encode()))
-	if err != nil {
-		return Result{Status: "unknown", Message: err.Error()}
-	}
-	req.Header.Set("content-type", "application/x-www-form-urlencoded")
-	req.Header.Set("accept", "application/json")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return Result{Status: "unknown", Message: "网络错误: " + err.Error()}
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-
-	var payload map[string]any
-	_ = json.Unmarshal(raw, &payload)
-
-	switch resp.StatusCode {
-	case http.StatusOK:
-		access, _ := payload["access_token"].(string)
-		newRefresh, _ := payload["refresh_token"].(string)
-		expires := 0
-		if value, ok := payload["expires_in"].(float64); ok {
-			expires = int(value)
+func checkAccessTokenWithRetry(ctx context.Context, client *http.Client, creds map[string]any, delays []time.Duration) Result {
+	for attempt := 0; ; attempt++ {
+		result := checkAccessTokenContext(ctx, client, creds)
+		if !result.retryable || attempt >= len(delays) || ctx.Err() != nil {
+			if attempt > 0 {
+				result.Message = fmt.Sprintf("%s（尝试 %d 次）", result.Message, attempt+1)
+			}
+			return result
 		}
-		return Result{
-			Status: "ok", Message: "token 刷新成功",
-			AccessToken: access, RefreshToken: newRefresh, ExpiresIn: expires,
+		timer := time.NewTimer(delays[attempt])
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return Result{Status: "unknown", Message: "测试中断，未使用 RT；可重新测试"}
+		case <-timer.C:
 		}
-	case http.StatusBadRequest, http.StatusUnauthorized:
-		code, _ := payload["error"].(string)
-		desc, _ := payload["error_description"].(string)
-		message := fmt.Sprintf("%s %s", code, desc)
-		switch code {
-		case "invalid_grant", "invalid_token":
-			return Result{Status: "expired", Message: "refresh_token 已失效: " + strings.TrimSpace(message)}
-		case "account_deactivated", "account_banned":
-			return Result{Status: "banned", Message: "账号被停用: " + strings.TrimSpace(message)}
-		}
-		return Result{Status: "expired", Message: "验证失败: " + strings.TrimSpace(message)}
-	case http.StatusForbidden:
-		return Result{Status: "banned", Message: "被拒绝（403）"}
-	default:
-		return Result{Status: "unknown", Message: fmt.Sprintf("HTTP %d", resp.StatusCode)}
 	}
 }
 
-// ErrNoCredential 表示账号没有可用于验证的凭据。
-var ErrNoCredential = errors.New("no credential")
+func checkAccessTokenContext(ctx context.Context, client *http.Client, creds map[string]any) Result {
+	access, _ := creds["access_token"].(string)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, openAIUsageURL, nil)
+	if err != nil {
+		return Result{Status: "unknown", Message: "无法建立测试请求"}
+	}
+	req.Header.Set("Authorization", "Bearer "+access)
+	req.Header.Set("Accept", "application/json")
+	if account, _ := creds["account_id"].(string); account != "" {
+		req.Header.Set("Chatgpt-Account-Id", account)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return Result{Status: "unknown", Message: "网络或 TLS 测试失败，可重试 AT 测试；未使用 RT", retryable: true}
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	var payload map[string]any
+	parsed := err == nil && json.Unmarshal(raw, &payload) == nil && payload != nil
+	switch resp.StatusCode {
+	case http.StatusOK:
+		if !parsed {
+			return Result{Status: "unknown", Message: "上游响应不是有效测试结果", retryable: err != nil}
+		}
+		return Result{Status: "ok", Message: "AT 测试通过；未刷新凭据"}
+	case http.StatusUnauthorized:
+		return Result{Status: "needs_refresh", Message: "AT 已失效或被拒绝，请刷新后复测；账号与 RT 状态尚未判定"}
+	case http.StatusForbidden:
+		detail, _ := payload["error"].(map[string]any)
+		code, _ := detail["code"].(string)
+		if code == "account_deactivated" || code == "account_banned" {
+			return Result{Status: "banned", Message: "上游明确返回账号停用"}
+		}
+		return Result{Status: "unknown", Message: "测试被上游拒绝（403），账号状态未确认"}
+	case http.StatusTooManyRequests:
+		return Result{Status: "unknown", Message: "测试被限流，请稍后重试 AT 测试"}
+	default:
+		return Result{Status: "unknown", Message: fmt.Sprintf("测试 HTTP %d，账号状态未确认", resp.StatusCode), retryable: resp.StatusCode >= 500}
+	}
+}

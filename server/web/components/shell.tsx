@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { api, type SystemInfo } from "@/lib/api";
+import { PLATFORMS } from "@/lib/task-catalog";
 
 type NavSection = "workspace" | "production" | "runtime" | "assets" | "supply" | "nodes" | "system";
 
@@ -21,10 +22,7 @@ const CONTEXT_LINKS: Record<NavSection, { href: string; label: string }[]> = {
   workspace: [],
   production: [
     { href: "/production/", label: "生产总览" },
-    { href: "/platform/claude/", label: "Claude" },
-    { href: "/platform/chatgpt/", label: "ChatGPT" },
-    { href: "/platform/grok/", label: "Grok" },
-    { href: "/platform/outlook/", label: "Outlook" },
+    ...PLATFORMS.map(platform=>({href:`/platform/${platform.slug}/`,label:platform.name})),
   ],
   runtime: [
     { href: "/tasks/", label: "任务队列" },
@@ -33,7 +31,7 @@ const CONTEXT_LINKS: Record<NavSection, { href: string; label: string }[]> = {
   assets: [{ href: "/accounts/", label: "账号主数据" }, { href: "/assets/", label: "结果版本与导出" }],
   supply: [
     { href: "/materials/", label: "物料总览" },
-    { href: "/apps/icmail/", label: "IC 邮箱" },
+    { href: "/apps/icmail/", label: "邮箱池管理" },
   ],
   nodes: [
     { href: "/nodes/", label: "节点总览" },

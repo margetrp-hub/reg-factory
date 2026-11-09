@@ -375,6 +375,14 @@ def _refresh_document_copies(ref: str, email: str, selected_path: Path,
     for path, document in targets:
         updated = _update_oauth_document(copy.deepcopy(document), updates)
         prepared.append((path, document, updated))
+    # First authorization of imported login material publishes a complete OAuth
+    # asset. Keep the original login record and use the same stable account ref.
+    if selected_document.get("kind") in {"imported", "free", "password"}:
+        oauth_path = root / "assets" / "chatgpt" / "oauth" / (hashlib.sha256(ref.encode()).hexdigest() + ".json")
+        oauth = {"ref": ref, "platform": "chatgpt", "kind": "oauth", "email": email,
+                 "source": "authorized:import", "created_at": datetime.now(timezone.utc).isoformat(),
+                 "payload": {**updates, "email": email}}
+        prepared.append((oauth_path, None, oauth))
     # Persist the entire supplier response and intended write set first. If a
     # projection fails halfway through, the new token is still recoverable
     # without replaying the consumed refresh grant.
@@ -386,6 +394,8 @@ def _refresh_document_copies(ref: str, email: str, selected_path: Path,
     _atomic_json_write(root / "oauth-results" / (result_id + ".json"), result)
     for path, before, after in prepared:
         for snapshot in (before, after):
+            if snapshot is None:
+                continue
             envelope = snapshot if snapshot.get("ref") else {
                 "ref": ref, "platform": "chatgpt", "kind": "oauth", "email": email,
                 "source": "oauth-result:" + result_id, "payload": snapshot}
@@ -437,7 +447,7 @@ def _refresh_chatgpt(ref: str, email: str = "") -> dict:
     try:
         session = requests.Session()
         session.trust_env = False
-        proxy = str(os.environ.get("REG_FACTORY_PROXY_URL") or "").strip()
+        proxy = str(os.environ.get("REG_FACTORY_PRODUCTION_PROXY") or "").strip()
         if proxy:
             session.proxies.update({"http": proxy, "https": proxy})
         response = session.post(
@@ -457,7 +467,7 @@ def _refresh_chatgpt(ref: str, email: str = "") -> dict:
         updates = {
             "access_token": str(payload["access_token"]),
             "refresh_token": str(payload.get("refresh_token") or refresh_token),
-            "id_token": str(payload.get("id_token") or ""),
+            "id_token": str(payload.get("id_token") or (token or {}).get("id_token") or ""),
             "expires_in": expires_in,
             "expires_at": int(__import__("time").time()) + expires_in if expires_in > 0 else 0,
         }
@@ -546,7 +556,8 @@ def _reauthorize_chatgpt(ref: str, email: str = "", timeout: int = 600) -> dict:
             code = evidence.get("error_code")
             reason = ERROR_HINTS.get(code, "登录授权未完成，请查看执行日志")
             return {"ref": ref, "result": "failed", "message": f"SG重新授权失败：{reason}；原凭据保留",
-                    "error_code": code if code in ERROR_HINTS else "oauth_authorization_failed"}
+                    "error_code": code if code in ERROR_HINTS else "oauth_authorization_failed",
+                    "error_schema": "account.failure.v1"}
         # Browser/transport failures can leave an external result unknown. Do
         # not replay automatically or print provider responses/credentials.
         return {"ref": ref, "result": "unknown", "message": f"SG重新授权未完成：{type(exc).__name__}"}

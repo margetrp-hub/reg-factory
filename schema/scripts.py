@@ -535,6 +535,37 @@ for _script in SCRIPTS:
             _arg.setdefault("labels", {})["google"] = "Google OAuth"
 
 
+TASK_GROUPS = [
+    {"slug": "pipeline", "title": "组合流程", "desc": "从新邮箱或已有邮箱开始，选择平台并串联后续授权与导出。"},
+    {"slug": "register", "title": "注册", "desc": "各平台和邮箱的注册模式。"},
+    {"slug": "authorize", "title": "授权", "desc": "已有账号的授权、凭据转换与导入。"},
+    {"slug": "data", "title": "导出与上传", "desc": "保留原资产，按目标服务格式导出或上传。"},
+    {"slug": "helper", "title": "辅助服务", "desc": "取码等独立运行的支撑能力。"},
+    {"slug": "other", "title": "其他能力", "desc": "完整展示尚未分类的已注册任务。"},
+]
+PLATFORMS = [
+    {"slug": "claude", "name": "Claude"}, {"slug": "chatgpt", "name": "ChatGPT"},
+    {"slug": "grok", "name": "Grok"}, {"slug": "outlook", "name": "Outlook"},
+    {"slug": "kiro", "name": "Kiro"}, {"slug": "github", "name": "GitHub"},
+]
+_TASK_GROUP_BY_ID = {
+    "run_full_flow": "pipeline", "register_three_platforms": "pipeline",
+    "oauth_codex": "authorize", "plus_codex_import": "authorize", "unlock_outlook": "authorize",
+    "mailbox_broker": "helper", "upload_tokens": "data", "export_chatgpt2api": "data",
+    "export_accounts": "data", "export_kiro_credentials": "data",
+}
+for _script in SCRIPTS:
+    _script["group"] = _TASK_GROUP_BY_ID.get(_script["id"], "register" if _script["id"].startswith("register_") or _script["id"] == "outlook_reg_loop" else "other")
+    _script["platforms"] = [_script["platform"]] if _script.get("platform") else []
+    for _arg in _script.get("args", []):
+        if _arg["flag"] in {"--platform", "--platforms", "platforms"}:
+            _script["platforms"] = [value for value in _arg.get("choices", []) if value in {item["slug"] for item in PLATFORMS}]
+    if _script["id"] == "export_kiro_credentials":
+        _script["platforms"] = ["kiro"]
+    if _script["id"] in {"upload_tokens", "export_chatgpt2api"}:
+        _script["platforms"] = ["chatgpt"]
+
+
 def script_by_id(sid):
     for s in SCRIPTS:
         if s["id"] == sid:
@@ -1081,6 +1112,43 @@ for _group in ENV_SCHEMA:
         _item["label"] = _ENV_LABELS[_item["key"]]
         if _item["key"] in _SMART_ENV_KEYS:
             _item["smart"] = True
+
+# Go owns process settings; the worker schema remains the sole definition for
+# worker choices. Missing values are displayed, never silently written as defaults.
+ENV_SCHEMA.extend([
+    {"group": "生产与修复出口", "items": [
+        {"key": "REG_FACTORY_PRODUCTION_PROXY", "label": "生产与重新授权出口", "secret": True,
+         "help": "账号修复、TEAM 生产与核验使用的出口。留空直连，不继承注册住宅代理。"},
+    ]},
+    {"group": "控制面运行", "items": [
+        {"key": "REG_FACTORY_MAX_CONCURRENCY", "label": "最大执行并发", "type": "int", "default": 3, "apply": "restart", "help": "控制面并发槽位，范围1至32；保存后需重启。"},
+        {"key": "REG_FACTORY_MEMORY_GUARD_PCT", "label": "内存保护阈值", "type": "int", "default": 85, "apply": "restart", "help": "达到此内存百分比时暂缓接新任务；原任务查询和恢复仍可访问。"},
+        {"key": "REGD_LOG_TAIL", "label": "默认日志行数", "type": "int", "default": 2000, "apply": "restart", "help": "控制面读取历史日志的默认上限。"},
+    ]},
+    {"group": "节点身份与密钥", "items": [
+        {"key": "REG_FACTORY_NODE_ID", "label": "节点身份", "apply": "restart", "help": "Core/Work登记的节点身份。修改需同步接入信息。"},
+        {"key": "REG_FACTORY_NODE_PLATFORM", "label": "节点平台", "apply": "restart", "help": "签名任务默认平台，与本地可执行模式分开管理。"},
+        *[{"key": key, "label": label, "secret": True, "apply": "restart", "help": "节点独立密钥；保存后需重启并核对双方指纹。"}
+          for key, label in [("REG_FACTORY_NODE_KEY", "工作签名密钥"), ("REG_FACTORY_NODE_RECEIPT_KEY", "回执签名密钥"), ("REG_FACTORY_NODE_BUSINESS_KEY", "业务签名密钥"), ("REG_FACTORY_NODE_ARTIFACT_KEY", "工件加密密钥")]],
+    ]},
+])
+for _group in ENV_SCHEMA:
+    for _item in _group["items"]:
+        if _item["key"] == "K12_CONSOLE_URL":
+            _item["help"] = "独立 K12 控制台的访问地址，供辅助服务入口打开；不改变 K12 自身配置或启动进程。"
+        if _item["key"] == "K12_AUTO_START":
+            _item["readonly"] = True
+            _item["help"] = "保留原配置供核对。K12为独立服务，当前Go控制面不负责自动启动或内嵌；本字段不改变当前运行状态。"
+
+_CONFIG_AREAS = {
+    "网络出口": "proxy", "生产与修复出口": "proxy", "指纹浏览器": "browser",
+    "短信接码": "sms", "Codex add-phone 接码调参": "sms",
+    "打码平台(可选)": "captcha", "视觉模型与投票(可选)": "captcha",
+    "Outlook 自注册": "mail", "ChatGPT 邮箱": "mail", "临时邮箱(Claude/Grok 注册取码)": "mail",
+    "节点身份与密钥": "node", "控制面运行": "runtime",
+}
+for _group in ENV_SCHEMA:
+    _group["area"] = _CONFIG_AREAS.get(_group["group"], "platform")
 
 
 # 所有 schema 里出现的 .env key（用于读 .env 时补齐未在模板里的项不丢）

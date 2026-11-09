@@ -75,7 +75,7 @@ func TestSourceUpsertAndCursor(t *testing.T) {
 		t.Fatalf("upsert: %v", err)
 	}
 	uid := uint32(5147)
-	if err := db.Cursor(src.ID, &uid, nil, ""); err != nil {
+	if err := db.Cursor(src, &uid, nil, ""); err != nil {
 		t.Fatalf("cursor: %v", err)
 	}
 	list, err := db.ListSources(true)

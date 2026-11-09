@@ -91,6 +91,9 @@ server/regd.exe~
 server/web/node_modules/
 server/web/.next/
 server/web/out/
+server/web/.playwright-cli/
+server/web/output/
+server/web/tsconfig.tsbuildinfo
 server/webdist/
 *.exe
 *.tar.gz

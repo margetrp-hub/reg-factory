@@ -3,7 +3,10 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -12,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -71,6 +75,11 @@ func New(cfg *settings.Settings, env *settings.Env, st *store.Store, run *runner
 // Register 注册全部路由。
 func (s *Server) Register(r *gin.Engine) {
 	r.Use(s.auth.Middleware())
+	if s.icApp != nil {
+		group := r.Group("/api/apps/icmail", func(c *gin.Context) { c.Set("icmailAuthenticated", true); c.Next() })
+		s.icApp.Register(group)
+		s.icApp.RegisterPublic(r.Group("/api/apps/icmail/public"))
+	}
 
 	r.GET("/api/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"ok": true, "service": "regd", "version": s.version})
@@ -116,10 +125,17 @@ func (s *Server) Register(r *gin.Engine) {
 	r.POST("/api/accounts/change-password", s.changePasswords)
 	r.POST("/api/accounts/convert", s.convertAccounts)
 	r.GET("/api/accounts/detail", s.accountDetail)
+	r.GET("/api/accounts/summary", s.accountSummary)
 	r.GET("/api/accounts", s.listAccounts)
 	r.POST("/api/accounts/sync", s.syncAccountsHandler)
 	r.POST("/api/accounts/liveness", s.accountLiveness)
 	r.POST("/api/accounts/refresh", s.accountRefresh)
+	r.GET("/api/accounts/refresh/:id", s.getAccountRefresh)
+	r.POST("/api/accounts/refresh/:id/reconcile", s.reconcileAccountRefresh)
+	r.POST("/api/accounts/refresh/:id/resolve", s.resolveAccountRefresh)
+	r.POST("/api/accounts/checks", s.createCredentialCheck)
+	r.GET("/api/accounts/checks", s.listCredentialChecks)
+	r.GET("/api/accounts/checks/:id", s.getCredentialCheck)
 	r.GET("/api/audit", s.audit)
 	r.GET("/api/proxy/check", s.proxyCheck)
 }
@@ -198,24 +214,21 @@ func (s *Server) scripts(c *gin.Context) {
 // ---------------------------------------------------------------- 任务
 
 type createTaskRequest struct {
-	Script string         `json:"script"`
-	Args   map[string]any `json:"args"`
+	Script    string         `json:"script"`
+	Args      map[string]any `json:"args"`
+	RequestID string         `json:"request_id"`
 }
 
+var taskRequestID = regexp.MustCompile(`^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$`)
+
 func (s *Server) createTask(c *gin.Context) {
-	if s.run.Guarded() {
-		mem := s.run.Memory()
-		c.JSON(http.StatusTooManyRequests, gin.H{
-			"error": "memory_guard",
-			"detail": fmt.Sprintf("容器内存已用 %.1f%%（%dMB/%dMB），超过 %.0f%% 阈值，暂不接新任务",
-				mem.UsedPct, mem.CurrentMB, mem.MaxMB, s.cfg.GuardPct),
-			"memory": mem,
-		})
-		return
-	}
 	var req createTaskRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_body", "detail": err.Error()})
+		return
+	}
+	if req.RequestID != "" && !taskRequestID.MatchString(req.RequestID) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request_id"})
 		return
 	}
 	list, err := s.loadScripts()
@@ -242,7 +255,22 @@ func (s *Server) createTask(c *gin.Context) {
 		ArgsJSON: string(argsJSON),
 		Actor:    toString(actor),
 	}
+	if req.RequestID != "" {
+		task.ID = "request-" + req.RequestID
+		if s.replayTask(c, task) {
+			return
+		}
+	}
+	if s.run.Guarded() {
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": "memory_guard", "detail": "内存保护中，暂不接新任务；已受理的请求仍可查询"})
+		return
+	}
 	if err := s.run.Submit(task); err != nil {
+		// The primary key serializes concurrent submissions. A response lost
+		// after insertion must resolve to the original task, even after restart.
+		if req.RequestID != "" && s.replayTask(c, task) {
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "submit_failed", "detail": err.Error()})
 		return
 	}
@@ -258,15 +286,38 @@ func (s *Server) createTask(c *gin.Context) {
 	})
 }
 
+func (s *Server) replayTask(c *gin.Context, wanted store.Task) bool {
+	old, err := s.st.GetTask(wanted.ID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false
+	}
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "task_read_unavailable"})
+		return true
+	}
+	if old.Actor != wanted.Actor || old.Script != wanted.Script || old.ArgsJSON != wanted.ArgsJSON {
+		c.JSON(http.StatusConflict, gin.H{"error": "task_request_conflict", "detail": "原请求已受理，不能用同一请求更换参数"})
+		return true
+	}
+	c.JSON(http.StatusOK, gin.H{"id": old.ID, "task_id": old.ID, "status": old.Status, "title": old.Title, "replayed": true})
+	return true
+}
+
 func (s *Server) listTasks(c *gin.Context) {
 	status := c.Query("status")
 	limit := atoi(c.DefaultQuery("limit", "100"), 100)
-	tasks, err := s.st.ListTasks(status, limit)
+	offset := atoi(c.DefaultQuery("offset", "0"), -1)
+	scripts := c.QueryArray("script")
+	if limit < 1 || limit > 500 || offset < 0 || offset > 10000000 || len(c.Query("q")) > 128 || len(scripts) > 50 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "task_query_invalid"})
+		return
+	}
+	page, err := s.st.QueryTasks(store.TaskQuery{Status: status, Search: c.Query("q"), Scripts: scripts, Limit: limit, Offset: offset})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"tasks": tasks, "count": len(tasks)})
+	c.JSON(http.StatusOK, page)
 }
 
 func (s *Server) getTask(c *gin.Context) {
@@ -425,7 +476,7 @@ func (s *Server) taskStream(c *gin.Context) {
 				break
 			}
 		}
-		if id != "" && task.Status != "running" && task.Status != "queued" && task.Status != "unknown" {
+		if id != "" && task.Status != "running" && task.Status != "queued" && task.Status != "stopping" && task.Status != "unknown" {
 			writeSSE(c, "done", gin.H{"task": id, "status": task.Status, "exit_code": task.ExitCode, "error": task.Error})
 			flusher.Flush()
 			return
@@ -692,6 +743,9 @@ func (m *icMailbox) WaitForMagicLink(ctx context.Context, timeout time.Duration)
 	}
 	deadline := time.Now().Add(timeout)
 	for {
+		if err := m.app.DB.MailboxAvailable(m.email); err != nil {
+			return "", &claudehttp.Error{Kind: claudehttp.ErrMailbox, Detail: err.Error()}
+		}
 		messages, err := m.app.DB.Query(m.email, "", 10)
 		if err == nil {
 			for _, message := range messages {
@@ -954,10 +1008,19 @@ func (s *Server) importAccounts(c *gin.Context) {
 }
 
 // proxyPoolFor 从环境变量取代理池（PROXY_POOL 优先，其次 PROXY_URL）。
-func proxyPoolFor() []string {
-	raw := strings.TrimSpace(os.Getenv("REG_FACTORY_PROXY_POOL"))
+func (s *Server) proxyPoolFor() []string {
+	value := func(key string) string {
+		if configured, exists := settings.DeploymentValue(key); exists {
+			return configured
+		}
+		return s.env.Get(key)
+	}
+	raw := strings.TrimSpace(value("REG_FACTORY_PROXY_POOL"))
 	if raw == "" {
-		raw = strings.TrimSpace(os.Getenv("REG_FACTORY_PROXY_URL"))
+		raw = strings.TrimSpace(value("REG_FACTORY_PROXY"))
+	}
+	if raw == "" {
+		raw = strings.TrimSpace(value("REG_FACTORY_PROXY_URL"))
 	}
 	if raw == "" {
 		return nil
@@ -1025,7 +1088,7 @@ func (s *Server) changePasswords(c *gin.Context) {
 		if totp != "" {
 			argv = append(argv, "--totp-secret", totp)
 		}
-		if pool := proxyPoolFor(); len(pool) > 0 {
+		if pool := s.proxyPoolFor(); len(pool) > 0 {
 			argv = append(argv, "--proxy", pool[len(queued)%len(pool)])
 		}
 		raw, _ := json.Marshal(argv)
@@ -1049,8 +1112,9 @@ func (s *Server) changePasswords(c *gin.Context) {
 }
 
 type convertRequest struct {
-	Refs     []string `json:"refs"`
-	Platform string   `json:"platform"`
+	Refs      []string `json:"refs"`
+	Platform  string   `json:"platform"`
+	RequestID string   `json:"request_id"`
 }
 
 // convertAccounts 把「邮箱+密码+2FA」账号登录成标准 Free 凭据 JSON。
@@ -1066,53 +1130,52 @@ func (s *Server) convertAccounts(c *gin.Context) {
 		return
 	}
 
-	pool := proxyPoolFor()
+	if req.RequestID != "" && !taskRequestID.MatchString(req.RequestID) {
+		c.JSON(400, gin.H{"error": "invalid_request_id"})
+		return
+	}
+	actor, _ := c.Get("actor")
 	queued := make([]gin.H, 0, len(req.Refs))
 	skipped := make([]gin.H, 0)
 
-	for index, refValue := range req.Refs {
+	for _, refValue := range req.Refs {
 		account, err := s.st.GetAccount(refValue)
 		if err != nil {
 			skipped = append(skipped, gin.H{"ref": refValue, "reason": "not_found"})
 			continue
 		}
-		password, totp, credErr := s.st.GetCredential(refValue)
+		password, _, credErr := s.st.GetCredential(refValue)
 		if credErr != nil || password == "" {
 			skipped = append(skipped, gin.H{"ref": refValue, "reason": "no_password"})
 			continue
 		}
-		platform := strings.TrimSpace(req.Platform)
-		if platform == "" {
-			platform = account.Platform
-		}
-		if platform == "" || platform == "*" {
-			platform = "chatgpt"
+		if account.Platform != "chatgpt" {
+			skipped = append(skipped, gin.H{"ref": refValue, "reason": "unsupported_platform"})
+			continue
 		}
 		email := account.Identity
 		if email == "" {
 			email = strings.TrimPrefix(refValue, "import:")
 		}
 
-		argv := []string{"--platform", platform, "--ref", refValue, "--email", email, "--password", password}
-		if totp != "" {
-			argv = append(argv, "--totp-secret", totp)
+		requestID := ""
+		if req.RequestID != "" {
+			digest := sha256.Sum256([]byte(req.RequestID + ":" + refValue))
+			requestID = fmt.Sprintf("%x", digest[:])
 		}
-		if len(pool) > 0 {
-			argv = append(argv, "--proxy", pool[index%len(pool)])
-		}
-		raw, _ := json.Marshal(argv)
-		taskID := "free-" + strconv.FormatInt(time.Now().UnixNano(), 36)
-		if err := s.run.Submit(store.Task{
-			ID: taskID, Script: "import_free_json",
-			Title: "转 Free JSON · " + email, ArgsJSON: string(raw), Actor: "panel",
-		}); err != nil {
-			skipped = append(skipped, gin.H{"ref": refValue, "reason": "submit_failed"})
+		task, _, err := s.queueAccountRefresh(accountOpRequest{Ref: refValue, AllowRelogin: true, RequestID: requestID}, toString(actor))
+		if err != nil {
+			reason := "submit_failed"
+			if errors.Is(err, store.ErrAccountOwned) {
+				reason = "claimed"
+			}
+			skipped = append(skipped, gin.H{"ref": refValue, "reason": reason})
 			continue
 		}
-		queued = append(queued, gin.H{"ref": refValue, "task_id": taskID, "email": email})
+		queued = append(queued, gin.H{"ref": refValue, "task_id": task.ID, "email": email, "status": task.Status})
 	}
 
-	actor, _ := c.Get("actor")
+	s.run.Wake()
 	s.st.Audit(toString(actor), "accounts.convert_free",
 		fmt.Sprintf("queued=%d skipped=%d", len(queued), len(skipped)), c.ClientIP())
 	c.JSON(http.StatusAccepted, gin.H{"ok": true, "queued": queued, "skipped": skipped})
@@ -1134,13 +1197,26 @@ func (s *Server) accountDetail(c *gin.Context) {
 }
 
 func (s *Server) listAccounts(c *gin.Context) {
-	list, err := s.st.ListAccounts(c.Query("kind"), c.Query("platform"), c.Query("status"),
-		atoi(c.DefaultQuery("limit", "200"), 200))
+	limit, offset := atoi(c.DefaultQuery("limit", "200"), 200), atoi(c.DefaultQuery("offset", "0"), -1)
+	if limit < 1 || limit > 1000 || offset < 0 || offset > 10000000 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "account_query_invalid"})
+		return
+	}
+	list, total, err := s.st.ListAccountsPage(c.Query("kind"), c.Query("platform"), c.Query("status"), limit, offset)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"accounts": list, "count": len(list)})
+	c.JSON(http.StatusOK, gin.H{"accounts": list, "count": len(list), "total": total, "offset": offset, "limit": limit})
+}
+
+func (s *Server) accountSummary(c *gin.Context) {
+	rows, err := s.st.AccountSummaries(c.Query("platform"))
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "account_summary_unavailable"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"platforms": rows})
 }
 
 type accountOpRequest struct {
@@ -1148,6 +1224,7 @@ type accountOpRequest struct {
 	Platform     string `json:"platform"`
 	RefreshScan  bool   `json:"refresh_scan"`
 	AllowRelogin bool   `json:"allow_relogin"`
+	RequestID    string `json:"request_id"`
 }
 
 // submitAssetOp 以 raw 任务形式跑 tools/asset_ops.py。
@@ -1166,34 +1243,19 @@ func (s *Server) submitAssetOp(op, ref, platform string, flags ...string) (strin
 	return id, s.run.Submit(task)
 }
 
-// probeOAuthAccount 对 OAuth 类账号直接用 refresh_token 验证（不启浏览器）。
+// probeOAuthAccount 只使用 AT 测试，不换取或保存凭据。
 // 返回 (handled, error)：handled=true 表示已同步处理完，不再排任务。
 func (s *Server) probeOAuthAccount(ref string) (bool, error) {
 	asset, err := s.assets.Get(ref)
-	if err != nil || asset.Kind != "oauth" {
+	if err != nil || asset.Platform != "chatgpt" || asset.Kind != "oauth" {
 		return false, nil
 	}
-	refresh, _ := asset.Payload["refresh_token"].(string)
-	if strings.TrimSpace(refresh) == "" {
-		return false, nil
-	}
-
-	proxy := ""
-	if pool := proxyPoolFor(); len(pool) > 0 {
-		proxy = pool[0]
+	proxy := s.env.Get("REG_FACTORY_PRODUCTION_PROXY")
+	if value, exists := settings.DeploymentValue("REG_FACTORY_PRODUCTION_PROXY"); exists {
+		proxy = value
 	}
 	result := probe.OAuth(asset.Payload, proxy, 30*time.Second)
-
-	message := result.Message
-	if result.AccessToken != "" {
-		asset.Payload["access_token"] = result.AccessToken
-		if result.RefreshToken != "" {
-			asset.Payload["refresh_token"] = result.RefreshToken
-		}
-		asset.Payload["expires_in"] = result.ExpiresIn
-		_ = s.assets.Put(asset)
-	}
-	if err := s.st.MarkHealth(ref, result.Status, message); err != nil {
+	if err := s.st.MarkHealth(ref, result.Status, result.Message); err != nil {
 		return true, err
 	}
 	return true, nil
@@ -1234,16 +1296,61 @@ func (s *Server) accountRefresh(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_body", "detail": "需要 ref"})
 		return
 	}
-	flags := []string{}
-	if req.AllowRelogin {
-		flags = append(flags, "--allow-relogin")
-	}
-	id, err := s.submitAssetOp("refresh", req.Ref, req.Platform, flags...)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	if req.RequestID != "" && !taskRequestID.MatchString(req.RequestID) {
+		c.JSON(400, gin.H{"error": "invalid_request_id"})
 		return
 	}
-	c.JSON(http.StatusAccepted, gin.H{"ok": true, "task_id": id})
+	actor, _ := c.Get("actor")
+	task, created, err := s.queueAccountRefresh(req, toString(actor))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(404, gin.H{"error": "account_not_found"})
+			return
+		}
+		if errors.Is(err, store.ErrAccountOwned) {
+			c.JSON(409, gin.H{"error": "account_owned_by_core", "detail": "已领取账号通过主系统原任务刷新"})
+			return
+		}
+		if err.Error() == "task_request_conflict" {
+			c.JSON(409, gin.H{"error": "task_request_conflict"})
+			return
+		}
+		c.JSON(503, gin.H{"error": "refresh_acceptance_unavailable"})
+		return
+	}
+	if !created {
+		c.JSON(200, gin.H{"ok": true, "task_id": task.ID, "status": task.Status, "replayed": true})
+		return
+	}
+	s.run.Wake()
+	s.st.Audit(task.Actor, "account.refresh", task.ID, c.ClientIP())
+	c.JSON(http.StatusAccepted, gin.H{"ok": true, "task_id": task.ID, "status": "queued"})
+}
+
+// Conversion and repair share serialization, retained evidence and replay rules.
+// Only references enter task arguments; login secrets remain in the asset store.
+func (s *Server) queueAccountRefresh(req accountOpRequest, actor string) (store.Task, bool, error) {
+	account, err := s.st.GetAccount(req.Ref)
+	if err != nil {
+		return store.Task{}, false, err
+	}
+	argv := []string{"refresh", "--ref", req.Ref, "--platform", account.Platform}
+	title := "RT 刷新 · "
+	if req.AllowRelogin {
+		argv = append(argv, "--allow-relogin")
+		title = "凭据修复 · "
+	}
+	raw, _ := json.Marshal(argv)
+	task := store.Task{ID: "op-" + strconv.FormatInt(time.Now().UnixNano(), 36), Script: "asset_ops", Title: title + req.Ref, ArgsJSON: string(raw), Actor: actor}
+	if req.RequestID != "" {
+		task.ID = "request-" + req.RequestID
+	}
+	id, created, err := s.st.QueueAccountRefresh(task, req.Ref)
+	if err != nil {
+		return store.Task{}, false, err
+	}
+	task, err = s.st.GetTask(id)
+	return task, created, err
 }
 
 type outlookAuthRequest struct {
@@ -1366,15 +1473,17 @@ func (s *Server) configGet(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	groups := map[string][]settings.Entry{}
-	for _, entry := range entries {
-		name := groupOf(entry.Key)
-		groups[name] = append(groups[name], entry)
+	schema, schemaErr := settings.LoadConfigSchema(filepath.Join(s.cfg.AppRoot, "deploy", "config.schema.json"))
+	groups := settings.MergeConfig(schema, entries, groupOf)
+	schemaError := ""
+	if schemaErr != nil {
+		schemaError = "完整配置定义暂不可读，以下仅显示已保存配置；请重试或检查安装文件。"
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"path":   s.env.Path(),
-		"groups": groups,
-		"count":  len(entries),
+		"path":         s.env.Path(),
+		"groups":       groups,
+		"count":        len(entries),
+		"schema_error": schemaError,
 	})
 }
 

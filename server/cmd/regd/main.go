@@ -89,8 +89,6 @@ func main() {
 		log.Printf("[regd] IC 邮箱初始化失败（跳过该模块）: %v", err)
 	} else {
 		defer icApp.Close()
-		icApp.Register(router.Group("/api/apps/icmail"))
-		icApp.RegisterPublic(router.Group("/api/apps/icmail/public"))
 		icApp.Start(context.Background())
 		defer icApp.Stop()
 		log.Printf("[regd] IC 邮箱已挂载: /api/apps/icmail（db=%s）", icApp.DB.Path())
@@ -98,6 +96,9 @@ func main() {
 
 	apiServer := api.New(cfg, env, st, manager, authenticator, version, icApp)
 	apiServer.Register(router)
+	checkContext, stopChecks := context.WithCancel(context.Background())
+	checksDone := apiServer.StartCredentialChecks(checkContext)
+	defer stopChecks()
 	if synced, syncErr := apiServer.SeedAccounts(); syncErr != nil {
 		log.Printf("[regd] 账号主数据同步失败: %v", syncErr)
 	} else {
@@ -143,6 +144,8 @@ func main() {
 
 	<-stop
 	log.Printf("[regd] 收到退出信号，停止任务并关闭")
+	stopChecks()
+	<-checksDone
 	manager.Shutdown(context.Background())
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

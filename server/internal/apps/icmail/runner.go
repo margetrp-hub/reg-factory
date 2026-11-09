@@ -1,4 +1,4 @@
-﻿package icmail
+package icmail
 
 // Ingestion runner: one IMAP source, push first, poll as fallback.
 //
@@ -16,9 +16,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/emersion/go-imap/v2"
-	"github.com/emersion/go-imap/v2/imapclient"
 )
 
 const idleWindow = 25 * time.Minute
@@ -28,19 +25,18 @@ const recheckEvery = 15 * time.Second
 type Runner struct {
 	App  *App
 	Src  Source
-	Conn *Client
+	Conn mailClient
+	wake chan struct{}
 
-	aliasCache []string
-	aliasAt    time.Time
-	mu         sync.Mutex
-	lastError  string
-	lastOK     time.Time
-	lastIdle   time.Time
-	lastBatch  int
+	mu        sync.Mutex
+	lastError string
+	lastOK    time.Time
+	lastIdle  time.Time
+	lastBatch int
 }
 
 func (a *App) newRunner(src Source) *Runner {
-	return &Runner{App: a, Src: src}
+	return &Runner{App: a, Src: src, wake: make(chan struct{}, 1)}
 }
 
 // Serve runs until ctx is cancelled.
@@ -54,6 +50,7 @@ func (r *Runner) Serve(ctx context.Context) {
 		if backoff > 0 {
 			select {
 			case <-time.After(backoff):
+			case <-r.wake:
 			case <-ctx.Done():
 				r.close()
 				return
@@ -72,32 +69,61 @@ func (r *Runner) Serve(ctx context.Context) {
 	}
 }
 
+type mailClient interface {
+	Close() error
+	SupportsIdle() bool
+	UIDNext(context.Context) (uint32, error)
+	RecentUIDs(context.Context, uint32, int) ([]uint32, error)
+	Fetch(context.Context, []uint32) ([]Fetched, error)
+	WaitForMail(context.Context, time.Duration, time.Duration, <-chan struct{}) (bool, error)
+}
+
 func (r *Runner) tick(ctx context.Context) error {
-	client, err := r.ensureClient(ctx)
+	r.lastBatch = 0
+	job, err := r.App.DB.claimSync(r.Src.ID)
 	if err != nil {
 		return err
 	}
-	if r.Src.Idle && client.SupportsIdle() {
-		if err := r.catchUp(ctx, client); err != nil {
-			return err
-		}
-		_, err := client.WaitForMail(ctx, idleWindow, recheckEvery)
-		if err != nil {
-			// IDLE refused/dropped: fall back to a heartbeat, never fail the source.
-			select {
-			case <-time.After(time.Duration(r.heartbeat()) * time.Second):
-			case <-ctx.Done():
-			}
-			return r.catchUp(ctx, client)
-		}
-		return r.catchUp(ctx, client)
+	client, err := r.ensureClient(ctx)
+	if err == nil {
+		op, cancel := context.WithTimeout(ctx, 60*time.Second)
+		stop := context.AfterFunc(op, func() { _ = client.Close() })
+		err = r.catchUp(op, client)
+		stop()
+		cancel()
 	}
-
-	if err := r.catchUp(ctx, client); err != nil {
+	if job > 0 {
+		state, note := "completed", "同步完成"
+		if err != nil {
+			state, note = "failed", r.safeError(err)
+		}
+		if ctx.Err() != nil {
+			state, note = "interrupted", "同步被中断，已保存收信仍保留；可重新同步"
+		}
+		if errors.Is(err, ErrSourceChanged) {
+			state, note = "interrupted", err.Error()
+		}
+		if finishErr := r.App.DB.finishSync(job, state, note, r.lastBatch); finishErr != nil {
+			return finishErr
+		}
+	}
+	if err != nil {
+		return err
+	}
+	var pending int
+	if err = r.App.DB.db.QueryRow("SELECT count(*) FROM mail_sync_requests WHERE source_id=? AND state='pending'", r.Src.ID).Scan(&pending); err != nil {
+		return err
+	}
+	if pending > 0 {
+		return nil
+	}
+	if r.Src.Idle && client.SupportsIdle() {
+		_, err = client.WaitForMail(ctx, idleWindow, recheckEvery, r.wake)
 		return err
 	}
 	select {
 	case <-time.After(time.Duration(r.heartbeat()) * time.Second):
+	case <-r.wake:
 	case <-ctx.Done():
 	}
 	return nil
@@ -110,11 +136,15 @@ func (r *Runner) heartbeat() int {
 	return 60
 }
 
-func (r *Runner) ensureClient(ctx context.Context) (*Client, error) {
+func (r *Runner) ensureClient(ctx context.Context) (mailClient, error) {
 	if r.Conn != nil {
 		return r.Conn, nil
 	}
-	client, err := Dial(ctx, r.Src)
+	dial := r.App.dial
+	if dial == nil {
+		dial = func(ctx context.Context, src Source) (mailClient, error) { return Dial(ctx, src) }
+	}
+	client, err := dial(ctx, r.Src)
 	if err != nil {
 		return nil, err
 	}
@@ -130,14 +160,14 @@ func (r *Runner) close() {
 }
 
 // catchUp indexes everything past the cursor.
-func (r *Runner) catchUp(ctx context.Context, client *Client) error {
+func (r *Runner) catchUp(ctx context.Context, client mailClient) error {
+	r.lastBatch = 0
 	uidNext, err := client.UIDNext(ctx)
 	if err != nil {
 		return err
 	}
 	if uidNext > 0 && uidNext-1 <= r.Src.LastUID {
-		r.markOK(0)
-		return nil
+		return r.markOK(0)
 	}
 
 	uids, err := client.RecentUIDs(ctx, r.Src.LastUID, r.App.Cfg.BootstrapLimit)
@@ -145,8 +175,7 @@ func (r *Runner) catchUp(ctx context.Context, client *Client) error {
 		return err
 	}
 	if len(uids) == 0 {
-		r.markOK(0)
-		return nil
+		return r.markOK(0)
 	}
 
 	chunk := r.App.Cfg.FetchChunk
@@ -155,6 +184,10 @@ func (r *Runner) catchUp(ctx context.Context, client *Client) error {
 	}
 	stored := 0
 	highest := r.Src.LastUID
+	aliases, err := r.App.DB.SourceAliases(r.Src.ID)
+	if err != nil {
+		return err
+	}
 	for start := 0; start < len(uids); start += chunk {
 		end := start + chunk
 		if end > len(uids) {
@@ -168,10 +201,11 @@ func (r *Runner) catchUp(ctx context.Context, client *Client) error {
 			decoded := Parse(msg.Body)
 			verdict := Classify(decoded.Subject, decoded.From, decoded.Text)
 			rec := MessageRecord{
+				Recipients: decoded.Recipients,
 				Mailbox:    r.Src.Folder,
 				UID:        itoa(msg.UID),
 				SourceID:   r.Src.ID,
-				AliasHME:   matchAlias(decoded.Recipients, r.aliasSet()),
+				AliasHME:   matchAlias(decoded.Recipients, aliases),
 				FromAddr:   decoded.From,
 				ToHeader:   decoded.To,
 				Subject:    decoded.Subject,
@@ -186,7 +220,7 @@ func (r *Runner) catchUp(ctx context.Context, client *Client) error {
 				ts := float64(decoded.SentAt.Unix())
 				rec.SentAt = &ts
 			}
-			isNew, err := r.App.DB.StoreMessage(rec)
+			isNew, err := r.App.DB.StoreSourceMessage(r.Src, rec)
 			if err != nil {
 				return err
 			}
@@ -197,30 +231,19 @@ func (r *Runner) catchUp(ctx context.Context, client *Client) error {
 			}
 			if isNew {
 				stored++
+				r.lastBatch = stored
 			}
 		}
 	}
 
-	r.Src.LastUID = highest
-	if err := r.App.DB.Cursor(r.Src.ID, &highest, timePtr(time.Now()), ""); err != nil {
+	if err := r.App.DB.Cursor(r.Src, &highest, timePtr(time.Now()), ""); err != nil {
 		return err
 	}
+	r.Src.LastUID = highest
 	if r.App.Cfg.RetentionDays > 0 {
 		_ = r.App.DB.PruneOlderThan(r.App.Cfg.RetentionDays)
 	}
-	r.markOK(stored)
-	return nil
-}
-
-func (r *Runner) aliasSet() []string {
-	if r.aliasCache != nil && time.Since(r.aliasAt) < time.Minute {
-		return r.aliasCache
-	}
-	// reg-factory has no mailbox table of its own; aliases are optional here, so
-	// an empty set simply means "no alias attribution".
-	r.aliasCache = []string{}
-	r.aliasAt = time.Now()
-	return r.aliasCache
+	return r.markOK(stored)
 }
 
 func matchAlias(recipients, aliases []string) string {
@@ -239,19 +262,23 @@ func matchAlias(recipients, aliases []string) string {
 	return ""
 }
 
-func (r *Runner) markOK(batch int) {
+func (r *Runner) markOK(batch int) error {
+	if err := r.App.DB.Cursor(r.Src, nil, timePtr(time.Now()), ""); err != nil {
+		return err
+	}
 	r.mu.Lock()
 	r.lastOK = time.Now()
 	r.lastError = ""
 	r.lastBatch = batch
 	r.mu.Unlock()
+	return nil
 }
 
 func (r *Runner) recordError(err error) {
 	r.mu.Lock()
-	r.lastError = err.Error()
+	r.lastError = r.safeError(err)
 	r.mu.Unlock()
-	_ = r.App.DB.Cursor(r.Src.ID, nil, nil, err.Error())
+	_ = r.App.DB.Cursor(r.Src, nil, nil, r.safeError(err))
 }
 
 func timePtr(t time.Time) *time.Time { return &t }
@@ -270,28 +297,109 @@ func itoa(uid uint32) string {
 	return string(buf[i:])
 }
 
-var errNoSource = errors.New("no enabled mail source")
-
-// RunSources keeps one runner per enabled source until ctx is cancelled.
-func (a *App) RunSources(ctx context.Context) {
-	sources, err := a.DB.ListSources(true)
-	if err != nil {
-		return
+func (r *Runner) safeError(err error) string {
+	if err == nil {
+		return ""
 	}
-	if len(sources) == 0 {
-		<-ctx.Done()
-		return
+	message := err.Error()
+	if r.Src.Password != "" {
+		message = strings.ReplaceAll(message, r.Src.Password, "[redacted]")
 	}
-	var wg sync.WaitGroup
-	for _, src := range sources {
-		wg.Add(1)
-		go func(s Source) {
-			defer wg.Done()
-			a.newRunner(s).Serve(ctx)
-		}(src)
+	if len(message) > 400 {
+		message = message[:400]
 	}
-	wg.Wait()
+	return message
 }
 
-var _ = imap.CapIdle
-var _ = imapclient.DialTLS
+type managedRunner struct {
+	runner *Runner
+	source Source
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
+func sameSource(a, b Source) bool {
+	return a.Host == b.Host && a.Port == b.Port && a.Username == b.Username && a.Password == b.Password && a.Folder == b.Folder && a.Idle == b.Idle && a.IntervalSeconds == b.IntervalSeconds && a.HeartbeatSeconds == b.HeartbeatSeconds
+}
+
+func (a *App) notifySources() {
+	select {
+	case a.changed <- struct{}{}:
+	default:
+	}
+}
+
+func (a *App) sourceRuntime(src Source) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !src.Enabled {
+		return "paused"
+	}
+	if active := a.runners[src.ID]; active != nil && sameSource(src, active.source) {
+		return "running"
+	}
+	return "starting"
+}
+
+// Source updates cancel and join the previous worker before opening a replacement.
+func (a *App) RunSources(ctx context.Context) {
+	_ = a.DB.recoverSync()
+	active := map[int64]*managedRunner{}
+	defer func() {
+		for _, worker := range active {
+			worker.cancel()
+		}
+		for _, worker := range active {
+			<-worker.done
+		}
+		a.mu.Lock()
+		a.runners = map[int64]*managedRunner{}
+		a.mu.Unlock()
+	}()
+	timer := time.NewTicker(time.Second)
+	defer timer.Stop()
+	for {
+		sources, err := a.DB.ListSources(true)
+		if err == nil {
+			desired := map[int64]Source{}
+			for _, src := range sources {
+				desired[src.ID] = src
+			}
+			for id, worker := range active {
+				src, exists := desired[id]
+				if !exists || !sameSource(src, worker.source) {
+					worker.cancel()
+					<-worker.done
+					delete(active, id)
+				}
+			}
+			for id, src := range desired {
+				if active[id] == nil {
+					runCtx, cancel := context.WithCancel(ctx)
+					worker := &managedRunner{runner: a.newRunner(src), source: src, cancel: cancel, done: make(chan struct{})}
+					active[id] = worker
+					go func() { defer close(worker.done); worker.runner.Serve(runCtx) }()
+				}
+			}
+			a.mu.Lock()
+			a.runners = map[int64]*managedRunner{}
+			for id, worker := range active {
+				a.runners[id] = worker
+			}
+			a.mu.Unlock()
+			_ = a.DB.cancelUnavailableSync()
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		case <-a.changed:
+			for _, worker := range active {
+				select {
+				case worker.runner.wake <- struct{}{}:
+				default:
+				}
+			}
+		}
+	}
+}

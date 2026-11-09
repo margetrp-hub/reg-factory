@@ -1,0 +1,74 @@
+{
+  "groups": [
+    {
+      "slug": "pipeline",
+      "title": "组合流程",
+      "desc": "从新邮箱或已有邮箱开始，选择平台并串联后续授权与导出。"
+    },
+    {
+      "slug": "register",
+      "title": "注册",
+      "desc": "各平台和邮箱的注册模式。"
+    },
+    {
+      "slug": "authorize",
+      "title": "授权",
+      "desc": "已有账号的授权、凭据转换与导入。"
+    },
+    {
+      "slug": "data",
+      "title": "导出与上传",
+      "desc": "保留原资产，按目标服务格式导出或上传。"
+    },
+    {
+      "slug": "helper",
+      "title": "辅助服务",
+      "desc": "取码等独立运行的支撑能力。"
+    },
+    {
+      "slug": "other",
+      "title": "其他能力",
+      "desc": "完整展示尚未分类的已注册任务。"
+    }
+  ],
+  "platforms": [
+    {
+      "slug": "claude",
+      "name": "Claude"
+    },
+    {
+      "slug": "chatgpt",
+      "name": "ChatGPT"
+    },
+    {
+      "slug": "grok",
+      "name": "Grok"
+    },
+    {
+      "slug": "outlook",
+      "name": "Outlook"
+    },
+    {
+      "slug": "kiro",
+      "name": "Kiro"
+    },
+    {
+      "slug": "github",
+      "name": "GitHub"
+    }
+  ],
+  "tools": [
+    {
+      "id": "download_clash_verge",
+      "title": "下载 Clash Verge 2.5.2",
+      "url": "https://github.com/clash-verge-rev/clash-verge-rev/releases/download/v2.5.2/Clash.Verge_2.5.2_x64-setup.exe",
+      "desc": "Windows x64 安装包"
+    },
+    {
+      "id": "download_bitbrowser",
+      "title": "下载 BitBrowser",
+      "url": "https://www.bitbrowser.cn/download",
+      "desc": "BitBrowser 官方下载页"
+    }
+  ]
+}

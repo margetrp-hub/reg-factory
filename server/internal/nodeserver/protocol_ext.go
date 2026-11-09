@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"strings"
 	"time"
 )
 
@@ -83,6 +84,43 @@ func receiptSafe(full map[string]any) map[string]any {
 	return safe
 }
 
+// Only new structured outcomes carry a public reason. Historical receipts keep
+// their original generic code and digest when polled after an upgrade.
+func (h *Handler) refreshFailureCode(taskID string) string {
+	const fallback = "WORK_ACCOUNT_REFRESH_FAILED"
+	if h.st == nil || taskID == "" {
+		return fallback
+	}
+	events, err := h.st.TailEvents(taskID, 100)
+	if err != nil {
+		return fallback
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		var result struct {
+			Result string `json:"result"`
+			Code   string `json:"error_code"`
+			Schema string `json:"error_schema"`
+		}
+		if events[i].Stream != "stdout" || json.Unmarshal([]byte(events[i].Line), &result) != nil || result.Result != "failed" {
+			continue
+		}
+		if result.Schema != "account.failure.v1" {
+			return fallback
+		}
+		switch result.Code {
+		case "mfa_totp_verification_failed", "mfa_challenge_rejected", "mfa_totp_secret_required",
+			"mfa_totp_factor_not_available", "mfa_primary_factor_required", "mfa_totp_code_unavailable",
+			"invalid_username_or_password", "rate_limit_exceeded", "oauth_tls_handshake_failed",
+			"oauth_certificate_verification_failed", "oauth_network_timeout", "oauth_network_unavailable",
+			"oauth_login_check_http_error", "oauth_login_check_invalid_response":
+			return "WORK_ACCOUNT_" + strings.ToUpper(result.Code)
+		default:
+			return fallback
+		}
+	}
+	return fallback
+}
+
 // ReceiptFor 生成 account-node.receipt.v1。
 func (h *Handler) ReceiptFor(verified *Verified, nodeTaskID, nodeStatus string, exitCode int, key []byte, now time.Time) (map[string]any, error) {
 	if verified.Action == productionAction {
@@ -105,7 +143,7 @@ func (h *Handler) ReceiptFor(verified *Verified, nodeTaskID, nodeStatus string, 
 		full["error_code"] = "WORK_ACCOUNT_REFRESH_UNKNOWN"
 	}
 	if workStatus == "failed" && (verified.Action == "account.authorize" || verified.Action == "account.refresh") {
-		full["error_code"] = "WORK_ACCOUNT_REFRESH_FAILED"
+		full["error_code"] = h.refreshFailureCode(nodeTaskID)
 	}
 	var resultAccountID any
 	var resultResourceVersion any

@@ -103,6 +103,8 @@ PHONE_FAILURES = {
 PHONE_MESSAGE = "该账号被要求手机号验证｜本站不提供手机号，请换其他方式处理"
 
 ERROR_HINTS = {
+    "mfa_totp_verification_failed": "账号两步验证未通过，请核对当前有效的 2FA 资料",
+    "mfa_challenge_rejected": "账号两步验证请求被拒绝，请核对登录验证方式",
     "oauth_tls_handshake_failed": "登录校验连接的 TLS 握手失败，网络重试已用尽",
     "oauth_certificate_verification_failed": "登录校验连接的证书验证失败，请检查出口证书",
     "oauth_network_timeout": "登录校验连接超时，网络重试已用尽",

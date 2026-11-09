@@ -1,11 +1,31 @@
 package runner
 
 import (
+	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/tiantianGPU/reg-factory/server/internal/settings"
 	"github.com/tiantianGPU/reg-factory/server/internal/store"
 )
+
+func TestRealExportSchemaPreservesCLIFlags(t *testing.T) {
+	root, err := filepath.Abs("../../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &settings.Settings{AppRoot: root, Python: "python"}
+	argv, err := BuildArgv(cfg, store.Task{Script: "export_accounts", ArgsJSON: `{"--platform":"all","--format":"accounts"}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(argv[3:], []string{"--platform", "all", "--format", "accounts"}) {
+		t.Fatal(argv)
+	}
+	if _, err := BuildArgv(cfg, store.Task{Script: "export_accounts", ArgsJSON: `{"--platform":"not-a-platform"}`}); err == nil {
+		t.Fatal("invalid positional platform accepted")
+	}
+}
 
 func testScripts() []Script {
 	return []Script{{
@@ -40,7 +60,7 @@ func TestNormalizeArgsAcceptsBareAndFlagKeys(t *testing.T) {
 func TestNormalizeArgsDropsUnknownKeys(t *testing.T) {
 	list := testScripts()
 	out, err := NormalizeArgs(list, "export_accounts", map[string]any{
-		"platform": "claude",
+		"platform":       "claude",
 		"evil; rm -rf /": "x",
 		"--exec":         "y",
 	})

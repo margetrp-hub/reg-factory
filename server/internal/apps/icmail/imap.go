@@ -1,4 +1,4 @@
-﻿// Package imapclient wraps go-imap/v2 with exactly the operations the indexer
+// Package imapclient wraps go-imap/v2 with exactly the operations the indexer
 // needs: UIDNEXT heartbeat, incremental UID search, batched header+body fetch
 // and a push-based IDLE wait.
 //
@@ -13,12 +13,11 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"net"
 	"time"
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
-
-
 )
 
 // HeaderFields is the projection fetched per message. Content-Type and
@@ -46,6 +45,7 @@ type Client struct {
 	mailbox string
 	updates chan uint32
 	caps    imap.CapSet
+	stop    func() bool
 }
 
 // Dial connects, logs in and selects the source's folder.
@@ -67,14 +67,30 @@ func Dial(ctx context.Context, src Source) (*Client, error) {
 	}
 
 	addr := src.Addr()
+	conn, err := (&net.Dialer{Timeout: 15 * time.Second}).DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("connect: %w", err)
+	}
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	ok := false
+	defer func() {
+		if !ok {
+			stop()
+			_ = conn.Close()
+		}
+	}()
+	_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
 	var (
 		raw *imapclient.Client
-		err error
 	)
 	if src.Port == 143 {
-		raw, err = imapclient.DialStartTLS(addr, opts)
+		raw, err = imapclient.NewStartTLS(conn, opts)
 	} else {
-		raw, err = imapclient.DialTLS(addr, opts)
+		tlsConn := tls.Client(conn, opts.TLSConfig)
+		err = tlsConn.HandshakeContext(ctx)
+		if err == nil {
+			raw = imapclient.New(tlsConn, opts)
+		}
 	}
 	if err != nil {
 		return nil, fmt.Errorf("dial %s: %w", addr, err)
@@ -94,7 +110,9 @@ func Dial(ctx context.Context, src Source) (*Client, error) {
 	}
 	_ = selectData
 
-	return &Client{c: raw, mailbox: folder, updates: updates, caps: raw.Caps()}, nil
+	_ = conn.SetDeadline(time.Time{})
+	ok = true
+	return &Client{c: raw, mailbox: folder, updates: updates, caps: raw.Caps(), stop: stop}, nil
 }
 
 // Close logs out and drops the socket.
@@ -102,7 +120,9 @@ func (c *Client) Close() error {
 	if c.c == nil {
 		return nil
 	}
-	_ = c.c.Logout().Wait()
+	if c.stop != nil {
+		c.stop()
+	}
 	return c.c.Close()
 }
 
@@ -194,7 +214,7 @@ func (c *Client) Fetch(ctx context.Context, uids []uint32) ([]Fetched, error) {
 // on a short tick and lets the caller re-check with STATUS(UIDNEXT). That keeps
 // worst-case detection bounded at the tick interval while the common case stays
 // push driven.
-func (c *Client) WaitForMail(ctx context.Context, idleFor, recheckEvery time.Duration) (bool, error) {
+func (c *Client) WaitForMail(ctx context.Context, idleFor, recheckEvery time.Duration, wake <-chan struct{}) (bool, error) {
 	if !c.SupportsIdle() {
 		return false, errors.New("server does not advertise IDLE")
 	}
@@ -219,6 +239,8 @@ loop:
 			break loop
 		case <-ticker.C:
 			break loop // let the caller verify with a cheap STATUS
+		case <-wake:
+			break loop
 		case <-timer.C:
 			break loop
 		case <-ctx.Done():
@@ -226,9 +248,17 @@ loop:
 		}
 	}
 
-	// Close ends IDLE and drains the tagged completion. Both calls may report a
-	// closed-connection error when ctx was cancelled; that is not a failure.
-	_ = idle.Close()
-	_ = idle.Wait()
-	return changed, nil
+	// A server that never acknowledges DONE must not stall manual sync or
+	// source reconfiguration indefinitely.
+	exitCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	stop := context.AfterFunc(exitCtx, func() { _ = c.Close() })
+	defer cancel()
+	defer stop()
+	if err := idle.Close(); err != nil {
+		return false, err
+	}
+	if err := idle.Wait(); err != nil {
+		return false, err
+	}
+	return changed, exitCtx.Err()
 }

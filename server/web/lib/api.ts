@@ -14,6 +14,8 @@ export type Script = {
   file: string;
   desc?: string;
   platform?: string;
+  platforms?: string[];
+  group?: string;
   category?: string;
   warning?: string;
   args?: ScriptArg[];
@@ -35,6 +37,15 @@ export type Task = {
 };
 
 export type LogEvent = { id: number; task_id: string; ts: string; stream: string; line: string };
+
+export type TaskPage = { tasks: Task[]; count: number; total: number; stats: Record<string, number>; limit: number; offset: number };
+export type CredentialCheckItem = { ordinal: number; ref: string; identity: string; status: string; message: string; checked_at: string; child_task_id: string; mode: "at" | "report"; can_refresh: boolean };
+export type CredentialCheckCounts = { total: number; checked: number; ok: number; needs_refresh: number; unknown: number; abnormal: number };
+export type CredentialCheckDetail = { task: Task; items: CredentialCheckItem[] };
+export type CredentialCheckHistory = { page: TaskPage; counts: Record<string, CredentialCheckCounts> };
+export type TaskFilter = { status?: string; q?: string; scripts?: string[]; offset?: number };
+export type AccountSummary = { platform: string; total: number; available: number; abnormal: number; unknown: number };
+export type ConfigEntry = { key: string; value: string; secret: boolean; line: number; label?: string; help?: string; type?: string; choices?: string[]; default?: unknown; apply?: string; readonly?: boolean; area?: string };
 
 export type SystemInfo = {
   version: string;
@@ -75,6 +86,7 @@ export type NodeCapabilities = {
 export type NodeReady = {
   ready: boolean;
   execution_ready: boolean;
+  action_readiness?: Record<string, {ready: boolean; error_code?: string; processing_owner?: string}>;
   runtime: { supported_actions: string[]; protocol_capabilities: string[] };
 };
 
@@ -117,9 +129,17 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit, options?: { noRedirect?: boolean }): Promise<T> {
+async function request<T>(path: string, init?: RequestInit, options?: { noRedirect?: boolean; timeoutMs?: number }): Promise<T> {
+  const controller = new AbortController();
+  let timedOut = false;
+  const abort = () => controller.abort();
+  init?.signal?.addEventListener("abort", abort, { once: true });
+  if (init?.signal?.aborted) abort();
+  const timer = setTimeout(() => { timedOut = true; abort(); }, options?.timeoutMs ?? 60000);
+  try {
   const response = await fetch(path, {
     ...init,
+    signal: controller.signal,
     headers: {
       "Content-Type": "application/json",
       ...(init?.headers || {}),
@@ -147,15 +167,38 @@ async function request<T>(path: string, init?: RequestInit, options?: { noRedire
       !path.startsWith("/api/session") &&
       !window.location.pathname.startsWith("/login")
     ) {
-      const next = encodeURIComponent(window.location.pathname);
+      const next = encodeURIComponent(window.location.pathname + window.location.search);
       window.location.href = `/login/?next=${next}`;
     }
     throw new ApiError(body.error || `HTTP ${response.status}`, response.status, body.detail);
   }
   return payload as T;
+  } catch (error) {
+    if (timedOut) throw new ApiError("请求超时，请核对原结果后重试", 408);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    init?.signal?.removeEventListener("abort", abort);
+  }
 }
 
 export const api = {
+  createCredentialCheck: (body: {request_id: string; platform: string; refs: string[]; parent_id?: string}) =>
+    request<{task_id: string; status: string}>("/api/accounts/checks", {method:"POST", body:JSON.stringify(body)}, {timeoutMs:20000}),
+  credentialChecks: (platform: string, action: string, status: string, offset: number, signal?: AbortSignal) =>
+    request<CredentialCheckHistory>(`/api/accounts/checks?${new URLSearchParams({platform,action,status,offset:String(offset)})}`, {signal}, {timeoutMs:20000}),
+  credentialCheck: (id: string, signal?: AbortSignal) =>
+    request<CredentialCheckDetail>(`/api/accounts/checks/${encodeURIComponent(id)}`, {signal}, {timeoutMs:20000}),
+  icMailHealth: async (signal?: AbortSignal) => {
+    const result = await request<{ok: boolean; data: {stats: {indexed: number; sources: number}}; error?: string}>("/api/apps/icmail/health", {signal});
+    if (!result.ok) throw new Error(result.error || "IC 索引读取失败");
+    return result.data;
+  },
+  icMailSources: async (signal?: AbortSignal) => {
+    const result = await request<{ok: boolean; data: {sources: {id: number; name: string; host: string; port: number; username: string; folder: string; enabled: boolean; lastUID: number}[]}; error?: string}>("/api/apps/icmail/sources", {signal});
+    if (!result.ok) throw new Error(result.error || "IC 源读取失败");
+    return result.data;
+  },
   productionControl: (id: string, action: "continue" | "stop") =>
     request<{ ok: boolean }>(`/api/tasks/${encodeURIComponent(id)}/production/${action}`, { method: "POST" }),
   session: () =>
@@ -165,21 +208,27 @@ export const api = {
   login: (username: string, password: string) =>
     request<{ ok: boolean }>("/api/login", { method: "POST", body: JSON.stringify({ username, password }) }),
   logout: () => request<{ ok: boolean }>("/api/logout", { method: "POST" }),
-  system: () => request<SystemInfo>("/api/system"),
-  nodeReady: () => request<NodeReady>("/ready"),
-  nodeCapabilities: () => request<NodeCapabilities>("/node/capabilities"),
+  system: (signal?: AbortSignal) => request<SystemInfo>("/api/system", { signal }),
+  nodeReady: (signal?: AbortSignal) => request<NodeReady>("/ready", {signal}),
+  nodeCapabilities: (signal?: AbortSignal) => request<NodeCapabilities>("/node/capabilities", {signal}),
   memory: () => request<{ current_mb: number; max_mb: number; used_pct: number }>("/api/memory"),
-  scripts: () => request<{ scripts: Script[]; count: number }>("/api/scripts"),
-  tasks: (limit = 100) => request<{ tasks: Task[]; count: number }>(`/api/tasks?limit=${limit}`),
-  task: (id: string) => request<Task>(`/api/tasks/${id}`),
-  createTask: (script: string, args: Record<string, unknown>) =>
+  scripts: (signal?: AbortSignal) => request<{ scripts: Script[]; count: number }>("/api/scripts", { signal }),
+  tasks: (limit = 100, filter: TaskFilter = {}, signal?: AbortSignal) => {
+    const params = new URLSearchParams({ limit: String(limit), offset: String(filter.offset || 0) });
+    if (filter.status) params.set("status", filter.status);
+    if (filter.q) params.set("q", filter.q);
+    for (const script of filter.scripts || []) params.append("script", script);
+    return request<TaskPage>(`/api/tasks?${params}`, { signal }, { timeoutMs: 20000 });
+  },
+  task: (id: string, signal?: AbortSignal) => request<Task>(`/api/tasks/${encodeURIComponent(id)}`, { signal }, { timeoutMs: 20000 }),
+  createTask: (script: string, args: Record<string, unknown>, request_id?: string) =>
     request<{ id: string; status: string; title: string }>("/api/tasks", {
       method: "POST",
-      body: JSON.stringify({ script, args }),
-    }),
-  stopTask: (id: string) => request<{ ok: boolean }>(`/api/tasks/${id}/stop`, { method: "POST" }),
+      body: JSON.stringify({ script, args, request_id }),
+    }, { timeoutMs: 20000 }),
+  stopTask: (id: string) => request<{ ok: boolean }>(`/api/tasks/${encodeURIComponent(id)}/stop`, { method: "POST" }),
   stopAll: () => request<{ ok: boolean; stopped: string[] }>("/api/tasks/stop-all", { method: "POST" }),
-  logs: (id: string, tail = 500) => request<{ events: LogEvent[] }>(`/api/tasks/${id}/logs?tail=${tail}`),
+  logs: (id: string, tail = 500) => request<{ events: LogEvent[] }>(`/api/tasks/${encodeURIComponent(id)}/logs?tail=${tail}`),
   assetSummary: () =>
     request<{ assets: { kind: string; total: number; claimed: number; available: number }[] }>("/api/assets"),
   assetList: (kind: string, limit = 200) =>
@@ -189,9 +238,9 @@ export const api = {
     request<{ ok: boolean; removed: number }>(`/api/assets/claims/reset?kind=${encodeURIComponent(kind)}`, {
       method: "POST",
     }),
-  config: () =>
-    request<{ path: string; groups: Record<string, { key: string; value: string; secret: boolean; line: number }[]> }>(
-      "/api/config",
+  config: (signal?: AbortSignal) =>
+    request<{ path: string; groups: Record<string, ConfigEntry[]>; schema_error?: string }>(
+      "/api/config", { signal },
     ),
   saveConfig: (updates: Record<string, string>) =>
     request<{ ok: boolean; changed: string[] }>("/api/config", { method: "PUT", body: JSON.stringify({ updates }) }),
@@ -214,15 +263,16 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ accounts, concurrency }),
     }),
-  accounts: (q: { kind?: string; platform?: string; status?: string; limit?: number } = {}) => {
+  accounts: (q: { kind?: string; platform?: string; status?: string; limit?: number; offset?: number } = {}, signal?: AbortSignal) => {
     const params = new URLSearchParams();
     if (q.kind) params.set("kind", q.kind);
     if (q.platform) params.set("platform", q.platform);
     if (q.status) params.set("status", q.status);
     params.set("limit", String(q.limit ?? 200));
-    return request<{ accounts: AccountRow[]; count: number }>(`/api/accounts?${params.toString()}`);
+    params.set("offset", String(q.offset ?? 0));
+    return request<{ accounts: AccountRow[]; count: number; total: number }>(`/api/accounts?${params.toString()}`, { signal });
   },
-  convertAccounts: (body: { refs: string[]; platform?: string }) =>
+  convertAccounts: (body: { refs: string[]; platform?: string; request_id?: string }) =>
     request<{ ok: boolean; queued: { ref: string; task_id: string; email: string }[]; skipped: { ref: string; reason: string }[] }>(
       "/api/accounts/convert",
       { method: "POST", body: JSON.stringify(body) },
@@ -251,20 +301,32 @@ export const api = {
   assetResults: (ref: string, query = "") => request<{items: {ref: string; email: string; kind: string; source: string; created_at?: string; result_sha256: string; is_current?: boolean}[]}>(`/api/assets/results?ref=${encodeURIComponent(ref)}&query=${encodeURIComponent(query)}`),
   accountDetail: (ref: string) =>
     request<{ account: AccountRow }>(`/api/accounts/detail?ref=${encodeURIComponent(ref)}`),
+  accountSummary: (platform = "", signal?: AbortSignal) => request<{ platforms: AccountSummary[] }>(`/api/accounts/summary?platform=${encodeURIComponent(platform)}`, { signal }),
   syncAccounts: () => request<{ ok: boolean; synced: number }>("/api/accounts/sync", { method: "POST" }),
   accountLiveness: (ref: string, platform: string, refreshScan = false) =>
-    request<{ ok: boolean; task_id: string }>("/api/accounts/liveness", {
+    request<{ ok: boolean; task_id?: string; status?: string; message?: string }>("/api/accounts/liveness", {
       method: "POST",
       body: JSON.stringify({ ref, platform, refresh_scan: refreshScan }),
     }),
-  accountRefresh: (ref: string, platform: string, allowRelogin = false) =>
+  accountRefresh: (ref: string, platform: string, allowRelogin = false, request_id?: string) =>
     request<{ ok: boolean; task_id: string }>("/api/accounts/refresh", {
       method: "POST",
-      body: JSON.stringify({ ref, platform, allow_relogin: allowRelogin }),
+      body: JSON.stringify({ ref, platform, allow_relogin: allowRelogin, request_id }),
     }),
+  accountRefreshDetail: (id: string, signal?: AbortSignal) => request<RefreshDetail>(`/api/accounts/refresh/${encodeURIComponent(id)}`,{signal}),
+  reconcileRefresh: (id: string) => request<RefreshDetail>(`/api/accounts/refresh/${encodeURIComponent(id)}/reconcile`,{method:"POST"}),
+  resolveRefresh: (id: string, reason: string) => request<RefreshDetail>(`/api/accounts/refresh/${encodeURIComponent(id)}/resolve`,{method:"POST",body:JSON.stringify({reason})}),
   audit: (limit = 200) => request<{ audit: { id: number; ts: string; actor: string; action: string; detail: string; ip: string }[] }>(`/api/audit?limit=${limit}`),
   proxyCheck: (proxy: string, url: string) =>
     request<{ ok: boolean; status?: number; ms?: number; title?: string; error?: string; proxy?: string }>(
       `/api/proxy/check?proxy=${encodeURIComponent(proxy)}&url=${encodeURIComponent(url)}`,
     ),
+};
+
+export type RefreshDetail = {
+  task: Task;
+  evidence: {ref: string; source_sha: string; result_sha: string; resolution: string};
+  can_reconcile: boolean;
+  can_resolve: boolean;
+  can_retry: boolean;
 };

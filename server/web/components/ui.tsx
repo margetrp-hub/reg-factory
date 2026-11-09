@@ -44,8 +44,10 @@ export function StatusBadge({ status }: { status: string }) {
   const map: Record<string, { tone: keyof typeof tones; text: string }> = {
     queued: { tone: "info", text: "排队" },
     running: { tone: "warn", text: "运行中" },
+    stopping: { tone: "warn", text: "停止中" },
     succeeded: { tone: "ok", text: "成功" },
-    completed: { tone: "ok", text: "成品核验完成" },
+    completed: { tone: "ok", text: "已完成" },
+    waiting_user: { tone: "warn", text: "待人工处理" },
     unknown: { tone: "warn", text: "等待核对" },
     cancelled: { tone: "neutral", text: "已取消" },
     failed: { tone: "bad", text: "失败" },
@@ -100,14 +102,19 @@ export function Toggle({
   checked,
   onChange,
   label,
+  ariaLabel,
 }: {
   checked: boolean;
   onChange: (next: boolean) => void;
   label?: string;
+  ariaLabel?: string;
 }) {
   return (
     <button
       type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={ariaLabel || label}
       onClick={() => onChange(!checked)}
       className={`inline-flex items-center gap-2 text-[13px] ${checked ? "text-primary-foreground" : "text-muted-foreground"}`}
     >
@@ -135,6 +142,10 @@ export function Spinner({ className = "" }: { className?: string }) {
   );
 }
 
+export function EntryArrow() {
+  return <svg aria-hidden="true" className="sg-entry-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round"><path d="M7 17 17 7M7 7h10v10" /></svg>;
+}
+
 export function Empty({ children }: { children: ReactNode }) {
   return (
     <div className="rounded-lg border border-dashed border-border px-4 py-8 text-center text-[13px] text-muted-foreground">
@@ -146,7 +157,7 @@ export function Empty({ children }: { children: ReactNode }) {
 export function ErrorNote({ message }: { message?: string | null }) {
   if (!message) return null;
   return (
-    <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-[12px] text-destructive">
+    <div role="alert" className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-[12px] text-destructive">
       {message}
     </div>
   );

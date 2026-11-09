@@ -1,575 +1,194 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Badge, Card, Empty, Stat, timeAgo } from "@/components/ui";
+import { api, AccountRow } from "@/lib/api";
+import { Badge, Empty, ErrorNote, StatusBadge } from "@/components/ui";
 import { Drawer } from "@/components/drawer";
+import { ConfigEditor } from "@/components/config-editor";
+import { CodeLookup, ImportMailboxes, MailActionConfirm, MailboxEditor, PendingMailSync, PruneMail, SourceEditor, SourceSelect, SYNC_STORAGE_KEY, SyncMail } from "@/components/icmail-forms";
+import { MAIL_STATES, MAIL_TAGS, Mailbox, MailConfig, MailMessage, MailRun, MailSource, mailRequest, mailTime, mailTone, useMailData } from "@/lib/icmail";
 
-const BASE = "/api/apps/icmail";
-
-type Stats = { indexed: number; lastUid: number; sources: number; byTag: Record<string, number> };
-type SourceRow = {
-  id: number; name: string; host: string; port: number; username: string; folder: string;
-  enabled: boolean; idle: boolean; intervalSeconds: number; heartbeatSeconds: number;
-  lastUID: number; passwordSet: boolean; password?: string;
-};
-type AliasRow = { hme: string; state: string; manual: boolean; total: number; riskHits: number; lastTag: string; lastTs: number };
-type MessageRow = { uid: string; subject: string; from: string; to?: string; primaryTag: string; alias: string; sentAt: number; text?: string };
-type ConfigSnap = {
-  dbPath: string; retentionDays: number; bootstrapLimit: number; fetchChunk: number; adminKeySet: boolean;
-  turnstile: { siteKey: string; secretSet: boolean; expectedHostname: string; verifyURL: string };
-  imap: { hostEnvSet: boolean; userEnvSet: boolean; passEnvSet: boolean; folder: string; intervalSec: number; heartbeatSec: number };
-  sources: SourceRow[];
-};
-
-type Tab = "overview" | "sources" | "aliases" | "messages";
-
-async function call<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(BASE + path, {
-    credentials: "same-origin",
-    headers: { "content-type": "application/json" },
-    ...init,
-  });
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok || body.ok === false) {
-    throw new Error(body?.error?.message || body?.error?.code || `HTTP ${res.status}`);
-  }
-  return body.data as T;
-}
-
-const TAG_TONE: Record<string, "ok" | "warn" | "bad" | "info" | "neutral"> = {
-  otp: "info", risk: "bad", banned: "bad", payment: "warn", promo: "neutral", other: "neutral",
-};
-
-const TABS: { id: Tab; label: string; href: string }[] = [
-  { id: "overview", label: "概览", href: "/apps/icmail/" },
-  { id: "sources", label: "源", href: "/apps/icmail/sources/" },
-  { id: "aliases", label: "别名", href: "/apps/icmail/aliases/" },
-  { id: "messages", label: "邮件", href: "/apps/icmail/messages/" },
+type Tab = "pool" | "overview" | "aliases" | "sources" | "messages" | "runs" | "settings";
+const PAGES = [
+  { id: "pool", label: "邮箱池", href: "/apps/icmail/", description: "管理邮箱地址、收件来源与取码状态。" },
+  { id: "sources", label: "收件来源", href: "/apps/icmail/sources/", description: "连接收件箱，自动索引新邮件；配置保存后自动应用。" },
+  { id: "messages", label: "收信与取码", href: "/apps/icmail/messages/", description: "按邮箱精确查信，查看分类、正文与验证码。" },
+  { id: "runs", label: "同步记录", href: "/apps/icmail/runs/", description: "查看每次手工同步的进度与结果，处理失败或中断。" },
+  { id: "settings", label: "邮箱设置", href: "/apps/icmail/settings/", description: "集中管理各类邮箱连接、公开取码与保留设置。" },
 ];
 
-const EMPTY_SOURCE = { name: "", host: "", port: 993, username: "", password: "", folder: "INBOX" };
+function MailIcon() {
+  return <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.4" className="h-6 w-6"><rect x="3" y="5" width="18" height="14" rx="3" /><path d="m4 7 6.4 5a2.6 2.6 0 0 0 3.2 0L20 7" /></svg>;
+}
+function PageFooter({ total, offset, setOffset }: { total?: number; offset: number; setOffset: (value: number) => void }) {
+  return <footer className="sg-task-footer"><span>{total === undefined ? "正在读取…" : total ? `${offset + 1}–${Math.min(offset + 25, total)} / ${total}` : "0 条记录"}</span><div className="flex gap-2"><button className="btn-ghost" disabled={!offset} onClick={() => setOffset(Math.max(0, offset - 25))}>上一页</button><button className="btn-ghost" disabled={total === undefined || offset + 25 >= total} onClick={() => setOffset(offset + 25)}>下一页</button></div></footer>;
+}
+function ListEmpty({ loading, error, hasData, children }: { loading: boolean; error: string; hasData: boolean; children: string }) {
+  return <Empty>{loading && !hasData ? "正在读取…" : error && !hasData ? "尚未读取到记录，请重试。" : children}</Empty>;
+}
+function Count({ total, loading }: { total?: number; loading?: boolean }) {
+  return <span className="sg-description tabular-nums" aria-live="polite">{total === undefined ? "读取中…" : `共 ${total} 条`}{loading && total !== undefined ? " · 刷新中" : ""}</span>;
+}
 
 export function IcmailView({ tab }: { tab: Tab }) {
-  const [stats, setStats] = useState<Stats | null>(null);
-  const [config, setConfig] = useState<ConfigSnap | null>(null);
-  const [aliases, setAliases] = useState<AliasRow[]>([]);
-  const [messages, setMessages] = useState<MessageRow[]>([]);
-  const [tag, setTag] = useState("");
-  const [error, setError] = useState("");
+  const active = tab === "overview" || tab === "aliases" ? "pool" : tab;
+  const page = PAGES.find(item => item.id === active)!;
+  const [refresh, setRefresh] = useState(0);
   const [notice, setNotice] = useState("");
-  const [busy, setBusy] = useState("");
-  const [codeEmail, setCodeEmail] = useState("");
-  const [codeResult, setCodeResult] = useState<{ code?: string; email?: string; ageSeconds?: number; scanned?: number } | null>(null);
-  const [newSource, setNewSource] = useState(EMPTY_SOURCE);
-  const [openMsg, setOpenMsg] = useState<MessageRow | null>(null);
-  const [editSource, setEditSource] = useState<SourceRow | null>(null);
-  const [draft, setDraft] = useState<SourceRow | null>(null);
-
-  const load = useCallback(async () => {
-    try {
-      const [health, cfg, aliasData, msgData] = await Promise.all([
-        fetch(`${BASE}/health`, { credentials: "same-origin" }).then((r) => r.json()).catch(() => null),
-        call<ConfigSnap>("/config"),
-        call<{ aliases: AliasRow[] }>("/aliases"),
-        call<{ messages: MessageRow[] }>(`/messages?limit=60${tag ? `&tag=${tag}` : ""}`),
-      ]);
-      if (health?.ok) setStats(health.data.stats);
-      setConfig(cfg);
-      setAliases(aliasData.aliases || []);
-      setMessages(msgData.messages || []);
-      setError("");
-    } catch (err) {
-      setError((err as Error).message);
-    }
-  }, [tag]);
-
+  const [sync, setSync] = useState<number | null>(null);
+  const [pending, setPending] = useState<PendingMailSync | null>(null);
+  const sourceData = useMailData<{ sources: MailSource[] }>("/sources", refresh);
+  const sources = sourceData.data?.sources || [];
   useEffect(() => {
-    load();
-    const timer = setInterval(load, 25000);
-    return () => clearInterval(timer);
-  }, [load]);
-
-  const act = async (label: string, fn: () => Promise<unknown>) => {
-    setBusy(label);
-    setNotice("");
-    setError("");
     try {
-      await fn();
-      setNotice(`${label} 完成`);
-      await load();
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setBusy("");
-    }
-  };
+      const saved = JSON.parse(sessionStorage.getItem(SYNC_STORAGE_KEY) || "null");
+      if (saved && typeof saved.request_id === "string" && Number.isInteger(saved.source_id)) setPending(saved);
+    } catch { /* No persisted pending request. */ }
+  }, []);
+  const reload = () => setRefresh(n => n + 1);
+  const saved = (message = "设置已保存。") => { setNotice(message); reload(); };
+  return <div className="sg-workspace sg-mail-workspace">
+    <header className="sg-page-head"><div className="flex items-center gap-4"><span className="sg-mail-emblem"><MailIcon /></span><div><p className="sg-eyebrow">供给 · 邮箱</p><h1>邮箱池管理</h1><p className="sg-description">{page.description}</p></div></div><button className="btn-ghost" onClick={reload}>刷新</button></header>
+    <nav aria-label="邮箱池工作区" className="sg-account-nav sg-mail-nav">{PAGES.map(item => <Link key={item.id} href={item.href} aria-current={active === item.id ? "page" : undefined}>{item.label}</Link>)}</nav>
+    <ErrorNote message={sourceData.error} />
+    {notice && <p className="sg-mail-notice" role="status">{notice}</p>}
+    {pending && <div className="sg-mail-recovery"><div><strong className="text-sm">有一项同步请求尚未确认</strong><p className="sg-description">原请求编号已保留，可以核对受理结果。</p></div><button className="btn-ghost" onClick={() => setSync(pending.source_id)}>核对原请求</button></div>}
+    {active === "pool" && <PoolPage sources={sources} refresh={refresh} onSaved={saved} />}
+    {active === "sources" && <SourcesPage sources={sources} loading={sourceData.loading} loaded={!!sourceData.data} error={sourceData.error} onSaved={saved} onSync={setSync} />}
+    {active === "messages" && <MessagesPage sources={sources} refresh={refresh} onSaved={saved} />}
+    {active === "runs" && <RunsPage sources={sources} refresh={refresh} onSync={setSync} />}
+    {active === "settings" && <MailSettings refresh={refresh} />}
+    {sync !== null && <SyncMail sources={sources} sourceId={sync} pending={pending} onPending={setPending} onClose={() => setSync(null)} />}
+  </div>;
+}
 
-  const toggleSource = (row: SourceRow) =>
-    act(row.enabled ? "停用源" : "启用源", () =>
-      call(`/sources/${row.id}/toggle`, { method: "POST", body: JSON.stringify({ enabled: !row.enabled }) }));
-  const removeSource = (row: SourceRow) => act("删除源", () => call(`/sources/${row.id}`, { method: "DELETE" }));
-  const addSource = () =>
-    act("新增源", () =>
-      call("/sources", { method: "POST", body: JSON.stringify({ ...newSource, enabled: true, idle: true }) })
-        .then(() => setNewSource(EMPTY_SOURCE)));
-  const setAliasState = (row: AliasRow, state: string) =>
-    act("更新别名状态", () => call("/aliases/state", { method: "POST", body: JSON.stringify({ hme: row.hme, state }) }));
-  const sync = () => act("触发同步", () => call("/sync", { method: "POST", body: JSON.stringify({}) }));
-  const prune = () => act("清理旧邮件", () => call(`/prune?days=${config?.retentionDays || 90}`));
-  const lookupCode = async () => {
-    if (!codeEmail.trim()) return;
-    setBusy("查码");
-    setError("");
-    try {
-      setCodeResult(await call(`/code?email=${encodeURIComponent(codeEmail.trim())}`));
-    } catch (err) {
-      setError((err as Error).message);
-      setCodeResult(null);
-    } finally {
-      setBusy("");
-    }
-  };
+function PoolPage({ sources, refresh, onSaved }: { sources: MailSource[]; refresh: number; onSaved: (message?: string) => void }) {
+  const [kind, setKind] = useState("ic");
+  const [query, setQuery] = useState("");
+  const [state, setState] = useState("");
+  const [source, setSource] = useState(0);
+  const [offset, setOffset] = useState(0);
+  const [importing, setImporting] = useState(false);
+  const [edit, setEdit] = useState<Mailbox | null>(null);
+  const [code, setCode] = useState<string | null>(null);
+  useEffect(() => { const p = new URLSearchParams(window.location.search); setSource(Number(p.get("source") || 0)); setQuery(p.get("q") || ""); if (["outlook", "emails"].includes(p.get("pool") || "")) setKind(p.get("pool")!); }, []);
+  const changeKind = (value: string) => { setKind(value); setOffset(0); const url = new URL(window.location.href); url.searchParams.set("pool", value); window.history.replaceState(null, "", url); };
+  return <>
+    <div className="sg-mail-typebar"><div className="sg-mail-segments" role="group" aria-label="邮箱池类型">{[["ic", "IC 地址池"], ["outlook", "Outlook"], ["emails", "通用邮箱"]].map(([key, label]) => <button key={key} aria-pressed={kind === key} onClick={() => changeKind(key)}>{label}</button>)}</div><p className="sg-description">{kind === "ic" ? "先登记地址，再自动收信" : "沿用原账号记录与凭据"}</p></div>
+    {kind === "ic" ? <ICAddresses sources={sources} refresh={refresh} query={query} state={state} source={source} offset={offset} onQuery={v => { setQuery(v); setOffset(0); }} onState={v => { setState(v); setOffset(0); }} onSource={v => { setSource(v); setOffset(0); }} setOffset={setOffset} onImport={() => setImporting(true)} onEdit={setEdit} onCode={setCode} /> : <AccountMailPool key={kind} kind={kind} refresh={refresh} />}
+    {importing && <ImportMailboxes sources={sources} onClose={() => setImporting(false)} onSaved={onSaved} />}
+    {edit && <MailboxEditor mailbox={edit} sources={sources} onClose={() => setEdit(null)} onSaved={() => onSaved()} />}
+    {code !== null && <CodeLookup email={code} onClose={() => setCode(null)} />}
+  </>;
+}
 
-  const tagCounts = stats?.byTag || {};
-  const flow = useMemo(
-    () => [
-      { id: "source", title: "① IMAP 源", ready: (config?.sources?.filter((s) => s.enabled).length ?? 0) > 0, text: `${config?.sources?.filter((s) => s.enabled).length ?? 0} 个启用` },
-      { id: "index", title: "② 索引", ready: (stats?.indexed ?? 0) > 0, text: `${stats?.indexed ?? 0} 封` },
-      { id: "classify", title: "③ 分类", ready: Object.keys(tagCounts).length > 0, text: `${Object.keys(tagCounts).length} 类` },
-      { id: "lookup", title: "④ 取码", ready: true, text: "管理端直读" },
-    ],
-    [config, stats, tagCounts],
-  );
+function ICAddresses({ sources, refresh, query, state, source, offset, onQuery, onState, onSource, setOffset, onImport, onEdit, onCode }: { sources: MailSource[]; refresh: number; query: string; state: string; source: number; offset: number; onQuery: (v: string) => void; onState: (v: string) => void; onSource: (v: number) => void; setOffset: (v: number) => void; onImport: () => void; onEdit: (v: Mailbox) => void; onCode: (v: string) => void }) {
+  const [search, setSearch] = useState(query);
+  useEffect(() => setSearch(query), [query]);
+  const params = new URLSearchParams({ q: query, state, source_id: String(source), limit: "25", offset: String(offset) });
+  const { data, error, loading } = useMailData<{ items: Mailbox[]; total: number }>(`/pool?${params}`, refresh);
+  useEffect(() => { if (data && offset > 0 && offset >= data.total) setOffset(Math.max(0, Math.ceil(data.total / 25) - 1) * 25); }, [data, offset, setOffset]);
+  return <section className="sg-task-surface">
+    <header className="sg-task-toolbar"><h2 className="text-sm font-semibold">IC 地址池</h2><Count total={data?.total} loading={loading} /><div className="sg-mail-actions"><button className="btn-ghost" onClick={() => onCode("")}>查验证码</button><button className="btn-primary" onClick={onImport}>导入地址</button></div></header>
+    <form className="sg-mail-filters" onSubmit={e => { e.preventDefault(); onQuery(search.trim()); }} onKeyDown={e => { if (e.key === "Enter" && e.nativeEvent.isComposing) e.preventDefault(); }}>
+      <input className="field" aria-label="搜索邮箱地址" placeholder="搜索邮箱地址" value={search} onChange={e => setSearch(e.target.value)} />
+      <select className="field" aria-label="筛选取码状态" value={state} onChange={e => onState(e.target.value)}><option value="">全部状态</option>{Object.entries(MAIL_STATES).map(([key, label]) => <option value={key} key={key}>{label}</option>)}</select>
+      <SourceSelect sources={sources} value={source} onChange={onSource} allLabel="全部收件来源" /><button className="btn-ghost" type="submit">搜索</button>
+    </form>
+    <div className="px-5"><ErrorNote message={error} /></div>
+    <div className="overflow-auto"><table className="tbl sg-task-table sg-mail-table"><thead><tr><th>邮箱地址</th><th>收件来源</th><th>取码状态</th><th className="text-right">邮件 / 风险</th><th>最近收信</th><th>操作</th></tr></thead><tbody>{data?.items.map(row => <tr key={row.email}>
+      <td><button className="sg-mail-identity" onClick={() => onEdit(row)}>{row.email}</button><p className="sg-description">{row.origin === "discovered" ? "收信发现" : row.origin === "manual" ? "手工登记" : "导入地址"}</p></td>
+      <td>{row.sourceName || (row.sourceId ? "来源已移除" : "未绑定")}{row.sourceName && !row.sourceEnabled && <p className="text-xs text-warning">来源已停用</p>}</td>
+      <td><Badge tone={mailTone(row.state)}>{MAIL_STATES[row.state] || row.state}</Badge></td><td className="tabular-nums">{row.total} / <span className={row.riskHits ? "text-destructive" : "text-muted-foreground"}>{row.riskHits}</span></td><td className="text-xs">{mailTime(row.lastAt)}</td>
+      <td><div className="flex gap-2"><button className="btn-ghost" onClick={() => onCode(row.email)} disabled={row.state !== "active"}>取码</button><Link className="btn-ghost" href={`/apps/icmail/messages/?email=${encodeURIComponent(row.email)}`}>邮件</Link><button className="btn-ghost" onClick={() => onEdit(row)}>设置</button></div></td>
+    </tr>)}</tbody></table>{!data?.items.length && <ListEmpty loading={loading} error={error} hasData={!!data}>{query || state || source ? "没有符合筛选条件的邮箱。" : "还没有邮箱地址。可先导入地址，也可由收信自动发现。"}</ListEmpty>}</div>
+    <PageFooter total={data?.total} offset={offset} setOffset={setOffset} />
+  </section>;
+}
 
-  return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-3">
-        <span className="grid h-9 w-9 place-items-center rounded-md bg-foreground text-[13px] font-semibold text-primary-foreground">I</span>
-        <div className="min-w-0 flex-1">
-          <h1 className="text-[16px] font-semibold leading-tight">IC 邮箱</h1>
-          <p className="text-[11px] text-muted-foreground">
-            IMAP 多源收件 → SQLite 索引 → 分类（banned/risk/otp/payment/promo）；协议注册与测活都从这里取码。
-          </p>
-        </div>
-        <div className="flex gap-1.5">
-          {TABS.map((item) => (
-            <Link
-              key={item.id}
-              href={item.href}
-              className={tab === item.id ? "btn-primary text-[11px]" : "btn-ghost text-[11px]"}
-            >
-              {item.label}
-            </Link>
-          ))}
-        </div>
-      </div>
+function AccountMailPool({ kind, refresh }: { kind: string; refresh: number }) {
+  const [data, setData] = useState<{ accounts: AccountRow[]; total: number } | null>(null);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [offset, setOffset] = useState(0);
+  const [detail, setDetail] = useState<AccountRow | null>(null);
+  const [closing, setClosing] = useState(false);
+  useEffect(() => {
+    const controller = new AbortController(); let timer: ReturnType<typeof setTimeout>;
+    const load = async () => {
+      setLoading(true);
+      try {
+        const next = await api.accounts({ ...(kind === "outlook" ? { platform: "outlook" } : { kind: "emails" }), limit: 25, offset }, AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]));
+        if (!controller.signal.aborted) { setData(next); setError(""); }
+      } catch (err) { if (!controller.signal.aborted) setError("读取失败，保留上次内容：" + (err as Error).message); }
+      finally { if (!controller.signal.aborted) { setLoading(false); timer = setTimeout(load, 25000); } }
+    };
+    void load(); return () => { controller.abort(); clearTimeout(timer); };
+  }, [kind, refresh, offset]);
+  const href = kind === "outlook" ? "/platform/outlook/accounts/" : "/accounts/";
+  return <section className="sg-task-surface"><header className="sg-task-toolbar"><h2 className="text-sm font-semibold">{kind === "outlook" ? "Outlook 邮箱" : "通用邮箱池"}</h2><Count total={data?.total} loading={loading} /><Link className="btn-ghost sg-mail-actions" href={href}>管理账号</Link></header><div className="px-5"><ErrorNote message={error} /></div>
+    <div className="overflow-auto"><table className="tbl sg-task-table sg-mail-table"><thead><tr><th>邮箱</th><th>平台</th><th>状态</th><th>最近检查</th><th>操作</th></tr></thead><tbody>{data?.accounts.map(row => <tr key={row.ref}><td><button className="sg-mail-identity" onClick={() => setDetail(row)}>{row.identity || row.ref}</button></td><td>{row.platform}</td><td><Badge tone={row.status === "ok" ? "ok" : row.status === "unknown" ? "neutral" : "warn"}>{row.status === "ok" ? "正常" : row.status === "unknown" ? "尚未确认" : row.status}</Badge></td><td>{mailTime(row.health_checked_at)}</td><td><button className="btn-ghost" onClick={() => setDetail(row)}>详情</button></td></tr>)}</tbody></table>{!data?.accounts.length && <ListEmpty loading={loading} error={error} hasData={!!data}>当前邮箱池没有记录。</ListEmpty>}</div><PageFooter total={data?.total} offset={offset} setOffset={setOffset} />
+    {detail && <Drawer open={!closing} title="邮箱账号" subtitle={detail.identity} onClose={() => setClosing(true)} onClosed={() => { setDetail(null); setClosing(false); }} footer={<Link className="btn-primary" href={href}>进入账号管理</Link>}><dl className="space-y-4 text-sm"><div><dt className="sg-description">账号编号</dt><dd className="break-all font-mono mt-1">{detail.ref}</dd></div><div><dt className="sg-description">平台</dt><dd>{detail.platform}</dd></div><div><dt className="sg-description">最近检查</dt><dd>{mailTime(detail.health_checked_at)}</dd></div><div><dt className="sg-description">原账号状态</dt><dd>{detail.status}</dd></div></dl></Drawer>}
+  </section>;
+}
 
-      {error && <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-[12px] text-destructive">{error}</div>}
-      {notice && <div className="rounded-lg border border-success/30 bg-success/10 px-3 py-2 text-[12px] text-success">{notice}</div>}
+function SourcesPage({ sources, loading, loaded, error, onSaved, onSync }: { sources: MailSource[]; loading: boolean; loaded: boolean; error: string; onSaved: (message?: string) => void; onSync: (id: number) => void }) {
+  const [edit, setEdit] = useState<MailSource | "new" | null>(null);
+  const [remove, setRemove] = useState<MailSource | null>(null);
+  const [busy, setBusy] = useState(0);
+  const [actionError, setActionError] = useState("");
+  const toggle = async (row: MailSource) => { setBusy(row.id); setActionError(""); try { await mailRequest(`/sources/${row.id}/toggle`, { method: "POST", body: JSON.stringify({ enabled: !row.enabled }) }); onSaved(row.enabled ? "来源已停用，原收信记录仍保留。" : "来源已启用，正在应用连接配置。"); } catch (err) { setActionError((err as Error).message); } finally { setBusy(0); } };
+  return <section className="sg-task-surface"><header className="sg-task-toolbar"><h2 className="text-sm font-semibold">收件来源</h2><Count total={loaded ? sources.length : undefined} loading={loading} /><div className="sg-mail-actions"><button className="btn-ghost" disabled={!sources.some(s => s.enabled)} onClick={() => onSync(0)}>同步全部</button><button className="btn-primary" onClick={() => setEdit("new")}>新增来源</button></div></header><div className="px-5"><ErrorNote message={actionError} /></div>
+    <div className="overflow-auto"><table className="tbl sg-task-table sg-mail-table"><thead><tr><th>来源 / 账号</th><th>连接</th><th>运行状态</th><th>最近成功收取</th><th>操作</th></tr></thead><tbody>{sources.map(row => <tr key={row.id}><td><button className="sg-mail-identity" onClick={() => setEdit(row)}>{row.name}</button><p className="sg-description">{row.username}</p></td><td><span>{row.host}:{row.port}</span><p className="sg-description">{row.folder} · {row.idle ? "推送优先" : `${row.heartbeatSeconds} 秒轮询`}</p></td><td><Badge tone={!row.enabled ? "neutral" : row.lastError ? "bad" : row.runtime === "running" && row.lastOKAt ? "ok" : "info"}>{!row.enabled ? "已停用" : row.lastError ? "连接异常" : row.runtime === "running" && row.lastOKAt ? "收件中" : "正在连接"}</Badge>{row.lastError && <p className="sg-mail-error-detail" title={row.lastError}>{row.lastError}</p>}</td><td className="text-xs">{mailTime(row.lastOKAt)}<p className="sg-description">游标 {row.lastUID}</p></td><td><div className="flex gap-2"><button className="btn-ghost" onClick={() => setEdit(row)}>编辑</button><button className="btn-ghost" disabled={!row.enabled} onClick={() => onSync(row.id)}>同步</button><button className="btn-ghost" disabled={!!busy} onClick={() => void toggle(row)}>{busy === row.id ? "处理中…" : row.enabled ? "停用" : "启用"}</button><button className="btn-danger" disabled={!!busy} onClick={() => setRemove(row)}>移除</button></div></td></tr>)}</tbody></table>{!sources.length && <ListEmpty loading={loading} error={error} hasData={loaded}>尚未添加收件来源。添加后即可自动收信。</ListEmpty>}</div>
+    {edit && <SourceEditor source={edit === "new" ? undefined : edit} onClose={() => setEdit(null)} onSaved={() => onSaved("来源已保存，运行器正在应用配置。")} />}
+    {remove && <MailActionConfirm title="移除收件来源" description={`移除「${remove.name}」将停止该连接，未执行的同步会取消。已收邮件、邮箱地址和运行证据保留；关联地址之后需要重新绑定来源。`} label="确认移除" onClose={() => setRemove(null)} action={async () => { await mailRequest(`/sources/${remove.id}`, { method: "DELETE" }); onSaved("来源已移除，历史记录仍保留。"); }} />}
+  </section>;
+}
 
-      {tab === "overview" && (
-        <>
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
-            <Stat label="已索引" value={stats?.indexed ?? 0} hint={`lastUID ${stats?.lastUid ?? "-"}`} />
-            <Stat label="IMAP 源" value={config?.sources?.length ?? 0} />
-            <Stat label="验证码类" value={tagCounts.otp ?? 0} tone="warn" />
-            <Stat label="风险/封禁" value={(tagCounts.risk ?? 0) + (tagCounts.banned ?? 0)} tone="bad" />
-            <Stat label="保留期" value={`${config?.retentionDays ?? "-"} 天`} />
-          </div>
+function MessagesPage({ sources, refresh, onSaved }: { sources: MailSource[]; refresh: number; onSaved: (message?: string) => void }) {
+  const [email, setEmail] = useState("");
+  const [draft, setDraft] = useState("");
+  const [tag, setTag] = useState("");
+  const [source, setSource] = useState(0);
+  const [offset, setOffset] = useState(0);
+  const [detail, setDetail] = useState<MailMessage | null>(null);
+  const [closing, setClosing] = useState(false);
+  const [code, setCode] = useState<string | null>(null);
+  const [prune, setPrune] = useState(false);
+  useEffect(() => { const address = new URLSearchParams(window.location.search).get("email") || ""; setEmail(address); setDraft(address); }, []);
+  const params = new URLSearchParams({ alias: email, tag, source_id: String(source), offset: String(offset), limit: "25" });
+  const { data, error, loading } = useMailData<{ messages: MailMessage[]; total: number }>(`/messages?${params}`, refresh);
+  useEffect(() => { if (data && offset && offset >= data.total) setOffset(Math.max(0, Math.ceil(data.total / 25) - 1) * 25); }, [data, offset]);
+  return <section className="sg-task-surface"><header className="sg-task-toolbar"><h2 className="text-sm font-semibold">收信记录</h2><Count total={data?.total} loading={loading} /><div className="sg-mail-actions"><button className="btn-ghost" onClick={() => setPrune(true)}>清理旧邮件</button><button className="btn-primary" onClick={() => setCode(email)}>查验证码</button></div></header>
+    <form className="sg-mail-filters" onSubmit={e => { e.preventDefault(); setEmail(draft.trim()); setOffset(0); }} onKeyDown={e => { if (e.key === "Enter" && e.nativeEvent.isComposing) e.preventDefault(); }}><input className="field" aria-label="精确邮箱地址" placeholder="精确邮箱地址" value={draft} onChange={e => setDraft(e.target.value)} /><select className="field" aria-label="邮件分类" value={tag} onChange={e => { setTag(e.target.value); setOffset(0); }}><option value="">全部分类</option>{Object.entries(MAIL_TAGS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select><SourceSelect sources={sources} value={source} onChange={v => { setSource(v); setOffset(0); }} allLabel="全部收件来源" /><button type="submit" className="btn-ghost">查找</button></form>
+    <div className="px-5"><ErrorNote message={error} /></div><div className="overflow-auto"><table className="tbl sg-task-table sg-mail-table"><thead><tr><th>邮件</th><th>收件地址</th><th>分类</th><th>收信时间</th><th>操作</th></tr></thead><tbody>{data?.messages.map(row => <tr key={row.id}><td className="sg-mail-subject"><button className="sg-mail-identity" onClick={() => setDetail(row)}>{row.subject || "无主题"}</button><p className="sg-description" title={row.from}>{row.from || "未知发件人"}</p></td><td className="sg-mail-recipient" title={row.to}>{row.alias || row.to || "—"}</td><td><Badge tone={mailTone(row.primaryTag)}>{MAIL_TAGS[row.primaryTag] || row.primaryTag}</Badge></td><td className="text-xs">{mailTime(row.sentAt)}</td><td><button className="btn-ghost" onClick={() => setDetail(row)}>查看邮件</button></td></tr>)}</tbody></table>{!data?.messages.length && <ListEmpty loading={loading} error={error} hasData={!!data}>没有符合条件的邮件。收信来源启用后会自动同步。</ListEmpty>}</div><PageFooter total={data?.total} offset={offset} setOffset={setOffset} />
+    {detail && <Drawer open={!closing} width={720} title={detail.subject || "邮件详情"} subtitle={mailTime(detail.sentAt)} onClose={() => setClosing(true)} onClosed={() => { setDetail(null); setClosing(false); }}><dl className="sg-mail-meta"><dt>发件人</dt><dd>{detail.from}</dd><dt>收件人</dt><dd>{detail.to}</dd><dt>来源</dt><dd>{sources.find(s => s.id === detail.sourceId)?.name || "来源已移除"}</dd><dt>分类</dt><dd><Badge tone={mailTone(detail.primaryTag)}>{MAIL_TAGS[detail.primaryTag] || detail.primaryTag}</Badge></dd></dl><pre className="sg-mail-body">{detail.text || detail.snippet || "无可显示的正文"}</pre></Drawer>}
+    {code !== null && <CodeLookup email={code} onClose={() => setCode(null)} />}
+    {prune && <PruneMail onClose={() => setPrune(false)} onSaved={() => onSaved("旧邮件已清理，邮箱地址与状态保留。")} />}
+  </section>;
+}
 
-          <Card title="流程" bodyClass="p-0">
-            <div className="divide-y divide-border">
-              {flow.map((step, index) => (
-                <div key={step.id} className="flex items-center gap-3 px-4 py-2.5">
-                  <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full border border-border text-[11px] text-muted-foreground">
-                    {index + 1}
-                  </span>
-                  <span className="text-[13px] font-medium">{step.title}</span>
-                  <Badge tone={step.ready ? "ok" : "warn"}>{step.text}</Badge>
-                </div>
-              ))}
-            </div>
-          </Card>
+function RunsPage({ sources, refresh, onSync }: { sources: MailSource[]; refresh: number; onSync: (id: number) => void }) {
+  const [request, setRequest] = useState("");
+  const [offset, setOffset] = useState(0);
+  const [detail, setDetail] = useState<MailRun | null>(null);
+  const [closing, setClosing] = useState(false);
+  const [retryAfterClose, setRetryAfterClose] = useState(false);
+  useEffect(() => { setRequest(new URLSearchParams(window.location.search).get("request") || ""); }, []);
+  const params = new URLSearchParams({ request_id: request, limit: "25", offset: String(offset) });
+  const { data, error, loading } = useMailData<{ items: MailRun[]; total: number }>(`/sync?${params}`, refresh, 5000);
+  const currentDetail = data?.items.find(r => r.id === detail?.id) || detail;
+  const stateLabel = (row: MailRun) => row.state === "pending" ? <Badge tone="info">排队中</Badge> : <StatusBadge status={row.state} />;
+  const canRetry = (row: MailRun) => ["failed", "interrupted", "cancelled", "completed"].includes(row.state) && sources.some(s => s.id === row.sourceId && s.enabled);
+  return <section className="sg-task-surface"><header className="sg-task-toolbar"><div><h2 className="text-sm font-semibold">{request ? "本次同步" : "同步记录"}</h2><Count total={data?.total} loading={loading} /></div><div className="sg-mail-actions">{request && <button className="btn-ghost" onClick={() => { setRequest(""); setOffset(0); window.history.replaceState(null, "", "/apps/icmail/runs/"); }}>全部记录</button>}<button className="btn-primary" disabled={!sources.some(s => s.enabled)} onClick={() => onSync(0)}>同步来源</button></div></header>
+    {request && <p className="sg-description px-5 pb-4 break-all">请求编号 <span className="font-mono">{request}</span></p>}
+    <div className="px-5"><ErrorNote message={error} /></div><div className="overflow-auto"><table className="tbl sg-task-table sg-mail-table"><thead><tr><th>来源 / 请求</th><th>状态</th><th>新增邮件</th><th>发起 / 完成</th><th>结果</th><th>操作</th></tr></thead><tbody>{data?.items.map(row => <tr key={row.id}><td><button className="sg-mail-identity" onClick={() => setDetail(row)}>{row.sourceName}</button><p className="sg-description font-mono" title={row.requestId}>{row.requestId ? row.requestId.slice(0, 12) : `历史记录 #${row.id}`}</p></td><td>{stateLabel(row)}</td><td className="tabular-nums">{row.indexed}{["running", "pending"].includes(row.state) ? " · 处理中" : " 封"}</td><td className="text-xs">{mailTime(row.requestedAt)}<p className="sg-description">{row.finishedAt ? mailTime(row.finishedAt) : "尚未结束"}</p></td><td className="sg-mail-result">{row.note || (row.state === "pending" ? "等待收件器领取" : "正在收取与索引")}</td><td><div className="flex gap-2"><button className="btn-ghost" onClick={() => setDetail(row)}>详情</button>{canRetry(row) && <button className="btn-ghost" onClick={() => onSync(row.sourceId)}>{row.state === "completed" ? "再次同步" : "重试"}</button>}{!canRetry(row) && ["failed", "interrupted", "cancelled"].includes(row.state) && <Link className="btn-ghost" href="/apps/icmail/sources/">处理来源</Link>}</div></td></tr>)}</tbody></table>{!data?.items.length && <ListEmpty loading={loading} error={error} hasData={!!data}>暂无手工同步记录。自动收件情况可在收件来源查看。</ListEmpty>}</div><PageFooter total={data?.total} offset={offset} setOffset={setOffset} />
+    {currentDetail && <Drawer open={!closing} title="同步详情" subtitle={currentDetail.sourceName} onClose={() => setClosing(true)} onClosed={() => { setDetail(null); setClosing(false); if (retryAfterClose) onSync(currentDetail.sourceId); setRetryAfterClose(false); }} footer={canRetry(currentDetail) ? <button className="btn-primary" onClick={() => { setRetryAfterClose(true); setClosing(true); }}>再次同步</button> : <Link href="/apps/icmail/sources/" className="btn-ghost">查看收件来源</Link>}><div className="space-y-5">{stateLabel(currentDetail)}<dl className="sg-mail-meta"><dt>请求编号</dt><dd className="font-mono">{currentDetail.requestId || `历史记录 #${currentDetail.id}`}</dd><dt>发起</dt><dd>{mailTime(currentDetail.requestedAt)}</dd><dt>开始</dt><dd>{mailTime(currentDetail.startedAt)}</dd><dt>结束</dt><dd>{mailTime(currentDetail.finishedAt)}</dd><dt>新增邮件</dt><dd>{currentDetail.indexed} 封</dd></dl><p className="text-sm leading-6 break-words">{currentDetail.note || "等待本次同步结果"}</p></div></Drawer>}
+  </section>;
+}
 
-          <div className="grid gap-4 xl:grid-cols-2">
-            <Card title="查验证码（管理端）" actions={<Badge tone="info">无 Turnstile</Badge>}>
-              <div className="flex gap-2">
-                <input className="field" placeholder="邮箱地址" value={codeEmail} onChange={(e) => setCodeEmail(e.target.value)} />
-                <button className="btn-primary shrink-0" onClick={lookupCode} disabled={busy === "查码"}>查询</button>
-              </div>
-              {codeResult && (
-                <div className="mt-3 rounded-lg border border-border bg-muted/40 px-3 py-2 font-mono text-[13px]">
-                  {codeResult.code ? <span className="text-success">{codeResult.code}</span> : (
-                    <span className="text-muted-foreground">未找到验证码（扫了 {codeResult.scanned ?? 0} 封）</span>
-                  )}
-                  {codeResult.ageSeconds != null && (
-                    <span className="ml-2 text-[11px] text-muted-foreground">{Math.round(codeResult.ageSeconds)} 秒前</span>
-                  )}
-                </div>
-              )}
-              <div className="mt-3 flex gap-2">
-                <button className="btn-ghost text-[11px]" onClick={sync} disabled={!!busy}>触发同步</button>
-                <button className="btn-ghost text-[11px]" onClick={prune} disabled={!!busy}>清理旧邮件</button>
-              </div>
-            </Card>
-
-            <Card title="最近邮件" bodyClass="p-0" actions={<Link href="/apps/icmail/messages/" className="btn-ghost px-2 py-1 text-[11px]">全部</Link>}>
-              <div className="max-h-[260px] overflow-auto">
-                {messages.length === 0 ? (
-                  <div className="p-4"><Empty>暂无邮件</Empty></div>
-                ) : (
-                  <table className="tbl">
-                    <thead>
-                      <tr className="border-b border-border">
-                        <th className="px-3 py-1.5 text-left font-medium">分类</th>
-                        <th className="px-2 py-1.5 text-left font-medium">主题</th>
-                        <th className="px-3 py-1.5 text-right font-medium">时间</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {messages.slice(0, 10).map((row) => (
-                        <tr
-                          key={row.uid + row.alias}
-                          onClick={() => setOpenMsg(row)}
-                          className="cursor-pointer border-b border-border/60 last:border-0 hover:bg-accent/40"
-                        >
-                          <td className="px-3 py-1.5"><Badge tone={TAG_TONE[row.primaryTag] || "neutral"}>{row.primaryTag || "other"}</Badge></td>
-                          <td className="max-w-[260px] truncate px-2 py-1.5" title={row.subject}>{row.subject || "(无主题)"}</td>
-                          <td className="px-3 py-1.5 text-right text-[11px] text-muted-foreground">
-                            {row.sentAt ? timeAgo(new Date(row.sentAt * 1000).toISOString()) : "-"}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
-              </div>
-            </Card>
-          </div>
-
-          <Card title="配置快照" bodyClass="p-0">
-            <table className="tbl">
-              <tbody>
-                {[
-                  { k: "库文件", v: config?.dbPath ?? "-" },
-                  { k: "保留期", v: `${config?.retentionDays ?? "-"} 天` },
-                  { k: "Bootstrap 上限", v: String(config?.bootstrapLimit ?? "-") },
-                  { k: "Fetch Chunk", v: String(config?.fetchChunk ?? "-") },
-                  { k: "AdminKey", v: config?.adminKeySet ? "已设置" : "空（靠外层登录）" },
-                  { k: "Turnstile", v: config?.turnstile?.siteKey ? "已配置" : "未配置" },
-                  { k: "IMAP env", v: config?.imap?.hostEnvSet ? "已配置" : "未配置" },
-                  { k: "Heartbeat", v: `${config?.imap?.heartbeatSec ?? "-"}s` },
-                ].map((row) => (
-                  <tr key={row.k} className="border-b border-border/60 last:border-0">
-                    <td className="w-[160px] px-4 py-1.5 text-[11px] text-muted-foreground">{row.k}</td>
-                    <td className="px-2 py-1.5 font-mono text-[11px]">{row.v}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </Card>
-        </>
-      )}
-
-      {tab === "sources" && (
-        <>
-          <Card title="IMAP 源" bodyClass="p-0">
-            <div className="max-h-[420px] overflow-auto">
-              {!config?.sources?.length ? (
-                <div className="p-4"><Empty>没有源，用下面表单新增</Empty></div>
-              ) : (
-                <table className="tbl">
-                  <thead>
-                    <tr className="border-b border-border">
-                      <th className="px-3 py-1.5 text-left font-medium">状态</th>
-                      <th className="px-2 py-1.5 text-left font-medium">名称</th>
-                      <th className="px-2 py-1.5 text-left font-medium">服务器</th>
-                      <th className="px-2 py-1.5 text-left font-medium">账号</th>
-                      <th className="px-2 py-1.5 text-left font-medium">文件夹</th>
-                      <th className="px-2 py-1.5 text-right font-medium">interval</th>
-                      <th className="px-2 py-1.5 text-right font-medium">heartbeat</th>
-                      <th className="px-2 py-1.5 text-right font-medium">lastUID</th>
-                      <th className="px-3 py-1.5 text-right font-medium">操作</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {config.sources.map((row) => (
-                      <tr
-                        key={row.id}
-                        onClick={() => { setEditSource(row); setDraft({ ...row }); }}
-                        className="cursor-pointer border-b border-border/60 last:border-0 hover:bg-accent/40"
-                      >
-                        <td className="px-3 py-1.5"><Badge tone={row.enabled ? "ok" : "neutral"}>{row.enabled ? "启用" : "停用"}</Badge></td>
-                        <td className="px-2 py-1.5">{row.name}</td>
-                        <td className="px-2 py-1.5 font-mono text-[11px] text-muted-foreground">{row.host}:{row.port}</td>
-                        <td className="max-w-[180px] truncate px-2 py-1.5 font-mono text-[11px]">{row.username || "-"}</td>
-                        <td className="px-2 py-1.5 text-[11px] text-muted-foreground">{row.folder}</td>
-                        <td className="px-2 py-1.5 text-right font-mono text-[11px]">{row.intervalSeconds}s</td>
-                        <td className="px-2 py-1.5 text-right font-mono text-[11px]">{row.heartbeatSeconds}s</td>
-                        <td className="px-2 py-1.5 text-right font-mono text-[11px] text-muted-foreground">{row.lastUID}</td>
-                        <td className="px-3 py-1.5 text-right">
-                          <button className="btn-ghost px-2 py-0.5 text-[11px]" onClick={() => toggleSource(row)} disabled={!!busy}>
-                            {row.enabled ? "停用" : "启用"}
-                          </button>
-                          <button className="btn-danger ml-1 px-2 py-0.5 text-[11px]" onClick={() => removeSource(row)} disabled={!!busy}>删除</button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
-          </Card>
-
-          <Card
-            title="新增源"
-            actions={<span className="text-[11px] text-muted-foreground">defaults: 993 / INBOX / idle</span>}
-          >
-            <div className="grid gap-2 sm:grid-cols-3">
-              <input className="field" placeholder="名称（唯一）" value={newSource.name} onChange={(e) => setNewSource({ ...newSource, name: e.target.value })} />
-              <input className="field" placeholder="IMAP host" value={newSource.host} onChange={(e) => setNewSource({ ...newSource, host: e.target.value })} />
-              <input className="field" placeholder="端口 993" value={newSource.port} onChange={(e) => setNewSource({ ...newSource, port: Number(e.target.value) || 993 })} />
-              <input className="field" placeholder="用户名" value={newSource.username} onChange={(e) => setNewSource({ ...newSource, username: e.target.value })} />
-              <input className="field" type="password" placeholder="密码 / App 专用密码" value={newSource.password} onChange={(e) => setNewSource({ ...newSource, password: e.target.value })} />
-              <input className="field" placeholder="文件夹 INBOX" value={newSource.folder} onChange={(e) => setNewSource({ ...newSource, folder: e.target.value })} />
-            </div>
-            <button className="btn-primary mt-2" onClick={addSource} disabled={busy === "新增源" || !newSource.name || !newSource.host}>
-              保存
-            </button>
-            <p className="mt-2 text-[11px] text-muted-foreground">
-              也可以在 <span className="font-mono">/data/.env</span> 用 <span className="font-mono">ICMAIL_IMAP_*</span> 配默认源（首次启动时 seed）。
-            </p>
-          </Card>
-        </>
-      )}
-
-      {tab === "aliases" && (
-        <Card title="别名" bodyClass="p-0" actions={<span className="text-[11px] text-muted-foreground">以实际收件人聚合</span>}>
-          <div className="max-h-[560px] overflow-auto">
-            {aliases.length === 0 ? (
-              <div className="p-4"><Empty>还没有收信记录</Empty></div>
-            ) : (
-              <table className="tbl">
-                <thead>
-                  <tr className="border-b border-border">
-                    <th className="px-3 py-1.5 text-left font-medium">状态</th>
-                    <th className="px-2 py-1.5 text-left font-medium">别名</th>
-                    <th className="px-2 py-1.5 text-right font-medium">收件数</th>
-                    <th className="px-2 py-1.5 text-right font-medium">风险</th>
-                    <th className="px-2 py-1.5 text-left font-medium">最后分类</th>
-                    <th className="px-2 py-1.5 text-right font-medium">最后收信</th>
-                    <th className="px-3 py-1.5 text-right font-medium">切换</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {aliases.map((row) => (
-                    <tr key={row.hme} className="border-b border-border/60 last:border-0">
-                      <td className="px-3 py-1.5">
-                        <Badge tone={row.state === "active" ? "ok" : row.state === "blocked" ? "bad" : "neutral"}>{row.state}</Badge>
-                      </td>
-                      <td className="max-w-[260px] truncate px-2 py-1.5 font-mono text-[11px]">{row.hme}</td>
-                      <td className="px-2 py-1.5 text-right font-mono text-[11px]">{row.total}</td>
-                      <td className="px-2 py-1.5 text-right">
-                        {row.riskHits > 0 ? <Badge tone="bad">{row.riskHits}</Badge> : <span className="text-[11px] text-muted-foreground">0</span>}
-                      </td>
-                      <td className="px-2 py-1.5"><Badge tone={TAG_TONE[row.lastTag] || "neutral"}>{row.lastTag || "-"}</Badge></td>
-                      <td className="px-2 py-1.5 text-right text-[11px] text-muted-foreground">
-                        {row.lastTs ? timeAgo(new Date(row.lastTs * 1000).toISOString()) : "-"}
-                      </td>
-                      <td className="px-3 py-1.5 text-right">
-                        <select className="field w-[92px] py-0.5 text-[11px]" value={row.state} onChange={(e) => setAliasState(row, e.target.value)}>
-                          <option value="active">active</option>
-                          <option value="paused">paused</option>
-                          <option value="blocked">blocked</option>
-                        </select>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-        </Card>
-      )}
-
-      {tab === "messages" && (
-        <Card
-          title="邮件"
-          bodyClass="p-0"
-          actions={
-            <select className="field w-[130px] py-1 text-[12px]" value={tag} onChange={(e) => setTag(e.target.value)}>
-              <option value="">全部分类</option>
-              {Object.keys(tagCounts).map((key) => (
-                <option key={key} value={key}>{key}（{tagCounts[key]}）</option>
-              ))}
-            </select>
-          }
-        >
-          <div className="max-h-[620px] overflow-auto">
-            {messages.length === 0 ? (
-              <div className="p-4"><Empty>暂无邮件</Empty></div>
-            ) : (
-              <table className="tbl">
-                <thead>
-                  <tr className="border-b border-border">
-                    <th className="px-3 py-1.5 text-left font-medium">分类</th>
-                    <th className="px-2 py-1.5 text-left font-medium">主题</th>
-                    <th className="px-2 py-1.5 text-left font-medium">收件人</th>
-                    <th className="px-2 py-1.5 text-left font-medium">发件人</th>
-                    <th className="px-3 py-1.5 text-right font-medium">时间</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {messages.map((row) => (
-                    <tr
-                      key={row.uid + row.alias}
-                      onClick={() => setOpenMsg(row)}
-                      className={`cursor-pointer border-b border-border/60 last:border-0 hover:bg-accent/40 ${
-                        openMsg?.uid === row.uid ? "bg-brand/10" : ""
-                      }`}
-                    >
-                      <td className="px-3 py-1.5"><Badge tone={TAG_TONE[row.primaryTag] || "neutral"}>{row.primaryTag || "other"}</Badge></td>
-                      <td className="max-w-[320px] truncate px-2 py-1.5" title={row.subject}>{row.subject || "(无主题)"}</td>
-                      <td className="max-w-[180px] truncate px-2 py-1.5 font-mono text-[11px] text-muted-foreground">{row.alias || "-"}</td>
-                      <td className="max-w-[180px] truncate px-2 py-1.5 text-[11px] text-muted-foreground">{row.from || "-"}</td>
-                      <td className="px-3 py-1.5 text-right text-[11px] text-muted-foreground">
-                        {row.sentAt ? timeAgo(new Date(row.sentAt * 1000).toISOString()) : "-"}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-        </Card>
-      )}
-
-      <Drawer
-        open={!!editSource}
-        title={editSource?.name || "编辑源"}
-        subtitle={editSource ? `${editSource.host}:${editSource.port} · ${editSource.username || "未填账号"}` : ""}
-        onClose={() => { setEditSource(null); setDraft(null); }}
-        footer={
-          <>
-            <button
-              className="btn-danger px-2 py-1 text-[11px]"
-              disabled={!editSource || !!busy}
-              onClick={async () => { if (editSource) { await removeSource(editSource); setEditSource(null); setDraft(null); } }}
-            >
-              删除
-            </button>
-            <button
-              className="btn-primary px-3 py-1 text-[11px]"
-              disabled={!draft || !!busy}
-              onClick={async () => {
-                if (!draft) return;
-                await act("保存源", () => call("/sources", {
-                  method: "POST",
-                  body: JSON.stringify({
-                    id: draft.id, name: draft.name, host: draft.host, port: draft.port,
-                    username: draft.username, password: draft.password || "",
-                    folder: draft.folder, enabled: draft.enabled, idle: draft.idle,
-                    intervalSeconds: draft.intervalSeconds, heartbeatSeconds: draft.heartbeatSeconds,
-                  }),
-                }));
-                setEditSource(null);
-                setDraft(null);
-              }}
-            >
-              保存
-            </button>
-          </>
-        }
-      >
-        {draft && (
-          <div className="space-y-2">
-            {[
-              { k: "name", label: "名称（唯一）", type: "text" },
-              { k: "host", label: "IMAP host", type: "text" },
-              { k: "username", label: "账号", type: "text" },
-              { k: "folder", label: "文件夹", type: "text" },
-            ].map((field) => (
-              <div key={field.k}>
-                <label className="label">{field.label}</label>
-                <input
-                  className="field py-1.5 text-[12.5px]"
-                  value={String((draft as unknown as Record<string, unknown>)[field.k] ?? "")}
-                  onChange={(e) => setDraft({ ...draft, [field.k]: e.target.value } as SourceRow)}
-                />
-              </div>
-            ))}
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <label className="label">端口</label>
-                <input className="field py-1.5 text-[12.5px]" value={draft.port}
-                       onChange={(e) => setDraft({ ...draft, port: Number(e.target.value) || 993 })} />
-              </div>
-              <div>
-                <label className="label">interval（秒）</label>
-                <input className="field py-1.5 text-[12.5px]" value={draft.intervalSeconds}
-                       onChange={(e) => setDraft({ ...draft, intervalSeconds: Number(e.target.value) || 10 })} />
-              </div>
-            </div>
-            <div>
-              <label className="label">密码（留空 = 保持原密码）</label>
-              <input className="field py-1.5 text-[12.5px]" type="password" placeholder={draft.passwordSet ? "已保存，留空不改" : "未设置"}
-                     onChange={(e) => setDraft({ ...draft, password: e.target.value } as SourceRow)} />
-            </div>
-            <div className="grid grid-cols-2 gap-2 pt-1">
-              <label className="flex items-center gap-2 text-[12px]">
-                <input type="checkbox" checked={draft.enabled} onChange={(e) => setDraft({ ...draft, enabled: e.target.checked })} />
-                启用
-              </label>
-              <label className="flex items-center gap-2 text-[12px]">
-                <input type="checkbox" checked={draft.idle} onChange={(e) => setDraft({ ...draft, idle: e.target.checked })} />
-                IDLE 推送
-              </label>
-            </div>
-            <p className="pt-1 text-[11px] leading-relaxed text-muted-foreground">
-              保存后源立即生效；正在运行的 worker 会在下一轮读取。
-            </p>
-          </div>
-        )}
-      </Drawer>
-
-      {openMsg && (
-        <Card
-          title={openMsg.subject || "(无主题)"}
-          actions={
-            <>
-              <Badge tone={TAG_TONE[openMsg.primaryTag] || "neutral"}>{openMsg.primaryTag || "other"}</Badge>
-              <button className="btn-ghost px-2 py-1 text-[11px]" onClick={() => setOpenMsg(null)}>关闭</button>
-            </>
-          }
-          bodyClass="p-0"
-        >
-          <table className="tbl">
-            <tbody>
-              {[
-                { k: "From", v: openMsg.from || "-" },
-                { k: "To", v: openMsg.alias || openMsg.to || "-" },
-                { k: "时间", v: openMsg.sentAt ? new Date(openMsg.sentAt * 1000).toLocaleString() : "-" },
-                { k: "UID", v: openMsg.uid },
-              ].map((row) => (
-                <tr key={row.k} className="border-b border-border/60 last:border-0">
-                  <td className="w-[70px] px-4 py-1.5 text-[11px] text-muted-foreground">{row.k}</td>
-                  <td className="truncate px-2 py-1.5 font-mono text-[11px]">{row.v}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          <div className="max-h-[420px] overflow-auto border-t border-border p-4">
-            {openMsg.text ? (
-              <pre className="whitespace-pre-wrap break-words font-sans text-[12.5px] leading-relaxed text-foreground/90">
-                {openMsg.text}
-              </pre>
-            ) : (
-              <Empty>这封邮件没有索引到正文（可能是纯 HTML 或超长）</Empty>
-            )}
-          </div>
-        </Card>
-      )}
-    </div>
-  );
+function MailSettings({ refresh }: { refresh: number }) {
+  const { data, error } = useMailData<MailConfig>("/config", refresh, 0);
+  return <><ErrorNote message={error} /><section className="sg-task-surface"><header className="sg-task-toolbar"><h2 className="text-sm font-semibold">当前生效配置</h2><Link className="btn-ghost sg-mail-actions" href="/apps/icmail/sources/">收件来源</Link></header><dl className="sg-mail-settings"><div><dt>邮件保留</dt><dd>{data ? `${data.retentionDays} 天` : "—"}</dd></div><div><dt>公开取码验证</dt><dd><Badge tone={data?.turnstile.siteKey && data.turnstile.secretSet ? "ok" : "warn"}>{data?.turnstile.siteKey && data.turnstile.secretSet ? "已配置" : "未配置"}</Badge></dd></div><div><dt>首次同步范围</dt><dd>{data ? `最近 ${data.bootstrapLimit} 封` : "—"}</dd></div></dl><p className="sg-description px-5 pb-5">下方沿用系统设置中的邮箱配置。进程配置保存后需重启生效；收件来源的编辑、启用和停用会直接应用。</p></section><ConfigEditor scope="system" area="mail" /></>;
 }

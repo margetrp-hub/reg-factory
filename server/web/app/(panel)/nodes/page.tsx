@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { api, type NodeCapabilities, type NodeReady } from "@/lib/api";
 import { Badge, Card, Empty, Stat } from "@/components/ui";
@@ -10,26 +10,25 @@ export default function NodesPage() {
   const [node, setNode] = useState<NodeCapabilities | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const [readyState, capabilities] = await Promise.all([api.nodeReady(), api.nodeCapabilities()]);
-      setReady(readyState);
-      setNode(capabilities);
-      setError("");
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const [reload, setReload] = useState(0);
 
   useEffect(() => {
-    load();
-    const timer = setInterval(load, 10000);
-    return () => clearInterval(timer);
-  }, [load]);
+    let active = true;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout>;
+    const load = async () => {
+      setLoading(true);
+      const results = await Promise.allSettled([api.nodeReady(controller.signal),api.nodeCapabilities(controller.signal)]);
+      if (!active) return;
+      if (results[0].status === "fulfilled") setReady(results[0].value);
+      if (results[1].status === "fulfilled") setNode(results[1].value);
+      setError(results.filter(item=>item.status === "rejected").map(item=>(item as PromiseRejectedResult).reason.message).join("；"));
+      setLoading(false);
+      timer = setTimeout(load, document.hidden ? 30000 : 10000);
+    };
+    void load();
+    return () => {active=false;controller.abort();clearTimeout(timer);};
+  }, [reload]);
 
   return (
     <div className="space-y-4">
@@ -38,7 +37,7 @@ export default function NodesPage() {
           <h1 className="page-title">节点</h1>
           <p className="page-desc">运行时身份、协议能力和密钥指纹统一从当前控制面读取。</p>
         </div>
-        <button className="btn-ghost" onClick={load} disabled={loading}>{loading ? "读取中…" : "刷新状态"}</button>
+        <button className="btn-ghost" onClick={() => setReload(value=>value+1)} disabled={loading}>{loading ? "读取中…" : "刷新状态"}</button>
         <Badge tone={error || !ready ? "neutral" : ready.execution_ready ? "ok" : "warn"}>
           {error ? "状态未确认" : !ready ? "读取中" : ready.execution_ready ? "执行就绪" : "未就绪"}
         </Badge>
@@ -68,10 +67,14 @@ export default function NodesPage() {
         </Card>
 
         <Card title="能力清单">
-          <div className="mb-3 flex flex-wrap gap-1.5">
-            {(node?.actions?.supported || []).map((action) => <Badge key={action} tone="ok">{action}</Badge>)}
-          </div>
-          <div className="text-[11px] text-muted-foreground">节点不支持的动作不会伪装成可执行任务，协议能力在这里集中核对。</div>
+          <div className="overflow-auto"><table className="tbl sg-task-table"><thead><tr><th>能力</th><th>当前状态</th><th>说明与处理</th></tr></thead><tbody>
+            {[...(node?.actions?.supported || []),...(node?.actions?.unsupported || [])].map(action=>{
+              const supported=node?.actions.supported.includes(action);
+              const state=ready?.action_readiness?.[action] || (action.startsWith("production.team_json.") ? ready?.action_readiness?.["production.team_json"] : undefined);
+              const available=state ? state.ready : !!ready?.execution_ready && !!ready?.runtime.supported_actions.includes(action);
+              return <tr key={action}><td className="break-all">{action}</td><td><Badge tone={!supported ? "neutral" : error ? "warn" : available ? "ok" : "warn"}>{!supported ? "不属于本节点" : error ? "状态未确认" : available ? "执行就绪" : "需要配置"}</Badge></td><td>{state?.error_code || node?.actions.notes[action] || "—"}{supported && !available && <Link className="ml-2 underline" href="/nodes/config/">检查节点配置</Link>}</td></tr>;
+            })}
+          </tbody></table></div>
         </Card>
       </div>
 

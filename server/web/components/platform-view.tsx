@@ -2,9 +2,10 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { api, type AccountRow, type Task } from "@/lib/api";
-import { Badge, Card, Empty, Stat } from "@/components/ui";
+import { api, type AccountRow, type AccountSummary, type TaskPage } from "@/lib/api";
+import { Badge, Card, Empty, ErrorNote } from "@/components/ui";
 import { TaskTable } from "@/components/task-table";
+import { PLATFORM_TASKS, scriptsForPlatform } from "@/lib/task-catalog";
 
 type FlowStep = {
   id: string;
@@ -80,28 +81,40 @@ const SPECS: Record<string, PlatformSpec> = {
   },
 };
 
-export const PLATFORM_SLUGS = Object.keys(SPECS);
-
 export function PlatformView({ slug }: { slug: string }) {
-  const spec = SPECS[slug] || SPECS.claude;
+  const spec = useMemo<PlatformSpec>(()=>SPECS[slug] || {
+    name:PLATFORM_TASKS[slug]?.name || slug,slug,accent:"bg-foreground",
+    summary:"保留本平台全部执行模式，以及组合流程、账号记录与导出能力。",
+    flow:[
+      {id:"configure",title:"准备执行配置",desc:"选择浏览器、网络出口和邮箱来源。",href:"/settings/",cta:"配置",needs:"none"},
+      {id:"execute",title:"选择任务模式",desc:"本平台及组合流程的全部参数都可编辑。",href:`/platform/${slug}/tasks/`,cta:"发起任务",needs:"none"},
+      {id:"result",title:"核对账号与结果",desc:"保留原执行回执、凭据版本与后续恢复入口。",href:`/platform/${slug}/accounts/`,cta:"账号记录",needs:"accounts"},
+    ],
+  },[slug]);
   const [accounts, setAccounts] = useState<AccountRow[]>([]);
-  const [tasks, setTasks] = useState<Task[]>([]);
-  const [ic, setIc] = useState<{ indexed: number; sources: number } | null>(null);
+  const [taskPage, setTaskPage] = useState<TaskPage | null>(null);
+  const [summary, setSummary] = useState<AccountSummary | null>(null);
+  const [error, setError] = useState("");
+  const [reload, setReload] = useState(0);
   const [envReady, setEnvReady] = useState<{ mail: boolean; proxy: boolean; sms: boolean }>({
     mail: false, proxy: false, sms: false,
   });
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (signal: AbortSignal) => {
     try {
-      const [accountData, taskData, config, health] = await Promise.all([
-        api.accounts({ platform: spec.slug, limit: 300 }),
-        api.tasks(80),
-        api.config(),
-        fetch("/api/apps/icmail/health", { credentials: "same-origin" }).then((r) => r.json()).catch(() => null),
+      const catalog = await api.scripts(signal);
+      const ids = scriptsForPlatform(catalog.scripts,spec.slug).map(script=>script.id);
+      const [accountData, taskData, config, accountTotals] = await Promise.all([
+        api.accounts({ platform: spec.slug, limit: 15 },signal),
+        ids.length ? api.tasks(12,{scripts:ids},signal) : Promise.resolve({tasks:[],stats:{},count:0,total:0,limit:12,offset:0} as TaskPage),
+        api.config(signal),
+        api.accountSummary(spec.slug,signal),
       ]);
+      if (signal.aborted) return;
       setAccounts(accountData.accounts);
-      setTasks(taskData.tasks);
-      if (health?.ok) setIc(health.data.stats);
+      setTaskPage(taskData);
+      setSummary(accountTotals.platforms[0] || {platform:spec.slug,total:0,available:0,abnormal:0,unknown:0});
+      setError("");
       const entries = Object.values(config.groups).flat();
       const has = (prefixes: string[]) =>
         entries.some((entry) => prefixes.some((p) => entry.key.toUpperCase().startsWith(p)) && entry.value.trim() !== "");
@@ -110,41 +123,40 @@ export function PlatformView({ slug }: { slug: string }) {
         proxy: has(["PROXY", "CLASH"]),
         sms: has(["SMS", "HERO"]),
       });
-    } catch {
-      /* 下个轮询重试 */
+    } catch (err) {
+      if (!signal.aborted) setError(`平台读取失败，已保留上次结果。${(err as Error).message}`);
     }
   }, [spec.slug]);
 
   useEffect(() => {
-    load();
-    const timer = setInterval(load, 8000);
-    return () => clearInterval(timer);
-  }, [load]);
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => { await load(controller.signal); if (!controller.signal.aborted) timer=setTimeout(poll,document.hidden?30000:15000); };
+    void poll();
+    return () => { controller.abort(); clearTimeout(timer); };
+  }, [load,reload]);
 
   const stats = useMemo(() => {
-    const ok = accounts.filter((row) => row.status === "ok").length;
-    const bad = accounts.filter((row) => row.status === "banned" || row.status === "invalid").length;
-    const wanted = new Set(spec.flow.flatMap((step) => step.tasks || []));
-    const mine = tasks.filter((task) => wanted.has(task.script));
     return {
-      ok, bad,
-      running: mine.filter((task) => task.status === "running" || task.status === "queued").length,
-      last: mine[0],
+      ok:summary?.available, bad:summary?.abnormal,
+      running:taskPage ? (taskPage.stats.running || 0)+(taskPage.stats.queued || 0) : undefined,
+      last:taskPage?.tasks[0],
     };
-  }, [accounts, tasks, spec.flow]);
+  }, [summary,taskPage]);
 
   const readiness = (step: FlowStep): { tone: "ok" | "warn" | "neutral"; text: string } => {
+    if (error || !summary) return {tone:"neutral",text:error ? "状态待刷新" : "读取中"};
     switch (step.needs) {
       case "mail":
-        return envReady.mail || ic
-          ? { tone: "ok", text: ic ? `IC ${ic.indexed} 封 / ${ic.sources} 源` : "邮箱已配" }
+        return envReady.mail
+          ? { tone: "ok", text: "邮箱已配" }
           : { tone: "warn", text: "邮箱未配" };
       case "proxy":
         return envReady.proxy ? { tone: "ok", text: "代理已配" } : { tone: "warn", text: "缺代理" };
       case "sms":
         return envReady.sms ? { tone: "ok", text: "接码已配" } : { tone: "warn", text: "无接码" };
       case "accounts":
-        return accounts.length ? { tone: "ok", text: `${accounts.length} 个账号` } : { tone: "neutral", text: "暂无账号" };
+        return summary.total ? { tone: "ok", text: `${summary.total} 个账号` } : { tone: "neutral", text: "暂无账号" };
       case "tasks":
         return stats.last ? { tone: "ok", text: stats.last.status } : { tone: "neutral", text: "未运行" };
       default:
@@ -153,7 +165,7 @@ export function PlatformView({ slug }: { slug: string }) {
   };
 
   return (
-    <div className="space-y-4">
+    <div className="sg-workspace">
       <div className="flex flex-wrap items-center gap-3">
         <span className={`grid h-9 w-9 place-items-center rounded-md ${spec.accent} text-[13px] font-semibold text-primary-foreground`}>
           {spec.name.slice(0, 1)}
@@ -163,22 +175,15 @@ export function PlatformView({ slug }: { slug: string }) {
           <p className="text-[11px] leading-relaxed text-muted-foreground">{spec.summary}</p>
         </div>
         <div className="flex gap-2">
+          <button className="btn-ghost" onClick={()=>setReload(value=>value+1)}>刷新</button>
           <Link href={`/platform/${spec.slug}/tasks/`} className="btn-ghost text-[11px]">任务</Link>
           <Link href={`/platform/${spec.slug}/accounts/`} className="btn-ghost text-[11px]">账号</Link>
+          <Link href={`/platform/${spec.slug}/checks/`} className="btn-ghost text-[11px]">凭据检查</Link>
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Stat label="账号总数" value={accounts.length} />
-        <Stat label="可用" value={stats.ok} />
-        <Stat label="封禁/失效" value={stats.bad} tone={stats.bad > 0 ? "bad" : "neutral"} />
-        <Stat
-          label="运行中"
-          value={stats.running}
-          tone={stats.running > 0 ? "warn" : "neutral"}
-          hint={stats.last ? `最近 ${stats.last.status}` : "未运行"}
-        />
-      </div>
+      <ErrorNote message={error}/>
+      <div className="flex flex-wrap gap-x-8 gap-y-2 border-y border-border px-4 py-3 text-[13px] text-muted-foreground"><span>账号总数 <strong className="ml-2 text-foreground tabular-nums">{summary?.total ?? "—"}</strong></span><span>正常 <strong className="ml-2 text-success tabular-nums">{stats.ok ?? "—"}</strong></span><span>异常 <strong className="ml-2 text-destructive tabular-nums">{stats.bad ?? "—"}</strong></span><span>运行 / 排队 <strong className="ml-2 text-foreground tabular-nums">{stats.running ?? "—"}</strong></span></div>
 
       <Card title="流程步骤" bodyClass="p-0">
         <div className="divide-y divide-border">
@@ -214,7 +219,7 @@ export function PlatformView({ slug }: { slug: string }) {
           actions={<Link href={`/platform/${spec.slug}/tasks/`} className="btn-ghost px-2 py-1 text-[11px]">全部</Link>}
         >
           <div className="max-h-[280px] overflow-auto">
-            <TaskTable tasks={tasks} limit={12} showScript emptyText="还没有任务" />
+            <TaskTable tasks={taskPage?.tasks || []} limit={12} showScript emptyText="还没有任务" />
           </div>
         </Card>
 

@@ -18,6 +18,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/tiantianGPU/reg-factory/server/internal/assetstore"
+	"github.com/tiantianGPU/reg-factory/server/internal/settings"
 	"github.com/tiantianGPU/reg-factory/server/internal/store"
 )
 
@@ -325,6 +326,11 @@ func checkProductionDocument(document map[string]any) map[string]any {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	command := exec.CommandContext(ctx, "python", "tools/team_production_check.py")
+	env, err := settings.WorkerEnvironment(settings.Load().EnvFile)
+	if err != nil {
+		return map[string]any{"status": "unknown", "error_code": "PRODUCTION_CONFIG_UNAVAILABLE"}
+	}
+	command.Env = env
 	raw, _ := Canonical(document)
 	command.Stdin = bytes.NewReader(raw)
 	output, err := command.Output()

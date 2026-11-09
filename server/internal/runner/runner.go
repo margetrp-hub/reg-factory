@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tiantianGPU/reg-factory/server/internal/assetstore"
 	"github.com/tiantianGPU/reg-factory/server/internal/settings"
 	"github.com/tiantianGPU/reg-factory/server/internal/store"
 )
@@ -176,7 +177,11 @@ func (m *Manager) dispatch() {
 			}
 			if err := m.launch(*next, w); err != nil {
 				m.record(next.ID, "system", "启动失败: "+err.Error())
-				_ = m.st.Finish(next.ID, "failed", -1, err.Error())
+				if ref := store.AccountRefreshRef(*next); ref != "" {
+					_ = m.st.FinishAccountRefresh(next.ID, ref, "failed", -1, err.Error(), "")
+				} else {
+					_ = m.st.Finish(next.ID, "failed", -1, err.Error())
+				}
 				continue
 			}
 		}
@@ -343,11 +348,34 @@ func (m *Manager) launch(task store.Task, weight int) error {
 	if err != nil {
 		return err
 	}
+	refreshRef := store.AccountRefreshRef(task)
+	sourceSHA := ""
+	if refreshRef != "" {
+		account, err := m.st.GetAccount(refreshRef)
+		if err != nil {
+			return errors.New("刷新账号不可读")
+		}
+		if account.Platform == "chatgpt" {
+			asset, err := assetstore.New(m.cfg.DataDir).Get(refreshRef)
+			if err != nil {
+				return errors.New("原凭据不可读，未执行 RT 刷新")
+			}
+			sourceSHA = asset.ResultSHA
+		}
+	}
+	// Serialize launch and stop so a queued cancellation cannot race a spawn.
+	m.mu.Lock()
+	if refreshRef != "" {
+		if err := m.st.BeginAccountRefresh(task.ID, refreshRef, sourceSHA); err != nil {
+			m.mu.Unlock()
+			return err
+		}
+	}
 	if err := cmd.Start(); err != nil {
+		m.mu.Unlock()
 		return err
 	}
 
-	m.mu.Lock()
 	m.procs[task.ID] = &proc{cmd: cmd, taskID: task.ID}
 	m.weight += weight
 	m.mu.Unlock()
@@ -366,12 +394,22 @@ func (m *Manager) launch(task store.Task, weight int) error {
 	}
 
 	var wg sync.WaitGroup
+	var refreshResult string // written only by stdout pump; read after wg.Wait
 	pump := func(reader io.Reader, stream string) {
 		defer wg.Done()
 		scanner := bufio.NewScanner(reader)
 		scanner.Buffer(make([]byte, 0, 64*1024), 512*1024)
 		for scanner.Scan() {
 			text := scanner.Text()
+			if refreshRef != "" && stream == "stdout" {
+				var result struct {
+					Ref    string `json:"ref"`
+					Result string `json:"result"`
+				}
+				if json.Unmarshal([]byte(text), &result) == nil && result.Ref == refreshRef {
+					refreshResult = result.Result
+				}
+			}
 			m.record(task.ID, stream, text)
 		}
 		if err := scanner.Err(); err != nil {
@@ -418,9 +456,19 @@ func (m *Manager) launch(task store.Task, weight int) error {
 				status = "failed"
 			}
 		}
+		if refreshRef != "" {
+			var finishErr error
+			status, code, message, finishErr = m.finishRefresh(task, refreshResult, status, code, message)
+			if finishErr != nil {
+				m.record(task.ID, "system", "刷新收尾未确认；保留原任务，不重复交换 RT")
+				m.Wake()
+				return
+			}
+		} else {
+			_ = m.st.Finish(task.ID, status, code, message)
+		}
 		m.record(task.ID, "system", fmt.Sprintf("[regd] 任务结束 status=%s exit=%d", status, code))
 		_ = m.st.Stage(task.ID, store.StageEvent{Stage: "execution", Status: status, DurationMS: time.Since(started).Milliseconds(), Code: message})
-		_ = m.st.Finish(task.ID, status, code, message)
 		m.afterFinish(task, status, code)
 		m.Wake()
 	}()
@@ -429,6 +477,9 @@ func (m *Manager) launch(task store.Task, weight int) error {
 
 // Stop 停止单个任务（进程组 SIGTERM，5 秒后 SIGKILL）。
 func (m *Manager) Stop(taskID string) error {
+	if task, err := m.st.GetTask(taskID); err == nil && task.Script == store.CredentialCheckScript {
+		return m.st.StopCredentialCheck(taskID)
+	}
 	if task, err := m.st.GetTask(taskID); err == nil && task.Script == "production.team_json" {
 		return errors.New("生产任务由 Work 管理，请在生产中心取消或核对原任务")
 	}
@@ -437,27 +488,32 @@ func (m *Manager) Stop(taskID string) error {
 	if entry != nil {
 		entry.stopping = true
 	}
-	m.mu.Unlock()
-
 	if entry == nil {
+		defer m.mu.Unlock()
 		// 还没启动的排队任务：直接标记停止
 		if task, err := m.st.GetTask(taskID); err == nil && task.Status == "queued" {
 			m.record(taskID, "system", "任务在启动前已停止")
+			if ref := store.AccountRefreshRef(task); ref != "" {
+				return m.st.FinishAccountRefresh(taskID, ref, "stopped", -1, "启动前已停止，未执行 RT 刷新", "")
+			}
 			return m.st.Finish(taskID, "stopped", -1, "cancelled before start")
 		}
 		return errors.New("任务不在运行中")
 	}
+	m.mu.Unlock()
 	return killGroup(entry.cmd.Process.Pid, 5*time.Second)
 }
 
 // StopAll 停止全部任务。
 func (m *Manager) StopAll() []string {
+	_ = m.st.StopCredentialChecks()
 	m.mu.Lock()
 	ids := make([]string, 0, len(m.procs))
 	for id, entry := range m.procs {
 		entry.stopping = true
 		ids = append(ids, id)
 	}
+	_ = m.st.StopQueuedScripts()
 	m.mu.Unlock()
 	for _, id := range ids {
 		m.mu.Lock()
@@ -467,8 +523,6 @@ func (m *Manager) StopAll() []string {
 			_ = killGroup(entry.cmd.Process.Pid, 5*time.Second)
 		}
 	}
-	// 排队中的也清掉
-	_ = m.st.StopQueuedScripts()
 	return ids
 }
 
@@ -495,6 +549,10 @@ func round1(value float64) float64 {
 // ---------------------------------------------------------------- 环境
 
 func (m *Manager) buildArgv(task store.Task) ([]string, string, []string, error) {
+	baseEnv, envErr := settings.WorkerEnvironment(m.cfg.EnvFile)
+	if envErr != nil {
+		return nil, "", nil, fmt.Errorf("任务配置不可读: %w", envErr)
+	}
 	// raw 任务：ArgsJSON 直接是参数数组，脚本为 tools/<script>.py
 	if task.Script == "asset_ops" || task.Script == "change_password" || task.Script == "import_free_json" {
 		var argvTail []string
@@ -506,7 +564,7 @@ func (m *Manager) buildArgv(task store.Task) ([]string, string, []string, error)
 			return nil, "", nil, fmt.Errorf("%s.py 不存在", task.Script)
 		}
 		argv := append([]string{m.cfg.Python, "-u", script}, argvTail...)
-		env := append(os.Environ(),
+		env := append(baseEnv,
 			"PYTHONUNBUFFERED=1", "PYTHONIOENCODING=utf-8",
 			"REG_FACTORY_DATA_DIR="+m.cfg.DataDir,
 			"REG_FACTORY_WEBUI_TASK=1", "REG_FACTORY_RUN_ID="+task.ID,
@@ -518,7 +576,7 @@ func (m *Manager) buildArgv(task store.Task) ([]string, string, []string, error)
 	if err != nil {
 		return nil, "", nil, err
 	}
-	env := os.Environ()
+	env := baseEnv
 	env = append(env,
 		"PYTHONUNBUFFERED=1",
 		"PYTHONIOENCODING=utf-8",

@@ -26,14 +26,16 @@ type Arg struct {
 
 // Script 是一个可执行的注册任务。
 type Script struct {
-	ID       string `json:"id"`
-	Title    string `json:"title"`
-	File     string `json:"file"`
-	Desc     string `json:"desc"`
-	Platform string `json:"platform"`
-	Category string `json:"category"`
-	Warning  string `json:"warning"`
-	Args     []Arg  `json:"args"`
+	ID        string   `json:"id"`
+	Title     string   `json:"title"`
+	File      string   `json:"file"`
+	Desc      string   `json:"desc"`
+	Platform  string   `json:"platform"`
+	Platforms []string `json:"platforms"`
+	Group     string   `json:"group"`
+	Category  string   `json:"category"`
+	Warning   string   `json:"warning"`
+	Args      []Arg    `json:"args"`
 }
 
 // LoadScripts 读取导出的 schema。
@@ -93,8 +95,17 @@ func BuildArgv(cfg *settings.Settings, task store.Task) ([]string, error) {
 			continue
 		}
 		if arg.Positional {
-			if text := scalar(raw); text != "" {
-				positional = append(positional, text)
+			items := []string{scalar(raw)}
+			if arg.Type == "multi" {
+				items = toStrings(raw)
+			}
+			for _, text := range items {
+				if text != "" {
+					if len(arg.Choices) > 0 && !contains(arg.Choices, text) {
+						return nil, fmt.Errorf("%s 取值不在允许范围", arg.Flag)
+					}
+					positional = append(positional, text)
+				}
 			}
 			continue
 		}
@@ -105,6 +116,11 @@ func BuildArgv(cfg *settings.Settings, task store.Task) ([]string, error) {
 			}
 		case "multi":
 			items := toStrings(raw)
+			for _, text := range items {
+				if len(arg.Choices) > 0 && !contains(arg.Choices, text) {
+					return nil, fmt.Errorf("%s 取值不在允许范围", arg.Flag)
+				}
+			}
 			if len(items) > 0 {
 				argv = append(argv, arg.Flag)
 				argv = append(argv, items...)

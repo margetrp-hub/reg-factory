@@ -14,6 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/tiantianGPU/reg-factory/server/internal/assetstore"
+	"github.com/tiantianGPU/reg-factory/server/internal/settings"
 	"github.com/tiantianGPU/reg-factory/server/internal/store"
 )
 
@@ -155,6 +156,10 @@ func (h *Handler) productionDriver(ctx context.Context, input map[string]any) ma
 	input["artifact_key"] = base64.URLEncoding.EncodeToString(key)
 	raw, _ := Canonical(input)
 	command := exec.CommandContext(ctx, "python", "tools/team_production.py")
+	command.Env, err = settings.WorkerEnvironment(settings.Load().EnvFile)
+	if err != nil {
+		return map[string]any{"status": "unknown", "error_code": "PRODUCTION_CONFIG_UNAVAILABLE"}
+	}
 	command.Stdin = bytes.NewReader(raw)
 	var buffer bytes.Buffer
 	command.Stdout = &buffer

@@ -53,7 +53,7 @@ export function LogView({ taskId = "", height = 420 }: { taskId?: string; height
     });
     source.addEventListener("done", (event) => {
       const data = JSON.parse((event as MessageEvent).data) as { status: string; exit_code: number; error?: string };
-      const labels: Record<string, string> = { succeeded: "成功", completed: "成品核验完成，等待 Work 回传", failed: "失败", stopped: "已停止", cancelled: "已取消", interrupted: "已中断" };
+      const labels: Record<string, string> = { succeeded: "成功", completed: "执行已完成", failed: "失败", unknown: "结果待核对", waiting_user: "待人工处理", stopped: "已停止", cancelled: "已取消", interrupted: "已中断" };
       setResult(`${labels[data.status] || data.status} · 退出码 ${data.exit_code}${data.error ? ` · ${data.error}` : ""}`);
       setDone(true);
       setLive(false);

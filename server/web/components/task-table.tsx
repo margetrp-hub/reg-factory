@@ -4,7 +4,6 @@ import Link from "next/link";
 import { api, type Task } from "@/lib/api";
 import { useState } from "react";
 import { Empty, StatusBadge, timeAgo } from "@/components/ui";
-import { groupOf } from "@/lib/task-catalog";
 
 /** 任务表格：任务中心 / 平台工作台 / 分组页共用，统一列与交互。 */
 export function TaskTable({
@@ -52,7 +51,7 @@ export function TaskTable({
   return (
     <>
     {productionError && <p role="alert" className="px-3 py-2 text-red-500">{productionError}</p>}
-    <table className="tbl whitespace-nowrap">
+    <table className="tbl sg-task-table whitespace-nowrap">
       <thead>
         <tr className="border-b border-border">
           <th className="px-3 py-1.5 text-left font-medium">状态</th>
@@ -81,9 +80,10 @@ export function TaskTable({
               <td className="px-3 py-1.5"><StatusBadge status={task.status} /></td>
               <td className="max-w-[260px] px-2 py-1.5">
                 {onSelect ? (
-                  <span className="block truncate" title={task.title || task.script}>{task.title || task.script}</span>
+                  <button type="button" className="block max-w-full truncate text-left font-medium" title={task.title || task.script}
+                    aria-pressed={activeId === task.id} onClick={event => { event.stopPropagation(); onSelect(task.id); }}>{task.title || task.script}</button>
                 ) : (
-                  <Link href={`/tasks/group/${groupOf(task.script).slug}/?script=${task.script}`} className="block truncate hover:text-brand">
+                  <Link href={`/tasks/?task=${encodeURIComponent(task.id)}`} className="block truncate hover:text-brand">
                     {task.title || task.script}
                   </Link>
                 )}
@@ -92,7 +92,7 @@ export function TaskTable({
                 <td className="px-2 py-1.5 font-mono text-[11px] text-muted-foreground">{task.script}</td>
               )}
               <td className="px-2 py-1.5 text-right font-mono text-[11px] text-muted-foreground">
-                {running ? "运行中" : seconds ? `${seconds}s` : "-"}
+                {task.status === "queued" ? "等待执行" : running ? "运行中" : seconds ? `${seconds}s` : "-"}
               </td>
               <td className="px-3 py-1.5 text-right text-[11px] text-muted-foreground">{timeAgo(task.created_at)}</td>
               <td className="px-3 py-1.5 text-right font-mono text-[11px] text-muted-foreground">

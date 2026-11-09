@@ -1,6 +1,6 @@
 "use client";
 
-import { ReactNode, useEffect } from "react";
+import { ReactNode, useEffect, useId, useRef } from "react";
 
 /** 右侧抽屉：详情与编辑就地完成，不跳页。 */
 export function Drawer({
@@ -8,51 +8,75 @@ export function Drawer({
   title,
   subtitle,
   onClose,
+  onClosed,
   children,
   footer,
   width = 460,
+  variant = "drawer",
 }: {
   open: boolean;
   title: ReactNode;
   subtitle?: ReactNode;
   onClose: () => void;
+  onClosed?: () => void;
   children: ReactNode;
   footer?: ReactNode;
   width?: number;
+  variant?: "drawer" | "dialog";
 }) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  const previousOverflow = useRef<string | null>(null);
+  const afterClose = useRef(onClosed);
+  afterClose.current = onClosed;
+  const titleId = useId();
+  const subtitleId = useId();
   useEffect(() => {
-    if (!open) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+    const element = dialog.current;
+    if (!element) return;
+    if (open) {
+      if (!element.open) {
+        previousOverflow.current = document.body.style.overflow;
+        document.body.style.overflow = "hidden";
+        element.showModal();
+      }
+      return;
+    }
+    if (!element.open) return;
+    const finish = () => {
+      element.close();
+      if (previousOverflow.current !== null) {
+        document.body.style.overflow = previousOverflow.current;
+        previousOverflow.current = null;
+      }
+      afterClose.current?.();
     };
-    document.addEventListener("keydown", onKey);
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => {
-      document.removeEventListener("keydown", onKey);
-      document.body.style.overflow = prev;
-    };
-  }, [open, onClose]);
-
-  if (!open) return null;
+    const timer = window.setTimeout(finish, window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 160);
+    return () => window.clearTimeout(timer);
+  }, [open]);
+  useEffect(() => () => {
+    if (previousOverflow.current !== null) document.body.style.overflow = previousOverflow.current;
+  }, []);
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end">
-      <div className="absolute inset-0 bg-background/60 backdrop-blur-[1px]" onClick={onClose} />
-      <aside
-        style={{ width }}
-        className="relative flex h-full max-w-[92vw] flex-col border-l border-border bg-card shadow-2xl"
-      >
-        <header className="flex items-start gap-3 border-b border-border px-4 py-3">
+    <dialog ref={dialog} className={`sg-drawer${variant === "dialog" ? " sg-dialog" : ""}`} style={{ width }} data-state={open ? "open" : "closed"}
+      aria-labelledby={titleId} aria-describedby={subtitle ? subtitleId : undefined}
+      onCancel={event => { event.preventDefault(); onClose(); }}
+      onClick={event => {
+        if (event.target !== event.currentTarget) return;
+        const box = event.currentTarget.getBoundingClientRect();
+        if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) onClose();
+      }}>
+      <div className="flex h-full min-h-0 flex-col">
+        <header className="flex shrink-0 items-start gap-4 border-b border-border px-6 py-5">
           <div className="min-w-0 flex-1">
-            <div className="truncate text-[13.5px] font-semibold">{title}</div>
-            {subtitle && <div className="mt-0.5 truncate text-[11px] text-muted-foreground">{subtitle}</div>}
+            <h2 id={titleId} className="text-base font-semibold tracking-tight">{title}</h2>
+            {subtitle && <p id={subtitleId} className="mt-1.5 text-[13px] leading-relaxed text-muted-foreground">{subtitle}</p>}
           </div>
-          <button className="btn-ghost px-2 py-0.5 text-[11px]" onClick={onClose}>关闭</button>
+          <button type="button" className="btn-ghost" onClick={onClose} aria-label="关闭面板">关闭</button>
         </header>
-        <div className="min-h-0 flex-1 overflow-auto px-4 py-3">{children}</div>
-        {footer && <footer className="flex items-center justify-end gap-2 border-t border-border px-4 py-2.5">{footer}</footer>}
-      </aside>
-    </div>
+        <div className="min-h-0 flex-1 overflow-auto px-6 py-5">{children}</div>
+        {footer && <footer className="flex shrink-0 items-center justify-end gap-2 border-t border-border px-6 py-4">{footer}</footer>}
+      </div>
+    </dialog>
   );
 }

@@ -15,56 +15,56 @@ import (
 
 // Settings 是 regd 进程启动时确定的配置。
 type Settings struct {
-	DataDir     string // 运行数据根，默认 /data
-	EnvFile     string // .env 路径，默认 $DataDir/.env
-	AppRoot     string // Python 代码根，默认 /app
-	DBPath      string // SQLite 路径，默认 $DataDir/regd.db
-	Addr        string // 监听地址，默认 127.0.0.1:8800
-	Python      string // Python 解释器
-	PanelUser   string
-	PanelPass   string
-	AllowAnon   bool
-	MaxParallel int
-	CgroupRoot  string
-	GuardPct    float64
-	LogTailMax  int
-	NodeID      string
-	NodeKey     string
-	NodePlatform string
-	NodeReceiptKey string
+	DataDir         string // 运行数据根，默认 /data
+	EnvFile         string // .env 路径，默认 $DataDir/.env
+	AppRoot         string // Python 代码根，默认 /app
+	DBPath          string // SQLite 路径，默认 $DataDir/regd.db
+	Addr            string // 监听地址，默认 127.0.0.1:8800
+	Python          string // Python 解释器
+	PanelUser       string
+	PanelPass       string
+	AllowAnon       bool
+	MaxParallel     int
+	CgroupRoot      string
+	GuardPct        float64
+	LogTailMax      int
+	NodeID          string
+	NodeKey         string
+	NodePlatform    string
+	NodeReceiptKey  string
 	NodeBusinessKey string
 	NodeArtifactKey string
-	ICloudBotURL string
-	ICloudBotKey string
-	TZ          string
+	ICloudBotURL    string
+	ICloudBotKey    string
+	TZ              string
 }
 
 // Load 读取环境变量；缺省值适配容器部署。
 func Load() *Settings {
 	dataDir := firstNonEmpty(os.Getenv("REG_FACTORY_DATA_DIR"), "/data")
 	s := &Settings{
-		DataDir:     dataDir,
-		EnvFile:     firstNonEmpty(os.Getenv("REG_FACTORY_ENV_FILE"), filepath.Join(dataDir, ".env")),
-		AppRoot:     firstNonEmpty(os.Getenv("REGD_APP_ROOT"), "/app"),
-		DBPath:      firstNonEmpty(os.Getenv("REGD_DB"), filepath.Join(dataDir, "regd.db")),
-		Addr:        firstNonEmpty(os.Getenv("REGD_ADDR"), "127.0.0.1:8800"),
-		Python:      firstNonEmpty(os.Getenv("REGD_PYTHON"), "python3"),
-		PanelUser:   firstNonEmpty(os.Getenv("REG_FACTORY_PANEL_USER"), "admin"),
-		PanelPass:   os.Getenv("REG_FACTORY_PANEL_PASSWORD"),
-		AllowAnon:   truthy(os.Getenv("REG_FACTORY_ALLOW_ANONYMOUS")),
-		MaxParallel: atoiDefault(os.Getenv("REG_FACTORY_MAX_CONCURRENCY"), 3),
-		CgroupRoot:  firstNonEmpty(os.Getenv("REG_FACTORY_CGROUP_ROOT"), "/sys/fs/cgroup"),
-		GuardPct:    floatDefault(os.Getenv("REG_FACTORY_MEMORY_GUARD_PCT"), 85),
-		LogTailMax:  atoiDefault(os.Getenv("REGD_LOG_TAIL"), 2000),
-		NodeID:      os.Getenv("REG_FACTORY_NODE_ID"),
-		NodeKey:     os.Getenv("REG_FACTORY_NODE_KEY"),
-		NodePlatform: firstNonEmpty(os.Getenv("REG_FACTORY_NODE_PLATFORM"), "claude"),
-		NodeReceiptKey: strings.TrimSpace(os.Getenv("REG_FACTORY_NODE_RECEIPT_KEY")),
+		DataDir:         dataDir,
+		EnvFile:         firstNonEmpty(os.Getenv("REG_FACTORY_ENV_FILE"), filepath.Join(dataDir, ".env")),
+		AppRoot:         firstNonEmpty(os.Getenv("REGD_APP_ROOT"), "/app"),
+		DBPath:          firstNonEmpty(os.Getenv("REGD_DB"), filepath.Join(dataDir, "regd.db")),
+		Addr:            firstNonEmpty(os.Getenv("REGD_ADDR"), "127.0.0.1:8800"),
+		Python:          firstNonEmpty(os.Getenv("REGD_PYTHON"), "python3"),
+		PanelUser:       firstNonEmpty(os.Getenv("REG_FACTORY_PANEL_USER"), "admin"),
+		PanelPass:       os.Getenv("REG_FACTORY_PANEL_PASSWORD"),
+		AllowAnon:       truthy(os.Getenv("REG_FACTORY_ALLOW_ANONYMOUS")),
+		MaxParallel:     atoiDefault(os.Getenv("REG_FACTORY_MAX_CONCURRENCY"), 3),
+		CgroupRoot:      firstNonEmpty(os.Getenv("REG_FACTORY_CGROUP_ROOT"), "/sys/fs/cgroup"),
+		GuardPct:        floatDefault(os.Getenv("REG_FACTORY_MEMORY_GUARD_PCT"), 85),
+		LogTailMax:      atoiDefault(os.Getenv("REGD_LOG_TAIL"), 2000),
+		NodeID:          os.Getenv("REG_FACTORY_NODE_ID"),
+		NodeKey:         os.Getenv("REG_FACTORY_NODE_KEY"),
+		NodePlatform:    firstNonEmpty(os.Getenv("REG_FACTORY_NODE_PLATFORM"), "claude"),
+		NodeReceiptKey:  strings.TrimSpace(os.Getenv("REG_FACTORY_NODE_RECEIPT_KEY")),
 		NodeBusinessKey: strings.TrimSpace(os.Getenv("REG_FACTORY_NODE_BUSINESS_KEY")),
 		NodeArtifactKey: strings.TrimSpace(os.Getenv("REG_FACTORY_NODE_ARTIFACT_KEY")),
-		ICloudBotURL: firstNonEmpty(os.Getenv("ICLOUD_BOT_URL"), os.Getenv("ICLOUD_MAIL_API_BASE")),
-		ICloudBotKey: firstNonEmpty(os.Getenv("ICLOUD_BOT_KEY"), os.Getenv("ICLOUD_MAIL_API_KEY")),
-		TZ:          firstNonEmpty(os.Getenv("TZ"), "Asia/Singapore"),
+		ICloudBotURL:    firstNonEmpty(os.Getenv("ICLOUD_BOT_URL"), os.Getenv("ICLOUD_MAIL_API_BASE")),
+		ICloudBotKey:    firstNonEmpty(os.Getenv("ICLOUD_BOT_KEY"), os.Getenv("ICLOUD_MAIL_API_KEY")),
+		TZ:              firstNonEmpty(os.Getenv("TZ"), "Asia/Singapore"),
 	}
 	if s.MaxParallel < 1 {
 		s.MaxParallel = 1
@@ -111,9 +111,60 @@ func LoadEnvFile(path string) int {
 			continue
 		}
 		os.Setenv(key, strings.Trim(strings.TrimSpace(value), "\"'"))
+		fileEnvironment.Lock()
+		fileEnvironment.keys[key] = true
+		fileEnvironment.Unlock()
 		count++
 	}
 	return count
+}
+
+var fileEnvironment = struct {
+	sync.RWMutex
+	keys map[string]bool
+}{keys: map[string]bool{}}
+
+// DeploymentValue excludes the process snapshot injected from the env file.
+func DeploymentValue(key string) (string, bool) {
+	fileEnvironment.RLock()
+	defer fileEnvironment.RUnlock()
+	if fileEnvironment.keys[key] {
+		return "", false
+	}
+	return os.LookupEnv(key)
+}
+
+// WorkerEnvironment freezes the latest file settings when a worker starts.
+// Deployment environment overrides still win. Running workers are unchanged.
+func WorkerEnvironment(path string) ([]string, error) {
+	entries, err := parseFile(path)
+	if err != nil {
+		return nil, err
+	}
+	values := map[string]string{}
+	fileEnvironment.RLock()
+	for _, item := range os.Environ() {
+		key, value, _ := strings.Cut(item, "=")
+		if !fileEnvironment.keys[key] {
+			values[key] = value
+		}
+	}
+	fileEnvironment.RUnlock()
+	for _, entry := range entries {
+		if _, exists := values[entry.Key]; !exists {
+			values[entry.Key] = entry.Value
+		}
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	result := make([]string, 0, len(keys))
+	for _, key := range keys {
+		result = append(result, key+"="+values[key])
+	}
+	return result, nil
 }
 
 // ---------------------------------------------------------------- .env 读写

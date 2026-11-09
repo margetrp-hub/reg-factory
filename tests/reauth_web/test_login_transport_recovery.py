@@ -60,3 +60,31 @@ def test_http_rejection_is_not_retried_or_misreported_as_prior_redirect():
         'http_status': 403, 'page_type': 'login-check', 'token_exchange_started': False}
     assert client.session.post.call_count == 1 and not pause.called
     client.session.request.assert_not_called()
+
+
+@pytest.mark.parametrize('issue,verify,expected', [
+    (403, None, 'mfa_challenge_rejected'),
+    (429, None, 'rate_limit_exceeded'),
+    (200, 403, 'mfa_totp_verification_failed'),
+    (200, 429, 'rate_limit_exceeded'),
+    (200, 200, ''),
+])
+def test_mfa_result_has_safe_reason_and_success_can_continue(issue, verify, expected):
+    client = OAuthClient({}, verbose=False)
+    client.session.close()
+    replies = [SimpleNamespace(status_code=issue, json=lambda: {'error': 'private-provider-details'})]
+    if verify is not None:
+        replies.append(SimpleNamespace(status_code=verify, json=lambda: {
+            'continue_url': 'https://auth.openai.com/sign-in-with-chatgpt/codex/consent'}))
+    mfa = SimpleNamespace(max_attempts=1, get_mfa_code=lambda **kwargs: '123456')
+    with patch.object(client, '_resolve_totp_factor', return_value={'id': 'fixture-factor'}), \
+            patch.object(client, '_visit_oauth_page'), \
+            patch.object(client, '_oauth_request', side_effect=replies) as send:
+        result = client._oauth_complete_totp_mfa_for_continue(device_id='fixture-device',
+            user_agent='fixture', impersonate=None, mfa_client=mfa,
+            current_url='https://auth.openai.com/mfa-challenge')
+    assert client.last_oauth_error == expected
+    assert bool(result) == (not expected)
+    assert send.call_count == len(replies)
+    evidence = failure_evidence({'error': client.last_oauth_error})
+    assert 'private-provider-details' not in str(evidence)

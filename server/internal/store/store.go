@@ -78,6 +78,38 @@ CREATE TABLE IF NOT EXISTS tasks (
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+CREATE INDEX IF NOT EXISTS idx_tasks_history ON tasks(created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_tasks_status_history ON tasks(status, created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_tasks_script_history ON tasks(script, created_at DESC, id DESC);
+
+CREATE TABLE IF NOT EXISTS credential_check_items (
+  task_id TEXT NOT NULL REFERENCES tasks(id),
+  ordinal INTEGER NOT NULL,
+  ref TEXT NOT NULL,
+  identity TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending',
+  message TEXT NOT NULL DEFAULT '',
+  checked_at TEXT NOT NULL DEFAULT '',
+  child_task_id TEXT NOT NULL DEFAULT '',
+  mode TEXT NOT NULL DEFAULT 'at',
+  PRIMARY KEY(task_id, ordinal),
+  UNIQUE(task_id, ref)
+);
+
+CREATE TABLE IF NOT EXISTS account_refreshes (
+  task_id TEXT PRIMARY KEY REFERENCES tasks(id),
+  ref TEXT NOT NULL,
+  source_sha TEXT NOT NULL DEFAULT '',
+  result_sha TEXT NOT NULL DEFAULT '',
+  resolution TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_account_refresh_ref ON account_refreshes(ref,task_id);
+CREATE TABLE IF NOT EXISTS account_refresh_requests (
+  request_id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES tasks(id),
+  args_json TEXT NOT NULL,
+  actor TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -123,6 +155,9 @@ CREATE TABLE IF NOT EXISTS accounts (
   liveness_checked_at TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_accounts_kind ON accounts(kind, platform, status);
+CREATE INDEX IF NOT EXISTS idx_accounts_history ON accounts(updated_at DESC, ref DESC);
+CREATE INDEX IF NOT EXISTS idx_accounts_platform_history ON accounts(platform, updated_at DESC, ref DESC);
+CREATE INDEX IF NOT EXISTS idx_accounts_platform_status_history ON accounts(platform, status, updated_at DESC, ref DESC);
 
 CREATE TABLE IF NOT EXISTS account_subject_aliases (
   subject_id TEXT PRIMARY KEY,
@@ -282,7 +317,7 @@ func (s *Store) ListTasks(status string, limit int) ([]Task, error) {
 // RecoverInterrupted 把上次进程崩溃遗留的 running 标记为 interrupted。
 func (s *Store) NextScriptTask() (*Task, error) {
 	var id string
-	err := s.db.QueryRow(`SELECT id FROM tasks WHERE status='queued' AND script <> 'production.team_json' ORDER BY created_at,id LIMIT 1`).Scan(&id)
+	err := s.db.QueryRow(`SELECT id FROM tasks WHERE status='queued' AND script NOT IN ('production.team_json','credential.check') ORDER BY created_at,id LIMIT 1`).Scan(&id)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -294,19 +329,44 @@ func (s *Store) NextScriptTask() (*Task, error) {
 }
 
 func (s *Store) StopQueuedScripts() error {
-	_, err := s.db.Exec(`UPDATE tasks SET status='stopped',finished_at=?,exit_code=-1,error='stop-all' WHERE status='queued' AND script <> 'production.team_json'`, now())
-	return err
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec(`UPDATE accounts SET refresh_state='stopped',refresh_at=? WHERE ref IN (SELECT r.ref FROM account_refreshes r JOIN tasks t ON t.id=r.task_id WHERE t.status='queued')`, now()); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`UPDATE tasks SET status='stopped',finished_at=?,exit_code=-1,error='stop-all' WHERE status='queued' AND script <> 'production.team_json'`, now()); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) RecoverInterrupted() (int64, error) {
-	res, err := s.db.Exec(
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec(`UPDATE credential_check_items SET status='unknown',message='服务重启，原检查未确认；可重新测试 AT' WHERE status='running'`); err != nil {
+		return 0, err
+	}
+	if _, err = tx.Exec(`UPDATE accounts SET refresh_state='interrupted',refresh_at=? WHERE ref IN (SELECT r.ref FROM account_refreshes r JOIN tasks t ON t.id=r.task_id WHERE t.status IN ('queued','running','stopping'))`, now()); err != nil {
+		return 0, err
+	}
+	res, err := tx.Exec(
 		`UPDATE tasks SET status='interrupted', error='regd restarted', finished_at=?, pid=0
-		 WHERE status IN ('running','queued') AND script <> 'production.team_json'`, now(),
+		 WHERE status IN ('running','queued','stopping') AND script <> 'production.team_json'`, now(),
 	)
 	if err != nil {
 		return 0, err
 	}
-	return res.RowsAffected()
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return n, tx.Commit()
 }
 
 // ---------------------------------------------------------------- 事件
@@ -677,30 +737,46 @@ func (s *Store) ensureColumns(table string, cols map[string]string) {
 
 // ListAccounts 按条件列出账号。
 func (s *Store) ListAccounts(kind, platform, status string, limit int) ([]Account, error) {
+	rows, _, err := s.ListAccountsPage(kind, platform, status, limit, 0)
+	return rows, err
+}
+
+func (s *Store) ListAccountsPage(kind, platform, status string, limit, offset int) ([]Account, int, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 200
 	}
-	q := `SELECT ref, platform, kind, identity, secret_ref, status, health_checked_at, health_message,
-	             claimed, claimed_at, refresh_state, refresh_at, note, updated_at FROM accounts WHERE 1=1`
+	if offset < 0 {
+		offset = 0
+	}
+	where := " FROM accounts WHERE 1=1"
 	var args []any
 	if kind != "" {
-		q += " AND kind=?"
+		where += " AND kind=?"
 		args = append(args, kind)
 	}
 	if platform != "" {
-		q += " AND platform=?"
+		where += " AND platform=?"
 		args = append(args, platform)
 	}
 	if status != "" {
-		q += " AND status=?"
+		where += " AND status=?"
 		args = append(args, status)
 	}
-	q += " ORDER BY updated_at DESC LIMIT ?"
-	args = append(args, limit)
-
-	rows, err := s.db.Query(q, args...)
+	tx, err := s.db.Begin()
 	if err != nil {
-		return nil, err
+		return nil, 0, err
+	}
+	defer tx.Rollback()
+	var total int
+	if err := tx.QueryRow("SELECT COUNT(*)"+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	q := `SELECT ref, platform, kind, identity, secret_ref, status, health_checked_at, health_message,
+	             claimed, claimed_at, refresh_state, refresh_at, note, updated_at` + where + " ORDER BY updated_at DESC, ref DESC LIMIT ? OFFSET ?"
+	args = append(args, limit, offset)
+	rows, err := tx.Query(q, args...)
+	if err != nil {
+		return nil, 0, err
 	}
 	defer rows.Close()
 	out := make([]Account, 0, limit)
@@ -709,11 +785,15 @@ func (s *Store) ListAccounts(kind, platform, status string, limit int) ([]Accoun
 		if err := rows.Scan(&a.Ref, &a.Platform, &a.Kind, &a.Identity, &a.SecretRef, &a.Status,
 			&a.HealthCheckedAt, &a.HealthMessage, &a.Claimed, &a.ClaimedAt,
 			&a.RefreshState, &a.RefreshAt, &a.Note, &a.UpdatedAt); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		out = append(out, a)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	rows.Close()
+	return out, total, tx.Commit()
 }
 
 // GetAccount 取单条。

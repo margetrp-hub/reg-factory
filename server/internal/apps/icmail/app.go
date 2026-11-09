@@ -1,4 +1,4 @@
-﻿// Package icmail is the "IC 邮箱" app of reg-factory.
+// Package icmail is the "IC 邮箱" app of reg-factory.
 //
 // It owns its own SQLite file next to regd's data, indexes a mailbox over IMAP
 // (IDLE first, heartbeat as fallback) and exposes a small HTTP surface under
@@ -8,10 +8,12 @@ package icmail
 
 import (
 	"context"
-	"strconv"
+	"crypto/subtle"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -31,12 +33,12 @@ type Config struct {
 	FetchChunk         int
 
 	// IMAP source (seeded into mail_sources on first boot)
-	IMAPHost     string
-	IMAPPort     int
-	IMAPUser     string
-	IMAPPass     string
-	IMAPFolder   string
-	IMAPInterval int
+	IMAPHost      string
+	IMAPPort      int
+	IMAPUser      string
+	IMAPPass      string
+	IMAPFolder    string
+	IMAPInterval  int
 	IMAPHeartbeat int
 }
 
@@ -45,8 +47,12 @@ type App struct {
 	Cfg Config
 	DB  *DB
 
-	mu     sync.Mutex
-	cancel context.CancelFunc
+	mu      sync.Mutex
+	cancel  context.CancelFunc
+	done    chan struct{}
+	changed chan struct{}
+	runners map[int64]*managedRunner
+	dial    func(context.Context, Source) (mailClient, error)
 }
 
 // NewConfigFromEnv resolves configuration; dbPath defaults to <dataDir>/icmail.db.
@@ -87,13 +93,13 @@ func New(cfg Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	app := &App{Cfg: cfg, DB: db}
+	app := &App{Cfg: cfg, DB: db, changed: make(chan struct{}, 1), runners: map[int64]*managedRunner{}}
 	app.seedSource()
 	return app, nil
 }
 
 // Close releases resources.
-func (a *App) Close() error { return a.DB.Close() }
+func (a *App) Close() error { a.Stop(); return a.DB.Close() }
 
 // Start launches the mail ingestion loop (no-op until a source is configured).
 func (a *App) Start(ctx context.Context) {
@@ -104,7 +110,9 @@ func (a *App) Start(ctx context.Context) {
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	a.cancel = cancel
-	go a.runWorker(runCtx)
+	a.done = make(chan struct{})
+	done := a.done
+	go func() { defer close(done); a.runWorker(runCtx) }()
 }
 
 // Stop terminates the ingestion loop.
@@ -113,7 +121,15 @@ func (a *App) Stop() {
 	defer a.mu.Unlock()
 	if a.cancel != nil {
 		a.cancel()
-		a.cancel = nil
+		// Workers use this mutex only for supervisor snapshots; release it
+		// while joining, and do not allow another Start until they finish.
+		done := a.done
+		a.mu.Unlock()
+		<-done
+		a.mu.Lock()
+		if a.done == done {
+			a.cancel = nil
+		}
 	}
 }
 
@@ -121,7 +137,11 @@ func (a *App) Stop() {
 
 // Register mounts the app routes on the given gin group (/api/apps/icmail).
 func (a *App) Register(rg *gin.RouterGroup) {
-	rg.GET("/health", a.handleHealth)
+	rg.GET("/pool", a.requireAdmin(), a.handlePool)
+	rg.POST("/pool/import", a.requireAdmin(), a.handlePoolImport)
+	rg.POST("/pool/mailbox", a.requireAdmin(), a.handleMailbox)
+	rg.GET("/sync", a.requireAdmin(), a.handleSyncRuns)
+	rg.GET("/health", a.requireAdmin(), a.handleHealth)
 	rg.GET("/messages", a.requireAdmin(), a.handleMessages)
 	rg.GET("/stats", a.requireAdmin(), a.handleStats)
 	rg.GET("/sources", a.requireAdmin(), a.handleSources)
@@ -133,7 +153,7 @@ func (a *App) Register(rg *gin.RouterGroup) {
 	rg.POST("/sources/:id/toggle", a.requireAdmin(), a.handleSourceToggle)
 	rg.DELETE("/sources/:id", a.requireAdmin(), a.handleSourceDelete)
 	rg.POST("/sync", a.requireAdmin(), a.handleSync)
-	rg.GET("/prune", a.requireAdmin(), a.handlePrune)
+	rg.POST("/prune", a.requireAdmin(), a.handlePrune)
 	rg.GET("/config", a.requireAdmin(), a.handleAdminConfig)
 }
 
@@ -147,11 +167,11 @@ func (a *App) RegisterPublic(rg *gin.RouterGroup) {
 func (a *App) requireAdmin() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 空密钥 = 交给外层（regd 的登录中间件）保护；独立部署时才需要自带钥匙。
-		if a.Cfg.AdminKey == "" {
+		if c.GetBool("icmailAuthenticated") || a.Cfg.AdminKey == "" {
 			c.Next()
 			return
 		}
-		if c.GetHeader("X-Admin-Key") != a.Cfg.AdminKey {
+		if subtle.ConstantTimeCompare([]byte(c.GetHeader("X-Admin-Key")), []byte(a.Cfg.AdminKey)) != 1 {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"ok": false, "error": gin.H{"code": "UNAUTHORIZED", "message": "invalid admin key"}})
 			return
 		}
@@ -212,7 +232,7 @@ func (a *App) handleCode(c *gin.Context) {
 	}
 	result, err := a.LookupCode(email, 20)
 	if err != nil {
-		failJSON(c, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		a.codeError(c, err)
 		return
 	}
 	okJSON(c, result)
@@ -264,22 +284,16 @@ func (a *App) handleUpsertSource(c *gin.Context) {
 	if strings.TrimSpace(src.Folder) == "" {
 		src.Folder = "INBOX"
 	}
-	// 编辑时密码留空 = 保留原密码（避免前端回填明文）
-	if strings.TrimSpace(src.Password) == "" {
-		if existing, listErr := a.DB.ListSources(false); listErr == nil {
-			for _, item := range existing {
-				if item.Name == src.Name && item.Password != "" {
-					src.Password = item.Password
-					break
-				}
-			}
-		}
+	if src.ID < 0 || src.Port < 1 || src.Port > 65535 || strings.ContainsAny(src.Host, " /\\\r\n") || src.IntervalSeconds < 0 || src.HeartbeatSeconds < 0 {
+		failJSON(c, http.StatusBadRequest, "BAD_SOURCE", "请检查服务器、端口和同步间隔")
+		return
 	}
 	saved, err := a.DB.UpsertSource(src)
 	if err != nil {
-		failJSON(c, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		failJSON(c, http.StatusConflict, "SOURCE_NOT_SAVED", err.Error())
 		return
 	}
+	a.notifySources()
 	okJSON(c, gin.H{"source": gin.H{
 		"id": saved.ID, "name": saved.Name, "host": saved.Host, "port": saved.Port,
 		"username": saved.Username, "folder": saved.Folder, "enabled": saved.Enabled,
@@ -304,6 +318,7 @@ func (a *App) handleSourceToggle(c *gin.Context) {
 		return
 	}
 	okJSON(c, gin.H{"id": id, "enabled": body.Enabled})
+	a.notifySources()
 }
 
 func (a *App) handleSourceDelete(c *gin.Context) {
@@ -317,25 +332,44 @@ func (a *App) handleSourceDelete(c *gin.Context) {
 		return
 	}
 	okJSON(c, gin.H{"id": id, "deleted": true})
+	a.notifySources()
 }
 
 func (a *App) handleSync(c *gin.Context) {
 	var body struct {
-		SourceID int64  `json:"source_id"`
-		Alias    string `json:"alias"`
+		SourceID  int64  `json:"source_id"`
+		Alias     string `json:"alias"`
+		RequestID string `json:"request_id"`
 	}
-	_ = c.ShouldBindJSON(&body)
-	if err := a.DB.RequestSync(c.Request.Context(), body.SourceID, body.Alias); err != nil {
-		failJSON(c, http.StatusInternalServerError, "DB_ERROR", err.Error())
+	if err := c.ShouldBindJSON(&body); err != nil {
+		failJSON(c, 400, "BAD_REQUEST", "需要同步来源和请求编号")
 		return
 	}
-	okJSON(c, gin.H{"queued": true, "source_id": body.SourceID, "alias": body.Alias})
+	items, err := a.DB.QueueSync(c.Request.Context(), body.SourceID, strings.ToLower(strings.TrimSpace(body.Alias)), body.RequestID)
+	if err != nil {
+		failJSON(c, http.StatusConflict, "SYNC_NOT_QUEUED", err.Error())
+		return
+	}
+	a.notifySources()
+	c.JSON(http.StatusAccepted, gin.H{"ok": true, "data": gin.H{"queued": true, "runs": items, "requestId": body.RequestID}})
 }
 
 func (a *App) handlePrune(c *gin.Context) {
-	days := atoiDefault(c.Query("days"), a.Cfg.RetentionDays)
+	days := a.Cfg.RetentionDays
 	if days <= 0 {
 		days = 90
+	}
+	if value, present := c.GetQuery("days"); present {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 1 || parsed > 3650 {
+			failJSON(c, http.StatusBadRequest, "INVALID_RETENTION", "保留时间必须为 1–3650 天")
+			return
+		}
+		days = parsed
+	}
+	if days > 3650 {
+		failJSON(c, http.StatusBadRequest, "INVALID_RETENTION", "保留时间必须为 1–3650 天")
+		return
 	}
 	if err := a.DB.PruneOlderThan(days); err != nil {
 		failJSON(c, http.StatusInternalServerError, "DB_ERROR", err.Error())
@@ -389,14 +423,22 @@ func (a *App) handleAdminCode(c *gin.Context) {
 	}
 	result, err := a.LookupCode(email, 20)
 	if err != nil {
-		failJSON(c, http.StatusInternalServerError, "DB_ERROR", err.Error())
+		a.codeError(c, err)
 		return
 	}
 	okJSON(c, result)
 }
 
+func (a *App) codeError(c *gin.Context, err error) {
+	if errors.Is(err, ErrMailboxUnavailable) {
+		failJSON(c, http.StatusConflict, "MAILBOX_UNAVAILABLE", "邮箱已暂停或阻止，请先在邮箱池恢复")
+		return
+	}
+	failJSON(c, http.StatusInternalServerError, "CODE_READ_FAILED", "取码失败，请稍后重试")
+}
+
 func (a *App) handleMessages(c *gin.Context) {
-	rows, err := a.DB.Query(c.Query("alias"), c.Query("tag"), atoiDefault(c.Query("limit"), 100))
+	rows, total, err := a.DB.MessagePage(c.Request.Context(), c.Query("alias"), c.Query("tag"), int64(atoiDefault(c.Query("source_id"), 0)), atoiDefault(c.Query("limit"), 25), atoiDefault(c.Query("offset"), 0))
 	if err != nil {
 		failJSON(c, http.StatusInternalServerError, "DB_ERROR", err.Error())
 		return
@@ -404,7 +446,7 @@ func (a *App) handleMessages(c *gin.Context) {
 	if rows == nil {
 		rows = []Message{}
 	}
-	okJSON(c, gin.H{"messages": rows, "count": len(rows)})
+	okJSON(c, gin.H{"messages": rows, "count": len(rows), "total": total})
 }
 
 func (a *App) handleStats(c *gin.Context) {
@@ -428,6 +470,8 @@ func (a *App) handleSources(c *gin.Context) {
 			"id": s.ID, "name": s.Name, "host": s.Host, "port": s.Port, "username": s.Username,
 			"folder": s.Folder, "enabled": s.Enabled, "idle": s.Idle, "lastUid": s.LastUID,
 			"lastError": nullStr(s.LastError),
+			"lastUID":   s.LastUID, "lastOKAt": s.LastOKAt, "intervalSeconds": s.IntervalSeconds, "heartbeatSeconds": s.HeartbeatSeconds,
+			"passwordSet": s.Password != "", "runtime": a.sourceRuntime(s),
 		})
 	}
 	okJSON(c, gin.H{"sources": out})

@@ -1,136 +1,64 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import { api, type AccountRow, type Task } from "@/lib/api";
-import { Badge, Card, Stat } from "@/components/ui";
-
-const PLATFORMS = [
-  { slug: "claude", name: "Claude", note: "邮箱取码 → 注册 → sessionKey", accent: "bg-[#d97757]" },
-  { slug: "chatgpt", name: "ChatGPT", note: "注册 → Codex 授权 → 导入", accent: "bg-[#10a37f]" },
-  { slug: "grok", name: "Grok", note: "住宅代理 → 注册 → SSO", accent: "bg-foreground" },
-  { slug: "outlook", name: "Outlook", note: "常驻注册 → Graph 授权", accent: "bg-[#0078d4]" },
-];
+import { api, type AccountSummary, type TaskPage } from "@/lib/api";
+import { EntryArrow, ErrorNote, StatusBadge } from "@/components/ui";
+import { PLATFORM_TASKS, scriptsForPlatform, TASK_GROUPS } from "@/lib/task-catalog";
 
 export default function ProductionIndexPage() {
-  const [accounts, setAccounts] = useState<AccountRow[]>([]);
-  const [tasks, setTasks] = useState<Task[]>([]);
-  const [ic, setIc] = useState<{ indexed: number; sources: number } | null>(null);
-
-  const load = useCallback(async () => {
-    const [accountData, taskData, health] = await Promise.all([
-      api.accounts({ limit: 500 }),
-      api.tasks(80),
-      fetch("/api/apps/icmail/health", { credentials: "same-origin" }).then((r) => r.json()).catch(() => null),
-    ]);
-    setAccounts(accountData.accounts);
-    setTasks(taskData.tasks);
-    if (health?.ok) setIc(health.data.stats);
-  }, []);
-
+  const [accounts, setAccounts] = useState<AccountSummary[] | null>(null);
+  const [tasks, setTasks] = useState<Record<string,TaskPage>>({});
+  const [error, setError] = useState("");
+  const [reload, setReload] = useState(0);
   useEffect(() => {
-    load();
-    const timer = setInterval(load, 10000);
-    return () => clearInterval(timer);
-  }, [load]);
-
-  const perPlatform = useMemo(() => {
-    const map = new Map<string, { total: number; ok: number; bad: number; last?: Task }>();
-    for (const row of accounts) {
-      const key = row.platform || "other";
-      const entry = map.get(key) || { total: 0, ok: 0, bad: 0 };
-      entry.total += 1;
-      if (row.status === "ok") entry.ok += 1;
-      if (row.status === "banned" || row.status === "invalid") entry.bad += 1;
-      map.set(key, entry);
-    }
-    return map;
-  }, [accounts]);
-
-  const totals = useMemo(
-    () => ({
-      ok: accounts.filter((row) => row.status === "ok").length,
-      bad: accounts.filter((row) => row.status === "banned" || row.status === "invalid").length,
-      running: tasks.filter((task) => task.status === "running" || task.status === "queued").length,
-      failed: tasks.filter((task) => task.status === "failed").length,
-    }),
-    [accounts, tasks],
-  );
-
-  return (
-    <div className="space-y-4">
-      <div className="page-head">
-        <div className="min-w-0 flex-1">
-          <h1 className="page-title">生产</h1>
-          <p className="page-desc">按平台进入流程：每个平台是一条独立的注册/授权链，产出统一进资产。</p>
-        </div>
-        <Link href="/tasks/" className="btn-ghost text-[11px]">任务中心</Link>
-        <Link href="/accounts/" className="btn-ghost text-[11px]">账号资产</Link>
-      </div>
-
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Stat label="可用账号" value={totals.ok} />
-        <Stat label="封禁/失效" value={totals.bad} tone={totals.bad > 0 ? "bad" : "neutral"} />
-        <Stat label="运行 / 排队" value={totals.running} tone={totals.running > 0 ? "warn" : "neutral"} />
-        <Stat label="IC 索引" value={ic?.indexed ?? 0} hint={`源 ${ic?.sources ?? 0}`} />
-      </div>
-
-      <div className="grid gap-3 sm:grid-cols-2">
-        {PLATFORMS.map((platform) => {
-          const stat = perPlatform.get(platform.slug) || { total: 0, ok: 0, bad: 0 };
-          const last = tasks.find((task) =>
-            (task.script || "").toLowerCase().includes(platform.slug) ||
-            (task.title || "").toLowerCase().includes(platform.name.toLowerCase()),
-          );
-          return (
-            <div key={platform.slug} className="card p-4">
-              <div className="flex items-center gap-2.5">
-                <span className={`grid h-7 w-7 place-items-center rounded-md ${platform.accent} text-[12px] font-semibold text-primary-foreground`}>
-                  {platform.name.slice(0, 1)}
-                </span>
-                <div className="min-w-0 flex-1">
-                  <div className="text-[13.5px] font-semibold">{platform.name}</div>
-                  <div className="text-[11px] text-muted-foreground">{platform.note}</div>
-                </div>
-                <Link href={`/platform/${platform.slug}/`} className="btn-ghost px-2 py-1 text-[11px]">流程 →</Link>
-              </div>
-              <div className="mt-3 grid grid-cols-4 gap-2 border-t border-border/60 pt-2 text-center">
-                {[
-                  { k: "账号", v: stat.total },
-                  { k: "可用", v: stat.ok },
-                  { k: "异常", v: stat.bad },
-                  { k: "任务", v: last ? last.status.slice(0, 4) : "-" },
-                ].map((cell) => (
-                  <div key={cell.k}>
-                    <div className="font-mono text-[12.5px] text-foreground">{cell.v}</div>
-                    <div className="text-[10px] uppercase tracking-[0.06em] text-muted-foreground">{cell.k}</div>
-                  </div>
-                ))}
-              </div>
-              <div className="mt-2 flex gap-1.5">
-                <Link href={`/platform/${platform.slug}/tasks/`} className="btn-ghost flex-1 px-2 py-1 text-[11px]">任务</Link>
-                <Link href={`/platform/${platform.slug}/accounts/`} className="btn-ghost flex-1 px-2 py-1 text-[11px]">账号</Link>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      <Card title="IC 邮箱（供给方）" bodyClass="p-0">
-        <table className="tbl">
-          <tbody>
-            <tr>
-              <td className="w-[150px] font-medium">IC 邮箱</td>
-              <td className="text-[11.5px] text-muted-foreground">
-                索引 {ic?.indexed ?? 0} 封 · {ic?.sources ?? 0} 个 IMAP 源；协议注册与测活从这里取码
-              </td>
-              <td className="w-[150px] text-right">
-                <Link href="/apps/icmail/" className="btn-ghost px-2 py-1 text-[11px]">工作台 →</Link>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </Card>
+    let active = true;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout>;
+    const load = async () => {
+      try {
+        const catalog = await api.scripts(controller.signal);
+        const [summary, ...pages] = await Promise.all([
+          api.accountSummary("",controller.signal),
+          ...Object.keys(PLATFORM_TASKS).map(slug=>{
+            const ids=scriptsForPlatform(catalog.scripts,slug).map(script=>script.id);
+            return ids.length ? api.tasks(1,{scripts:ids},controller.signal) : Promise.resolve({tasks:[],stats:{},count:0,total:0,limit:1,offset:0} as TaskPage);
+          }),
+        ]);
+        if (!active) return;
+        setAccounts(summary.platforms);
+        setTasks(Object.fromEntries(Object.keys(PLATFORM_TASKS).map((slug,index)=>[slug,pages[index]])));
+        setError("");
+      } catch (err) { if (active) setError(`生产概览读取失败，已保留上次结果。${(err as Error).message}`); }
+      finally { if (active) timer = setTimeout(load,document.hidden ? 30000 : 15000); }
+    };
+    void load();
+    return () => { active=false; controller.abort(); clearTimeout(timer); };
+  },[reload]);
+  const total = accounts?.reduce((sum,item)=>sum+item.total,0);
+  const abnormal = accounts?.reduce((sum,item)=>sum+item.abnormal,0);
+  return <div className="sg-workspace">
+    <header className="sg-page-head"><div><p className="sg-eyebrow">生产工作台</p><h1>按平台执行</h1><p className="sg-description">进入对应平台，选择执行方式、核对任务结果与账号状态。</p></div><div className="flex gap-2"><button className="btn-ghost" onClick={()=>setReload(value=>value+1)}>刷新</button><Link className="btn-ghost" href="/tasks/">全部任务</Link></div></header>
+    <ErrorNote message={error} />
+    <div className="flex flex-wrap items-center gap-x-6 gap-y-2 border-b border-border px-1 pb-4 text-[13px] text-muted-foreground">
+      <span>已索引账号 <strong className="ml-2 font-medium tabular-nums text-foreground">{total ?? "—"}</strong></span>
+      <span>异常账号 <strong className="ml-2 font-medium tabular-nums text-destructive">{abnormal ?? "—"}</strong></span>
+      <Link className="ml-auto underline underline-offset-4" href="/settings/">执行配置</Link>
+      <Link className="underline underline-offset-4" href="/apps/icmail/">邮箱供给</Link>
     </div>
-  );
+    <div className="grid gap-4 sm:grid-cols-2">
+      {Object.entries(PLATFORM_TASKS).map(([slug,platform])=>{
+        const summary=accounts?.find(item=>item.platform===slug);
+        const page=tasks[slug], last=page?.tasks[0];
+        const running=page ? (page.stats.running || 0)+(page.stats.queued || 0) : null;
+        return <section key={slug} className="sg-task-surface">
+          <header className="sg-task-toolbar"><div className="min-w-0 flex-1"><h2 className="text-lg font-semibold tracking-tight">{platform.name}</h2><p className="sg-description mt-1">注册 · 授权 · 状态核验</p></div><Link aria-label={`进入 ${platform.name} 流程`} className="btn-ghost" href={`/platform/${slug}/`}>查看流程<EntryArrow /></Link></header>
+          <div className="flex flex-wrap items-baseline gap-4 px-5 pb-5"><span className="text-3xl font-semibold tracking-tight tabular-nums">{accounts ? summary?.available || 0 : "—"}</span><span className="sg-description">正常账号</span><span className="sg-description ml-auto">总数 {accounts ? summary?.total || 0 : "—"} · 异常 {accounts ? summary?.abnormal || 0 : "—"}</span></div>
+          <div className="flex flex-wrap items-center gap-3 border-y border-border bg-muted/30 px-5 py-3 text-[13px]"><span className="text-muted-foreground">最近执行</span>{last ? <><StatusBadge status={last.status}/><Link className="min-w-0 flex-1 truncate underline-offset-4 hover:underline" href={`/tasks/?task=${encodeURIComponent(last.id)}`}>{last.title}</Link></> : <span>{page ? "暂无执行" : "读取中…"}</span>}<span className="ml-auto tabular-nums text-muted-foreground">进行中 {running ?? "—"}</span></div>
+          <footer className="flex gap-2 p-4"><Link className="btn-primary" href={`/platform/${slug}/tasks/`}>发起任务</Link><Link className="btn-ghost" href={`/platform/${slug}/accounts/`}>账号记录</Link></footer>
+        </section>;
+      })}
+    </div>
+    <section className="sg-task-surface"><header className="sg-task-toolbar"><h2 className="text-sm font-semibold">跨平台能力</h2><span className="sg-description">组合流程、授权、导出和支撑服务保留独立入口</span></header><div className="flex flex-wrap gap-2 px-5 pb-5">{TASK_GROUPS.map(group=><Link className="btn-ghost" key={group.slug} href={`/tasks/group/${group.slug}/`}>{group.title}<EntryArrow /></Link>)}</div></section>
+  </div>;
 }

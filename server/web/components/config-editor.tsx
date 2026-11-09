@@ -2,23 +2,14 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { api } from "@/lib/api";
+import { api, type ConfigEntry } from "@/lib/api";
 import { isNodeConfig, NODE_CONFIG_FIELDS } from "@/lib/node-config";
 import { Card, Empty, ErrorNote } from "@/components/ui";
+import { Drawer } from "@/components/drawer";
 
-type Entry = { key: string; value: string; secret: boolean; line: number };
+type Entry = ConfigEntry;
 
-/** 跨平台共用的配置：代理 / 邮箱 / 接码 / 打码。集中到「共性配置」一组。 */
-const COMMON_PREFIXES = [
-  "PROXY_", "CLASH",
-  "ICMAIL_", "ICLOUD_", "YYDS_", "GPTMAIL_", "CFMAIL_", "MOEMAIL_", "REMAIL_", "CUSTOM_MAIL_",
-  "SMS_", "HERO_",
-  "CAPSOLVER_", "EZCAPTCHA_", "YESCAPTCHA_", "VISION_", "VOTE_", "GEMMA_",
-  "BROWSER_PROVIDER", "BITBROWSER_", "ADSPOWER_",
-];
-const isCommon = (key: string) => COMMON_PREFIXES.some((prefix) => key.toUpperCase().startsWith(prefix));
-
-export function ConfigEditor({ scope }: { scope: "system" | "node" }) {
+export function ConfigEditor({ scope, area }: { scope: "system" | "node"; area?: string }) {
   const isNode = scope === "node";
   const [groups, setGroups] = useState<Record<string, Entry[]>>({});
   const [activeGroup, setActiveGroup] = useState("");
@@ -37,6 +28,8 @@ export function ConfigEditor({ scope }: { scope: "system" | "node" }) {
   const [proxy, setProxy] = useState("");
   const [target, setTarget] = useState("https://claude.ai");
   const [probe, setProbe] = useState<string>("");
+  const [probeOpen, setProbeOpen] = useState(false);
+  const [probing, setProbing] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -46,6 +39,7 @@ export function ConfigEditor({ scope }: { scope: "system" | "node" }) {
       setGroups(data.groups);
       setPath(data.path);
       setLoaded(true);
+      setError(data.schema_error || "");
       // Reconcile an uncertain save against the file, preserving unsaved values.
       const values = new Map<string, string>();
       Object.values(data.groups).flat().sort((a, b) => a.line - b.line).forEach((entry) => {
@@ -62,8 +56,21 @@ export function ConfigEditor({ scope }: { scope: "system" | "node" }) {
   }, []);
 
   useEffect(() => {
+    setQuery(new URLSearchParams(window.location.search).get("q") || "");
     load();
   }, [load]);
+
+  useEffect(() => {
+    if (!Object.keys(dirty).length && !rawOpen && !busy) return;
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
+    const leaving = (event: MouseEvent) => {
+      const link = (event.target as Element).closest?.("a[href]");
+      if (link && !window.confirm("还有未保存的配置，确定离开并放弃本页修改？")) { event.preventDefault(); event.stopPropagation(); }
+    };
+    window.addEventListener("beforeunload", warn);
+    document.addEventListener("click", leaving, true);
+    return () => { window.removeEventListener("beforeunload", warn); document.removeEventListener("click", leaving, true); };
+  }, [dirty, rawOpen, busy]);
 
   const scopedGroups = useMemo<Record<string, Entry[]>>(() => {
     const seen = new Set<string>();
@@ -73,7 +80,7 @@ export function ConfigEditor({ scope }: { scope: "system" | "node" }) {
       .filter(({ entry }) => {
         if (seen.has(entry.key)) return false;
         seen.add(entry.key);
-        return isNodeConfig(entry.key) === isNode;
+        return isNodeConfig(entry.key) === isNode && (!area || entry.area === area);
       });
 
     if (isNode) {
@@ -90,20 +97,17 @@ export function ConfigEditor({ scope }: { scope: "system" | "node" }) {
     }
 
     const out: Record<string, Entry[]> = {};
-    const common = entries.filter(({ entry }) => isCommon(entry.key)).map(({ entry }) => entry);
-    if (common.length) out.__common = common;
     for (const { name, entry } of entries) {
-      if (isCommon(entry.key)) continue;
       (out[name] ||= []).push(entry);
     }
     return out;
-  }, [groups, isNode]);
+  }, [groups, isNode, area]);
   const tabItems = Object.entries(scopedGroups).map(([id, list]) => ({
-    id, label: id === "__common" ? "共性配置" : id, count: list.length,
+    id, label: id, count: list.length,
   }));
   const activeId = scopedGroups[activeGroup]?.length ? activeGroup : tabItems[0]?.id;
   const entries = query.trim()
-    ? Object.values(scopedGroups).flat().filter((entry) => entry.key.toLowerCase().includes(query.trim().toLowerCase()))
+    ? Object.values(scopedGroups).flat().filter((entry) => `${entry.key} ${entry.label || ""} ${entry.help || ""}`.toLowerCase().includes(query.trim().toLowerCase()))
     : scopedGroups[activeId] || [];
 
   const save = async () => {
@@ -152,6 +156,8 @@ export function ConfigEditor({ scope }: { scope: "system" | "node" }) {
   };
 
   const runProbe = async () => {
+    if (probing) return;
+    setProbing(true);
     setProbe("检测中…");
     try {
       const result = await api.proxyCheck(proxy, target);
@@ -162,20 +168,22 @@ export function ConfigEditor({ scope }: { scope: "system" | "node" }) {
       );
     } catch (err) {
       setProbe((err as Error).message);
+    } finally {
+      setProbing(false);
     }
   };
 
   return (
     <div className="space-y-4">
-      <div className="grid gap-4 lg:grid-cols-[1.5fr_1fr]">
+      <div className="grid gap-4">
         <Card
-          title={isNode ? "节点配置文件" : "环境配置"}
+          title={isNode ? "节点配置" : "执行配置"}
           className="min-w-0 [&>.card-head]:flex-wrap [&>.card-head>div]:flex-wrap"
           actions={
             <>
               <input
                 className="field w-[170px] py-1 text-[12px]"
-                placeholder="搜索键名"
+                placeholder="搜索配置或用途"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
               />
@@ -185,7 +193,8 @@ export function ConfigEditor({ scope }: { scope: "system" | "node" }) {
               <button className="btn-ghost" onClick={load} disabled={busy || loading}>
                 {loading ? "读取中…" : "重新读取"}
               </button>
-              {!isNode && <button className="btn-ghost" onClick={openRaw}>原始编辑</button>}
+              {!isNode && !area && <button className="btn-ghost" onClick={openRaw}>原始编辑</button>}
+              {!isNode && <button className="btn-ghost" onClick={() => setProbeOpen(true)}>检测出口</button>}
               <button className="btn-primary" onClick={save} disabled={busy || loading || !loaded || Object.keys(dirty).length === 0}>
                 保存 {Object.keys(dirty).length > 0 ? `(${Object.keys(dirty).length})` : ""}
               </button>
@@ -222,11 +231,11 @@ export function ConfigEditor({ scope }: { scope: "system" | "node" }) {
               {query.trim() && (
                 <div className="mb-1.5 px-1 text-[11px] text-muted-foreground">搜索结果（{isNode ? "节点配置" : "系统配置，跨分组"}）</div>
               )}
-              <table className="tbl">
+              <table className="tbl sg-config-table">
                 <thead>
                   <tr>
-                    <th>键</th>
-                    <th>值</th>
+                    <th>配置与用途</th>
+                    <th>文件值</th>
                     <th className="w-[42px] text-right">改</th>
                   </tr>
                 </thead>
@@ -234,33 +243,36 @@ export function ConfigEditor({ scope }: { scope: "system" | "node" }) {
                   {entries.map((entry) => {
                     const value = dirty[entry.key] ?? entry.value;
                     const changed = entry.key in dirty;
+                    const update = (next: string) => {
+                      setNotice("");
+                      setDirty(previous => { const updated={...previous}; if(next===entry.value)delete updated[entry.key]; else updated[entry.key]=next; return updated; });
+                    };
+                    const choices = entry.type === "bool" ? ["true", "false"] : entry.choices;
+                    const placeholder = entry.default === undefined ? "未设置" : `未设置 · 默认 ${String(entry.default)}`;
                     return (
                       <tr key={entry.key}>
                         <td className="max-w-[240px] text-[11px] text-muted-foreground">
-                          {isNode && <div className="mb-1 text-[12px] text-foreground">{NODE_CONFIG_FIELDS.find((field) => field.key === entry.key)?.label || "节点配置项"}</div>}
+                          <div className="mb-1 text-[13px] text-foreground">{entry.label || (isNode ? NODE_CONFIG_FIELDS.find((field) => field.key === entry.key)?.label : "") || entry.key}</div>
                           <div className="truncate font-mono" title={entry.key}>{entry.key}</div>
+                          {entry.help && <p className="mt-2 max-w-lg text-[12px] leading-relaxed">{entry.help}</p>}
+                          <p className="mt-1 text-[11px]">{entry.line ? "文件已设置" : "文件未设置"}{entry.apply === "restart" ? " · 重启后读取" : ""}{entry.readonly ? " · 原配置留存" : ""}</p>
                           {isNode && <div className="mt-1 text-[10.5px]">{entry.line ? `文件第 ${entry.line} 行` : "文件未配置 · 当前环境值未知"}</div>}
                         </td>
                         <td>
-                          <input
+                          {choices?.length && !entry.secret ? <select className={`field ${changed ? "border-warning/50" : ""}`} aria-label={entry.label || entry.key} disabled={busy || loading || entry.readonly} value={value} onChange={event=>update(event.target.value)}>
+                            <option value="">{placeholder}</option>
+                            {value && !choices.includes(value) && <option value={value}>{value}（已保存）</option>}
+                            {choices.map(choice=><option key={choice} value={choice}>{entry.type==="bool" ? choice==="true" ? "开启" : "关闭" : choice}</option>)}
+                          </select> : <input
                             className={`field py-1 text-[12px] ${changed ? "border-warning/50" : ""}`}
                             type={entry.secret && !reveal ? "password" : "text"}
-                            aria-label={entry.key}
+                            aria-label={entry.label || entry.key}
                             autoComplete="off"
-                            disabled={busy || loading}
-                            placeholder={isNode && !entry.line ? "填写后新增到配置文件" : undefined}
+                            disabled={busy || loading || entry.readonly}
+                            placeholder={placeholder}
                             value={value}
-                            onChange={(e) => {
-                              const next = e.target.value;
-                              setNotice("");
-                              setDirty((previous) => {
-                                const updated = { ...previous };
-                                if (next === entry.value) delete updated[entry.key];
-                                else updated[entry.key] = next;
-                                return updated;
-                              });
-                            }}
-                          />
+                            onChange={(e) => update(e.target.value)}
+                          />}
                         </td>
                         <td className="text-right text-[11px] text-warning">{changed ? "●" : ""}</td>
                       </tr>
@@ -273,21 +285,21 @@ export function ConfigEditor({ scope }: { scope: "system" | "node" }) {
           </div>}
         </Card>
 
-        <div className="space-y-4">
-          {!isNode && <Card title="代理体检">
-            <p className="mb-3 text-[11px] leading-relaxed text-muted-foreground">
-              SG 机房 IP 直连 claude.ai / chatgpt.com / grok.com 会拿 403（Cloudflare）。填一条住宅代理试真实出口。
+          <Drawer variant="dialog" open={probeOpen} title="检测出口" subtitle="以本次目标的实际响应判断连接状态。检测不会更改已保存的出口配置。" onClose={() => setProbeOpen(false)} width={520}>
+            <p className="mb-3 text-[13px] leading-relaxed text-muted-foreground">
+              不同域名和执行阶段的可用出口可能不同。留空检测直连，也可以填写指定代理进行对比。
             </p>
             <label className="label">代理（可空 = 直连）</label>
-            <input className="field mb-2" placeholder="http://user:pass@host:port" value={proxy} onChange={(e) => setProxy(e.target.value)} />
+            <input aria-label="检测代理" type="password" autoComplete="off" className="field mb-2" placeholder="http://user:pass@host:port" value={proxy} onChange={(e) => setProxy(e.target.value)} />
             <label className="label">目标站点</label>
-            <input className="field mb-3" value={target} onChange={(e) => setTarget(e.target.value)} />
-            <button className="btn-primary" onClick={runProbe}>
-              测试
+            <input aria-label="检测目标站点" className="field mb-3" value={target} onChange={(e) => setTarget(e.target.value)} />
+            <button className="btn-primary" onClick={runProbe} disabled={probing}>
+              {probing ? "检测中…" : "开始检测"}
             </button>
             {probe && <div className="mt-3 rounded-lg border border-border bg-muted/30 px-3 py-2 font-mono text-[11.5px] text-foreground/85">{probe}</div>}
-          </Card>}
+          </Drawer>
 
+        <details className="rounded-lg border border-border p-4 text-[13px]"><summary className="cursor-pointer font-medium">配置生效与保存说明</summary><div className="mt-3">
           <Card title={isNode ? "配置与当前运行值" : "说明"}>
             {isNode ? <div className="space-y-3 text-[11.5px] leading-relaxed text-muted-foreground">
               <p>这里编辑同一份环境配置文件，不代表当前节点进程的有效值。文件缺少的字段也会显示，填写并保存后追加到文件。</p>
@@ -304,7 +316,7 @@ export function ConfigEditor({ scope }: { scope: "system" | "node" }) {
             </ul>
             </>}
           </Card>
-        </div>
+        </div></details>
       </div>
 
       {rawOpen && (

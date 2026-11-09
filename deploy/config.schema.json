@@ -1,0 +1,1511 @@
+[
+  {
+    "group": "Codex K12 控制台",
+    "tests": [
+      {
+        "target": "k12",
+        "label": "测试 K12 控制台"
+      }
+    ],
+    "items": [
+      {
+        "key": "K12_CONSOLE_URL",
+        "default": "http://127.0.0.1:8806",
+        "help": "独立 K12 控制台的访问地址，供辅助服务入口打开；不改变 K12 自身配置或启动进程。",
+        "label": "K12 控制台地址"
+      },
+      {
+        "key": "K12_AUTO_START",
+        "type": "choice",
+        "choices": [
+          "1",
+          "0"
+        ],
+        "default": "1",
+        "help": "保留原配置供核对。K12为独立服务，当前Go控制面不负责自动启动或内嵌；本字段不改变当前运行状态。",
+        "label": "自动启动 K12 控制台",
+        "readonly": true
+      }
+    ],
+    "area": "platform"
+  },
+  {
+    "group": "本地资产 API",
+    "items": [
+      {
+        "key": "REG_FACTORY_ASSET_API_KEY",
+        "secret": true,
+        "help": "可选；配置后调用邮箱/Cookie 读取 API 必须提供 X-API-Key 或 Bearer Token。留空时仅允许本机访问。",
+        "label": "本地资产 API 密钥",
+        "smart": true
+      },
+      {
+        "key": "ASSET_SCAN_CHATGPT_PLUS_TRIAL",
+        "type": "bool",
+        "default": "true",
+        "help": "扫描正常 ChatGPT 账号时调用优惠资格接口，标注 Plus 免费试用资格；失败仅标为未知，不影响账号健康状态。",
+        "label": "扫描 Plus 免费试用资格"
+      },
+      {
+        "key": "ASSET_SCAN_CHATGPT_PLUS_CAMPAIGN",
+        "default": "plus-1-month-free",
+        "help": "ChatGPT Plus 试用资格检测使用的活动标识。",
+        "label": "Plus 试用活动标识"
+      }
+    ],
+    "area": "platform"
+  },
+  {
+    "group": "Plus 协议提链",
+    "items": [
+      {
+        "key": "REG_FACTORY_PROTOCOL_PAYMENT_ROOT",
+        "help": "可选；GPT-Register-Tool 本地目录。留空时自动查找同级目录，用于 Plus 导入后的批量协议提链。",
+        "label": "Plus 协议提链程序目录",
+        "smart": true
+      }
+    ],
+    "area": "platform"
+  },
+  {
+    "group": "网络出口",
+    "tests": [
+      {
+        "target": "clash",
+        "label": "测试 Clash 连通"
+      }
+    ],
+    "items": [
+      {
+        "key": "PROXY_MODE",
+        "type": "choice",
+        "choices": [
+          "clash_auto",
+          "clash_fixed",
+          "residential"
+        ],
+        "default": "clash_auto",
+        "help": "Clash 自动轮换、固定节点，或动态住宅代理。建议在左侧“网络出口”页配置。",
+        "label": "默认代理模式",
+        "smart": true
+      },
+      {
+        "key": "OUTLOOK_PROXY_MODE",
+        "type": "choice",
+        "choices": [
+          "inherit",
+          "clash_auto",
+          "clash_fixed",
+          "residential"
+        ],
+        "default": "inherit",
+        "help": "Outlook 出口覆盖；inherit 使用全局模式。",
+        "label": "Outlook 代理模式"
+      },
+      {
+        "key": "CLAUDE_PROXY_MODE",
+        "type": "choice",
+        "choices": [
+          "inherit",
+          "clash_auto",
+          "clash_fixed",
+          "residential"
+        ],
+        "default": "inherit",
+        "help": "Claude 出口覆盖；可与 Outlook 使用不同出口。",
+        "label": "Claude 代理模式"
+      },
+      {
+        "key": "CHATGPT_PROXY_MODE",
+        "type": "choice",
+        "choices": [
+          "inherit",
+          "clash_auto",
+          "clash_fixed",
+          "residential"
+        ],
+        "default": "inherit",
+        "help": "ChatGPT 出口覆盖；可与 Outlook 使用不同出口。",
+        "label": "ChatGPT 代理模式"
+      },
+      {
+        "key": "GROK_PROXY_MODE",
+        "type": "choice",
+        "choices": [
+          "inherit",
+          "clash_auto",
+          "clash_fixed",
+          "residential"
+        ],
+        "default": "inherit",
+        "help": "Grok 出口覆盖；可与 Outlook 使用不同出口。",
+        "label": "Grok 代理模式"
+      },
+      {
+        "key": "KIRO_PROXY_MODE",
+        "type": "choice",
+        "choices": [
+          "inherit",
+          "clash_auto",
+          "clash_fixed",
+          "residential"
+        ],
+        "default": "inherit",
+        "help": "Kiro 出口覆盖；可与 Outlook 使用不同出口。",
+        "label": "Kiro 代理模式"
+      },
+      {
+        "key": "GITHUB_PROXY_MODE",
+        "type": "choice",
+        "choices": [
+          "inherit",
+          "clash_auto",
+          "clash_fixed",
+          "residential"
+        ],
+        "default": "inherit",
+        "help": "GitHub 出口覆盖；可与 Outlook 使用不同出口。",
+        "label": "GitHub 代理模式"
+      },
+      {
+        "key": "CLASH_SECRET",
+        "required": true,
+        "secret": true,
+        "help": "Clash Verge → 设置 → 外部控制器(External Controller) 里设的 secret/密钥。若该处留空,这里也留空。设了密钥不填会连不上控制器(节点切换失效)。",
+        "label": "Clash 控制器密钥",
+        "smart": true
+      },
+      {
+        "key": "CLASH_API",
+        "default": "http://127.0.0.1:9097",
+        "help": "Clash 控制器地址。Clash Verge 默认端口 9097,mihomo 内核默认 9090。在 外部控制器 页可看到。",
+        "label": "Clash 控制器地址",
+        "smart": true
+      },
+      {
+        "key": "CLASH_PROXY",
+        "default": "http://127.0.0.1:7897",
+        "help": "Clash 混合代理端口(mixed-port),脚本走它出网。Verge 默认 7897。",
+        "label": "Clash 本地代理地址",
+        "smart": true
+      },
+      {
+        "key": "CLASH_GROUP",
+        "default": "GLOBAL",
+        "help": "决定出口的代理组名。global 模式下填 GLOBAL;规则模式填你的节点选择组名。",
+        "label": "Clash 节点组名称",
+        "smart": true
+      },
+      {
+        "key": "CLASH_FIXED_NODE",
+        "help": "固定节点模式使用的 Clash 节点全名。",
+        "label": "Clash 固定节点",
+        "smart": true
+      },
+      {
+        "key": "REG_FACTORY_PROXY",
+        "secret": true,
+        "help": "住宅代理 URL，例如 http://user:pass@host:port 或 socks5://...",
+        "label": "住宅代理地址",
+        "smart": true
+      },
+      {
+        "key": "REG_FACTORY_PROXY_POOL",
+        "secret": true,
+        "help": "住宅代理池；.env 中使用逗号分隔，专用网络页支持逐行填写。",
+        "label": "住宅代理池",
+        "smart": true
+      },
+      {
+        "key": "REG_FACTORY_PROXY_ROTATE_URL",
+        "secret": true,
+        "help": "可选的住宅代理供应商换 IP 接口。",
+        "label": "住宅代理换 IP 地址"
+      },
+      {
+        "key": "REG_FACTORY_PROXY_ROTATE_METHOD",
+        "type": "choice",
+        "choices": [
+          "GET",
+          "POST"
+        ],
+        "default": "GET",
+        "help": "调用换 IP 接口时使用的方法。",
+        "label": "住宅代理换 IP 方法"
+      },
+      {
+        "key": "REG_FACTORY_RESIDENTIAL_TRAFFIC_MODE",
+        "type": "choice",
+        "choices": [
+          "extreme",
+          "aggressive",
+          "balanced",
+          "off"
+        ],
+        "default": "balanced",
+        "help": "住宅代理浏览器节流：极限模式还会压制 BitBrowser 后台联网、预取、清单和更多遥测；验证码域名始终放行。",
+        "label": "住宅代理流量模式"
+      },
+      {
+        "key": "OUTLOOK_GRAPH_AUTH_TIMEOUT",
+        "type": "int",
+        "default": 240,
+        "help": "Outlook 注册完成后的 Graph 授权独立超时秒数，不计入注册阶段超时。",
+        "label": "Outlook Graph 授权超时"
+      },
+      {
+        "key": "REG_FACTORY_MAX_CONCURRENCY",
+        "type": "int",
+        "default": 10,
+        "help": "单个注册任务允许的最大并发数，防止浏览器和代理资源过载。",
+        "label": "最大并发数"
+      },
+      {
+        "key": "REG_FACTORY_ALLOW_SHARED_EGRESS",
+        "type": "bool",
+        "default": false,
+        "help": "允许多个并发账号共享同一公网出口；默认关闭以降低关联和限流风险。",
+        "label": "允许并发共用出口"
+      },
+      {
+        "key": "CHATGPT_RESIDENTIAL_ROTATE_RETRIES",
+        "default": "3",
+        "help": "ChatGPT 遇到 Cloudflare 拦截时最多轮换住宅 IP 的次数。",
+        "label": "ChatGPT 住宅代理轮换次数"
+      },
+      {
+        "key": "CHATGPT_GOTO_TIMEOUT_SECONDS",
+        "type": "int",
+        "default": 30,
+        "help": "ChatGPT 登录页单次导航超时；超时后会检查已提交页面，否则换节点并新建标签页。",
+        "label": "ChatGPT 页面打开超时"
+      },
+      {
+        "key": "CHATGPT_GOTO_ATTEMPTS",
+        "type": "int",
+        "default": 3,
+        "help": "ChatGPT 登录页最多导航次数，范围 1 到 4。",
+        "label": "ChatGPT 页面打开次数"
+      }
+    ],
+    "area": "proxy"
+  },
+  {
+    "group": "指纹浏览器",
+    "tests": [
+      {
+        "target": "bitbrowser",
+        "label": "测试 指纹浏览器连通"
+      }
+    ],
+    "items": [
+      {
+        "key": "FINGERPRINT_BROWSER",
+        "type": "choice",
+        "choices": [
+          "bitbrowser",
+          "cloak",
+          "roxy",
+          "bundled",
+          "custom",
+          "adspower",
+          "custom_api"
+        ],
+        "default": "bitbrowser",
+        "help": "默认保持 BitBrowser 兼容；选择 CloakBrowser/RoxyBrowser 即使用参考项目的指纹浏览器方案。",
+        "label": "指纹浏览器类型",
+        "smart": true
+      },
+      {
+        "key": "CLOAK_HEADLESS",
+        "type": "bool",
+        "default": true,
+        "help": "CloakBrowser 无头运行；关闭后显示浏览器窗口。",
+        "label": "CloakBrowser 无头运行",
+        "smart": true
+      },
+      {
+        "key": "CLOAK_HUMANIZE",
+        "type": "bool",
+        "default": true,
+        "help": "启用 CloakBrowser 人工节奏和鼠标键盘行为。",
+        "label": "CloakBrowser 人工行为",
+        "smart": true
+      },
+      {
+        "key": "CLOAK_GEOIP",
+        "type": "bool",
+        "default": true,
+        "help": "按代理出口自动匹配语言、时区和 WebRTC。",
+        "label": "CloakBrowser 出口地理匹配",
+        "smart": true
+      },
+      {
+        "key": "CLOAK_LOCALE",
+        "help": "CloakBrowser 语言；留空按出口 IP 自动匹配。",
+        "label": "CloakBrowser 语言",
+        "smart": true
+      },
+      {
+        "key": "CLOAK_TIMEZONE",
+        "help": "CloakBrowser 时区；留空按出口 IP 自动匹配。",
+        "label": "CloakBrowser 时区",
+        "smart": true
+      },
+      {
+        "key": "CLOAK_LICENSE_KEY",
+        "secret": true,
+        "advanced": true,
+        "help": "CloakBrowser Pro license；免费版留空。",
+        "label": "CloakBrowser license 密钥",
+        "smart": true
+      },
+      {
+        "key": "CLOAK_FINGERPRINT_SEED",
+        "advanced": true,
+        "help": "固定 Cloak 指纹 seed；留空每个账号随机。",
+        "label": "CloakBrowser 指纹 seed",
+        "smart": true
+      },
+      {
+        "key": "CLOAK_USER_DATA_DIR",
+        "advanced": true,
+        "help": "持久化浏览器目录；留空每个账号使用临时环境。",
+        "label": "CloakBrowser 持久化目录"
+      },
+      {
+        "key": "CLOAK_EXTRA_ARGS",
+        "advanced": true,
+        "help": "额外 Chromium 参数，逗号或换行分隔。",
+        "label": "CloakBrowser 额外参数"
+      },
+      {
+        "key": "CLOAK_KEEP_BROWSER_OPEN",
+        "type": "bool",
+        "advanced": true,
+        "help": "调试时保留 CloakBrowser 窗口。",
+        "label": "保留 CloakBrowser 窗口"
+      },
+      {
+        "key": "ROXY_API_BASE",
+        "default": "http://127.0.0.1:50100",
+        "help": "RoxyBrowser 本地 API 地址。",
+        "label": "RoxyBrowser API 地址",
+        "smart": true
+      },
+      {
+        "key": "ROXY_API_TOKEN",
+        "secret": true,
+        "help": "RoxyBrowser API token。",
+        "label": "RoxyBrowser API token 密钥",
+        "smart": true
+      },
+      {
+        "key": "ROXY_WORKSPACE_ID",
+        "help": "RoxyBrowser 工作区 ID，创建环境必填。",
+        "label": "RoxyBrowser 工作区 ID",
+        "smart": true
+      },
+      {
+        "key": "ROXY_PROJECT_ID",
+        "advanced": true,
+        "help": "RoxyBrowser 项目 ID。",
+        "label": "RoxyBrowser 项目 ID",
+        "smart": true
+      },
+      {
+        "key": "ROXY_PROFILE_ID",
+        "advanced": true,
+        "help": "固定 Roxy Profile ID；一号一环境模式下留空。",
+        "label": "RoxyBrowser Profile ID 环境"
+      },
+      {
+        "key": "ROXY_OPEN_HEADLESS",
+        "type": "bool",
+        "default": true,
+        "help": "RoxyBrowser 无头启动。",
+        "label": "RoxyBrowser 无头启动",
+        "smart": true
+      },
+      {
+        "key": "ROXY_ONE_PROFILE_PER_ACCOUNT",
+        "type": "bool",
+        "default": true,
+        "help": "每个账号创建独立 Roxy 环境。",
+        "label": "Roxy 一号一环境",
+        "smart": true
+      },
+      {
+        "key": "ROXY_DELETE_PROFILE_AFTER_RUN",
+        "type": "bool",
+        "default": true,
+        "help": "注册结束自动删除 Roxy 环境。",
+        "label": "注册后删除 Roxy 环境",
+        "smart": true
+      },
+      {
+        "key": "ROXY_CREATE_USE_PROXY_POOL",
+        "type": "bool",
+        "default": true,
+        "help": "创建 Roxy 环境时传入当前代理。",
+        "label": "Roxy 使用当前代理"
+      },
+      {
+        "key": "ROXY_RANDOM_OS_ON_CREATE",
+        "type": "bool",
+        "default": true,
+        "help": "创建环境时随机 Windows/macOS 指纹。",
+        "label": "Roxy 随机系统指纹"
+      },
+      {
+        "key": "ROXY_RANDOM_OS_CHOICES",
+        "default": "Windows,macOS",
+        "advanced": true,
+        "help": "Roxy 随机系统候选列表。",
+        "label": "Roxy 系统候选列表"
+      },
+      {
+        "key": "ROXY_DEFAULT_OS",
+        "default": "macOS",
+        "advanced": true,
+        "help": "关闭随机系统时使用的默认系统。",
+        "label": "Roxy 默认系统"
+      },
+      {
+        "key": "ROXY_PROFILE_NAME_PREFIX",
+        "default": "reg",
+        "advanced": true,
+        "help": "Roxy 环境名称前缀。",
+        "label": "Roxy 环境名称前缀"
+      },
+      {
+        "key": "ROXY_KEEP_BROWSER_OPEN",
+        "type": "bool",
+        "advanced": true,
+        "help": "调试时保留 RoxyBrowser 窗口。",
+        "label": "保留 RoxyBrowser 窗口"
+      },
+      {
+        "key": "REG_FACTORY_BROWSER_PATH",
+        "help": "内置 Chromium 可执行文件路径",
+        "label": "内置 Chromium 路径"
+      },
+      {
+        "key": "CUSTOM_BROWSER_PATH",
+        "help": "custom 模式的 Chrome/Chromium 可执行文件；留空会尝试自动查找。",
+        "label": "自定义 Chrome 路径",
+        "smart": true
+      },
+      {
+        "key": "CUSTOM_BROWSER_API",
+        "help": "custom_api 的 API 根地址，例如 http://127.0.0.1:5000。",
+        "label": "自定义浏览器 API 地址",
+        "smart": true
+      },
+      {
+        "key": "CUSTOM_BROWSER_API_MODE",
+        "type": "choice",
+        "choices": [
+          "auto",
+          "generic",
+          "bitbrowser"
+        ],
+        "default": "auto",
+        "help": "auto 保持 BitBrowser 兼容；generic 对接常见 REST API；bitbrowser 强制旧协议。",
+        "label": "自定义浏览器 API 模式",
+        "smart": true
+      },
+      {
+        "key": "CUSTOM_BROWSER_API_KEY",
+        "secret": true,
+        "help": "可选 API Key；默认以 Authorization: Bearer <key> 发送。",
+        "label": "自定义浏览器 API 密钥",
+        "smart": true
+      },
+      {
+        "key": "CUSTOM_BROWSER_API_AUTH_HEADER",
+        "default": "Authorization",
+        "advanced": true,
+        "help": "鉴权请求头名称，例如 X-API-Key。",
+        "label": "鉴权请求头名称"
+      },
+      {
+        "key": "CUSTOM_BROWSER_API_AUTH_PREFIX",
+        "default": "Bearer ",
+        "advanced": true,
+        "help": "鉴权值前缀；API Key 直传时留空。",
+        "label": "鉴权值前缀"
+      },
+      {
+        "key": "CUSTOM_BROWSER_API_HEADERS",
+        "secret": true,
+        "advanced": true,
+        "help": "可选额外请求头 JSON，例如 {\"X-Client\":\"reg-factory\"}。",
+        "label": "额外请求头"
+      },
+      {
+        "key": "CUSTOM_BROWSER_API_TIMEOUT",
+        "type": "int",
+        "default": "60",
+        "advanced": true,
+        "help": "单次自定义浏览器 API 请求超时秒数。",
+        "label": "API 请求超时"
+      },
+      {
+        "key": "CUSTOM_BROWSER_API_VERIFY_TLS",
+        "type": "bool",
+        "default": true,
+        "advanced": true,
+        "help": "HTTPS API 是否校验证书。",
+        "label": "校验 HTTPS 证书"
+      },
+      {
+        "key": "CUSTOM_BROWSER_API_ID_FIELD",
+        "default": "id",
+        "advanced": true,
+        "help": "generic API 的 profile ID 字段名。路径可使用 {id} 或 {profile_id}。",
+        "label": "Profile ID 字段名"
+      },
+      {
+        "key": "CUSTOM_BROWSER_API_HEALTH_PATH",
+        "default": "/health",
+        "advanced": true,
+        "help": "连通性测试优先请求的健康检查路径。",
+        "label": "健康检查路径"
+      },
+      {
+        "key": "CUSTOM_BROWSER_API_CREATE_PATH",
+        "default": "/browser/update",
+        "advanced": true,
+        "help": "创建 profile 的路径。",
+        "label": "创建 Profile 路径"
+      },
+      {
+        "key": "CUSTOM_BROWSER_API_LIST_PATH",
+        "default": "/browser/list",
+        "advanced": true,
+        "help": "profile 列表路径。",
+        "label": "Profile 列表路径"
+      },
+      {
+        "key": "CUSTOM_BROWSER_API_OPEN_PATH",
+        "default": "/browser/open",
+        "advanced": true,
+        "help": "启动 profile 并返回 CDP ws/cdp/endpoint 的路径。",
+        "label": "启动 Profile 路径"
+      },
+      {
+        "key": "CUSTOM_BROWSER_API_CLOSE_PATH",
+        "default": "/browser/close",
+        "advanced": true,
+        "help": "关闭 profile 的路径。",
+        "label": "关闭 Profile 路径"
+      },
+      {
+        "key": "CUSTOM_BROWSER_API_DELETE_PATH",
+        "default": "/browser/delete",
+        "advanced": true,
+        "help": "删除 profile 的路径。",
+        "label": "删除 Profile 路径"
+      },
+      {
+        "key": "CUSTOM_BROWSER_API_UPDATE_PATH",
+        "default": "/browser/update/partial",
+        "advanced": true,
+        "help": "更新指纹的路径。",
+        "label": "更新指纹路径"
+      },
+      {
+        "key": "CUSTOM_BROWSER_API_CREATE_METHOD",
+        "default": "POST",
+        "advanced": true,
+        "help": "创建请求方法，通常为 POST。",
+        "label": "创建请求方法"
+      },
+      {
+        "key": "CUSTOM_BROWSER_API_LIST_METHOD",
+        "default": "POST",
+        "advanced": true,
+        "help": "列表请求方法，兼容模式为 POST，REST 常见为 GET。",
+        "label": "列表请求方法"
+      },
+      {
+        "key": "CUSTOM_BROWSER_API_OPEN_METHOD",
+        "default": "POST",
+        "advanced": true,
+        "help": "启动请求方法。",
+        "label": "启动请求方法"
+      },
+      {
+        "key": "CUSTOM_BROWSER_API_CLOSE_METHOD",
+        "default": "POST",
+        "advanced": true,
+        "help": "关闭请求方法。",
+        "label": "关闭请求方法"
+      },
+      {
+        "key": "CUSTOM_BROWSER_API_DELETE_METHOD",
+        "default": "POST",
+        "advanced": true,
+        "help": "删除请求方法；REST API 常用 DELETE。",
+        "label": "删除请求方法"
+      },
+      {
+        "key": "CUSTOM_BROWSER_API_UPDATE_METHOD",
+        "default": "POST",
+        "advanced": true,
+        "help": "更新指纹请求方法。",
+        "label": "更新指纹请求方法"
+      },
+      {
+        "key": "CUSTOM_BROWSER_API_FORWARD_FIELDS",
+        "type": "bool",
+        "default": false,
+        "advanced": true,
+        "help": "generic 模式将额外 profile 字段原样转发。",
+        "label": "转发额外 Profile 字段"
+      },
+      {
+        "key": "REG_FACTORY_BROWSER_HELPER",
+        "help": "内置 Chromium 启动器路径",
+        "label": "内置浏览器启动器路径"
+      },
+      {
+        "key": "BITBROWSER_API",
+        "default": "http://127.0.0.1:54345",
+        "help": "比特浏览器本地 API",
+        "label": "BitBrowser API 地址",
+        "smart": true
+      },
+      {
+        "key": "BB_CORE_VERSION",
+        "default": "146",
+        "help": "使用 BitBrowser provider 时，Outlook 自注册等流程的首选 Chromium 内核",
+        "label": "BitBrowser 默认内核版本"
+      },
+      {
+        "key": "CHATGPT_BROWSER_CORE_VERSION",
+        "default": "146",
+        "help": "ChatGPT 并发 Profile 使用的 Chromium 内核",
+        "label": "ChatGPT 浏览器内核版本"
+      },
+      {
+        "key": "OUTLOOK_BROWSER_FALLBACK_CORE_VERSION",
+        "default": "130",
+        "help": "Outlook 首选内核安装失败时自动回退的内核；留空禁用",
+        "label": "Outlook 备用内核版本"
+      },
+      {
+        "key": "GROK_BROWSER_CORE_VERSION",
+        "default": "146",
+        "help": "Grok 浏览器使用的 BitBrowser Chromium 内核；旧 130 会触发 xAI 发码 403",
+        "label": "Grok 浏览器内核版本"
+      },
+      {
+        "key": "ADSPOWER_API",
+        "default": "http://127.0.0.1:50325",
+        "help": "AdsPower 本地 API",
+        "label": "AdsPower API 地址",
+        "smart": true
+      },
+      {
+        "key": "ADSPOWER_API_KEY",
+        "secret": true,
+        "help": "AdsPower API key，未启用鉴权时留空",
+        "label": "AdsPower API 密钥",
+        "smart": true
+      },
+      {
+        "key": "ADSPOWER_GROUP_ID",
+        "default": "0",
+        "help": "AdsPower 新建 profile 的分组 ID",
+        "label": "AdsPower 分组 ID",
+        "smart": true
+      }
+    ],
+    "area": "browser"
+  },
+  {
+    "group": "Claude 注册与验证",
+    "items": [
+      {
+        "key": "CLAUDE_CHALLENGE_WAIT_SECONDS",
+        "default": "45",
+        "help": "每个 Clash 节点等待 Cloudflare 自动放行的秒数",
+        "label": "Claude 风控等待时间"
+      },
+      {
+        "key": "CLAUDE_CHALLENGE_NODE_RETRIES",
+        "default": "3",
+        "help": "auto 模式提交邮箱前最多轮换节点次数",
+        "label": "Claude 风控换节点次数"
+      },
+      {
+        "key": "CLAUDE_RESIDENTIAL_PROFILE_RETRIES",
+        "default": "3",
+        "help": "住宅出口在提交邮箱前被拒绝时，新建浏览器会话的总尝试次数",
+        "label": "Claude 住宅代理重建次数"
+      },
+      {
+        "key": "CLAUDE_ALLOW_ROTATING_PROXY",
+        "type": "bool",
+        "default": false,
+        "help": "跳过 Claude 住宅代理粘性检测；仅用于已确认出口连续性的特殊代理",
+        "label": "允许 Claude 使用动态代理"
+      },
+      {
+        "key": "CLAUDE_NODE_PROBE_LIMIT",
+        "default": "6",
+        "help": "启动时最多快速探测的候选节点数",
+        "label": "Claude 候选节点探测数"
+      },
+      {
+        "key": "CLAUDE_NODE_PROBE_TIMEOUT_SECONDS",
+        "default": "8",
+        "help": "单个候选节点的快速探测超时秒数",
+        "label": "Claude 节点探测超时"
+      },
+      {
+        "key": "CLAUDE_CAPTCHA_MANUAL_TIMEOUT",
+        "default": "0",
+        "help": "自动求解失败后等待人工接管秒数；0 表示关闭",
+        "label": "Claude 人工验证码等待时间"
+      },
+      {
+        "key": "CLAUDE_HCAPTCHA_SOLVE_RETRIES",
+        "default": "2",
+        "help": "YesCaptcha 备用求解器的瞬时失败重试次数",
+        "label": "Claude hCaptcha 重试次数"
+      },
+      {
+        "key": "CLAUDE_VISION_API_BASE",
+        "required": true,
+        "help": "必填：Claude hCaptcha 视觉解码 API 地址；未配置无法自动通过图形验证",
+        "label": "Claude 视觉识别 API 地址",
+        "smart": true
+      },
+      {
+        "key": "CLAUDE_VISION_API_KEY",
+        "required": true,
+        "secret": true,
+        "help": "必填：Claude hCaptcha 视觉解码 API key",
+        "label": "Claude 视觉识别 API 密钥",
+        "smart": true
+      },
+      {
+        "key": "CLAUDE_VISION_MODEL",
+        "default": "gemini-3.6-flash",
+        "help": "Claude hCaptcha 主视觉模型",
+        "label": "Claude 视觉识别模型"
+      },
+      {
+        "key": "CLAUDE_REGISTRATION_PROTOCOL",
+        "type": "choice",
+        "choices": [
+          "browser",
+          "http"
+        ],
+        "default": "browser",
+        "help": "Claude registration implementation (Chromium or ClaudeX HTTP)",
+        "label": "Claude 协议实现",
+        "smart": true
+      },
+      {
+        "key": "CLAUDE_PROTOCOL_VERSION",
+        "default": "1.0.0",
+        "help": "Claude HTTP anthropic-client-version header",
+        "label": "Claude HTTP 协议版本",
+        "smart": true
+      },
+      {
+        "key": "CLAUDE_BROWSER_CORE_VERSION",
+        "default": "146",
+        "help": "Claude 注册和 sessionKey 校验使用的 Chromium 指纹版本",
+        "label": "Claude 浏览器内核版本"
+      },
+      {
+        "key": "CLAUDE_BROWSER_FALLBACK_CORE_VERSION",
+        "default": "130",
+        "help": "首选内核安装失败时，本次 Claude 注册自动回退的 BitBrowser 内核；留空禁用",
+        "label": "Claude 备用内核版本"
+      }
+    ],
+    "area": "platform"
+  },
+  {
+    "group": "短信接码",
+    "tests": [
+      {
+        "target": "smsman",
+        "label": "测试 sms-man"
+      },
+      {
+        "target": "firefox",
+        "label": "测试 firefox.fun"
+      }
+    ],
+    "items": [
+      {
+        "key": "SMS_API_NAME",
+        "help": "firefox.fun APIName；在 API 对接页面查看，通常为账号名加两位随机数字",
+        "label": "firefox.fun API 账号名",
+        "smart": true
+      },
+      {
+        "key": "SMS_TOKEN",
+        "secret": true,
+        "help": "firefox.fun 持久 token；取号时还会使用 OpenAI 项目 ID",
+        "label": "firefox.fun 接码令牌",
+        "smart": true
+      },
+      {
+        "key": "HERO_SMS_API_KEY",
+        "secret": true,
+        "help": "hero-sms.com 备用接码 key",
+        "label": "Hero SMS API 密钥",
+        "smart": true
+      },
+      {
+        "key": "SMSMAN_TOKEN",
+        "secret": true,
+        "help": "sms-man.com 接码 key(Codex add-phone 主用)",
+        "label": "SMS-Man 接码令牌",
+        "smart": true
+      },
+      {
+        "key": "SMSMAN_APP_ID_OPENAI",
+        "default": "openai",
+        "help": "sms-man OpenAI 服务 id(openai 自动解析为 2754)",
+        "label": "SMS-Man OpenAI 项目"
+      },
+      {
+        "key": "SMSMAN_APP_ID_GMAIL",
+        "default": "google",
+        "help": "sms-man Gmail/Google 服务 id(google 自动解析;接码助手默认用它)",
+        "label": "SMS-Man Google 项目"
+      },
+      {
+        "key": "SMSMAN_COUNTRY_ID_OPENAI",
+        "default": "0",
+        "help": "国家 id(0=随机/按价格)",
+        "label": "SMS-Man OpenAI 国家"
+      },
+      {
+        "key": "CUSTOM_SMS_ALLOWED_HOSTS",
+        "help": "自定义接码记录域名白名单；仅对明确添加的 host 放宽 DNS 公网校验",
+        "label": "自定义接码域名白名单"
+      }
+    ],
+    "area": "sms"
+  },
+  {
+    "group": "打码平台(可选)",
+    "items": [
+      {
+        "key": "CAPSOLVER_API_KEY",
+        "secret": true,
+        "help": "CapSolver 打码 key",
+        "label": "CapSolver API 密钥",
+        "smart": true
+      },
+      {
+        "key": "EZCAPTCHA_API_KEY",
+        "secret": true,
+        "help": "EZ-Captcha 打码 key(解锁 Outlook 用)",
+        "label": "EZCaptcha API 密钥",
+        "smart": true
+      },
+      {
+        "key": "YESCAPTCHA_API_KEY",
+        "secret": true,
+        "help": "YesCaptcha key (Claude hCaptcha / Grok Turnstile / GitHub Arkose)",
+        "label": "YesCaptcha API 密钥",
+        "smart": true
+      }
+    ],
+    "area": "captcha"
+  },
+  {
+    "group": "Outlook 自注册",
+    "notice": "需要提取 Graph RT 时，必须配置可接收验证码的辅助邮箱。请选择 YYDS/custom，或选择 outlook 并填入下方四段凭据；未配置时 Microsoft 安全信息页无法完成授权。",
+    "notice_level": "warning",
+    "tests": [
+      {
+        "target": "outlook-recovery",
+        "label": "验证 Outlook 辅助邮箱 RT"
+      }
+    ],
+    "items": [
+      {
+        "key": "OUTLOOK_PROXIES",
+        "help": "Outlook 自注册住宅代理池(换行/逗号分隔)",
+        "label": "Outlook 代理列表"
+      },
+      {
+        "key": "OUTLOOK_UI_LOCALE",
+        "default": "en-US",
+        "help": "Microsoft 页面语言提示；印度可用 hi-IN，印度尼西亚可用 id-ID",
+        "label": "Outlook 页面语言"
+      },
+      {
+        "key": "OUTLOOK_EMAIL_DOMAIN",
+        "default": "auto",
+        "help": "auto 按当前网络出口的注册页域名选项选择；也可填 outlook.jp、outlook.eu 或其它区域后缀",
+        "label": "Outlook 注册邮箱域名"
+      },
+      {
+        "key": "OUTLOOK_NODE_REGION_KEYWORDS",
+        "default": "",
+        "help": "Outlook Clash 节点国家关键词，逗号分隔；留空沿用 NODE_REGION_KEYWORDS",
+        "label": "Outlook 节点地区关键词"
+      },
+      {
+        "key": "OUTLOOK_NODE_EXCLUDE_REGION_KEYWORDS",
+        "default": "香港,Hong Kong,🇭🇰",
+        "help": "Outlook Clash 强制排除的节点国家关键词；默认排除香港",
+        "label": "Outlook 排除地区关键词"
+      },
+      {
+        "key": "OUTLOOK_GRAPH_RECOVERY_EMAIL",
+        "type": "bool",
+        "default": "true",
+        "help": "启用 Graph proofs/Add 辅助邮箱自动绑定和接码；关闭后无法保证 RT 可提取",
+        "label": "启用 Outlook 辅助邮箱",
+        "smart": true
+      },
+      {
+        "key": "OUTLOOK_GRAPH_RECOVERY_PROVIDER",
+        "type": "choice",
+        "choices": [
+          "yyds",
+          "custom",
+          "outlook"
+        ],
+        "default": "yyds",
+        "help": "Graph 辅助邮箱提供方；outlook 使用下方用户自有邮箱并通过 Graph API 收码",
+        "label": "Outlook 辅助邮箱来源",
+        "smart": true
+      },
+      {
+        "key": "OUTLOOK_GRAPH_RECOVERY_OUTLOOK_MAILBOX",
+        "secret": true,
+        "help": "provider=outlook 时必填：email@outlook.com----password----refresh_token----client_id。保存前可点本组验证按钮检查 Graph API。",
+        "label": "自有 Outlook 辅助邮箱",
+        "smart": true
+      },
+      {
+        "key": "OUTLOOK_GRAPH_RECOVERY_TIMEOUT",
+        "default": "120",
+        "help": "Graph 辅助邮箱验证码最大等待秒数",
+        "label": "辅助邮箱收码超时"
+      },
+      {
+        "key": "OUTLOOK_GRAPH_RECOVERY_POLL_INTERVAL",
+        "default": "5",
+        "help": "Graph 辅助邮箱轮询间隔秒数",
+        "label": "辅助邮箱轮询间隔"
+      }
+    ],
+    "area": "mail"
+  },
+  {
+    "group": "ChatGPT 邮箱",
+    "items": [
+      {
+        "key": "CHATGPT_EMAIL_PROVIDER",
+        "type": "choice",
+        "choices": [
+          "pool",
+          "icloud",
+          "remail"
+        ],
+        "default": "pool",
+        "help": "ChatGPT 默认邮箱来源；icloud/Remail 自动申请并轮询验证码",
+        "label": "ChatGPT 邮箱来源",
+        "smart": true
+      },
+      {
+        "key": "CHATGPT_ENABLE_2FA",
+        "type": "choice",
+        "choices": [
+          "true",
+          "false"
+        ],
+        "default": "true",
+        "help": "注册完成后重认证并启用验证器 TOTP，同时保存密钥",
+        "label": "注册后开启 ChatGPT 2FA",
+        "smart": true
+      },
+      {
+        "key": "CHATGPT_VERIFICATION_CODE_TIMEOUT",
+        "type": "int",
+        "default": "90",
+        "help": "ChatGPT 重发验证码后，邮箱 API 最长等待秒数，建议 60-120",
+        "label": "ChatGPT 验证码邮箱等待时间"
+      },
+      {
+        "key": "CHATGPT_VERIFICATION_POLL_INTERVAL",
+        "type": "int",
+        "default": "5",
+        "help": "ChatGPT 邮箱 API 轮询间隔秒数，建议 3-8",
+        "label": "ChatGPT 验证码轮询间隔"
+      },
+      {
+        "key": "ICLOUD_MAIL_API_BASE",
+        "default": "https://mail.no-replyca.xyz",
+        "help": "iCloud 邮箱 API 请求地址；email.manageh.shop 是文档站，不是接口地址",
+        "label": "iCloud 邮箱 API 地址",
+        "smart": true
+      },
+      {
+        "key": "ICLOUD_MAIL_API_KEY",
+        "secret": true,
+        "help": "iCloud 邮箱 API key",
+        "label": "iCloud 邮箱 API 密钥",
+        "smart": true
+      },
+      {
+        "key": "ICLOUD_MAIL_TYPE",
+        "type": "choice",
+        "choices": [
+          "icloud-code",
+          "icloud"
+        ],
+        "default": "icloud-code",
+        "help": "ChatGPT 注册固定使用 iCloud 接码邮箱；此项供其它流程选择邮箱类型",
+        "label": "iCloud 邮箱类型",
+        "smart": true
+      },
+      {
+        "key": "ICLOUD_MAIL_SERVICE",
+        "default": "openai",
+        "help": "ChatGPT 固定按 openai 服务申请接码邮箱",
+        "label": "iCloud 接码服务",
+        "smart": true
+      }
+    ],
+    "area": "mail"
+  },
+  {
+    "group": "临时邮箱(Claude/Grok 注册取码)",
+    "tests": [
+      {
+        "target": "yyds",
+        "label": "测试 YYDS"
+      }
+    ],
+    "items": [
+      {
+        "key": "CLAUDE_USE_TEMP_EMAIL",
+        "type": "choice",
+        "choices": [
+          "false",
+          "true"
+        ],
+        "default": "false",
+        "help": "Claude 命令行未指定邮箱时默认使用下方临时邮箱；任务表单选择 provider 时无需打开",
+        "label": "Claude 使用临时邮箱",
+        "smart": true
+      },
+      {
+        "key": "TEMP_EMAIL_PROVIDER",
+        "type": "choice",
+        "choices": [
+          "yyds",
+          "gptmail",
+          "moemail",
+          "cfmail",
+          "icloud",
+          "remail",
+          "custom"
+        ],
+        "default": "yyds",
+        "help": "Claude/Grok 默认临时邮箱 provider(需配好对应 key)，任务表单也可临时指定。",
+        "label": "临时邮箱服务商",
+        "smart": true
+      },
+      {
+        "key": "YYDS_API_KEY",
+        "secret": true,
+        "help": "YYDS Mail key(profile 页,AC- 开头)",
+        "label": "YYDS 邮箱 API 密钥",
+        "smart": true
+      },
+      {
+        "key": "YYDS_BASE_URL",
+        "default": "https://maliapi.215.im",
+        "help": "YYDS Mail API 根地址；可粘贴 vip.215.im 或完整 /v1/accounts 地址，程序会自动纠正",
+        "label": "YYDS 邮箱 API 地址",
+        "smart": true
+      },
+      {
+        "key": "GPTMAIL_API_KEY",
+        "secret": true,
+        "help": "GPTMail key(mail.chatgpt.org.uk)",
+        "label": "GPTMail API 密钥",
+        "smart": true
+      },
+      {
+        "key": "MOEMAIL_API_KEY",
+        "secret": true,
+        "help": "MoeMail key(自部署)",
+        "label": "MoeMail API 密钥",
+        "smart": true
+      },
+      {
+        "key": "MOEMAIL_BASE_URL",
+        "help": "MoeMail 自部署地址",
+        "label": "MoeMail API 地址",
+        "smart": true
+      },
+      {
+        "key": "CFMAIL_ADMIN_PASSWORD",
+        "secret": true,
+        "help": "Cloudflare Temp Email admin 密码(自部署)",
+        "label": "CFMail 管理密码",
+        "smart": true
+      },
+      {
+        "key": "CFMAIL_BASE_URL",
+        "help": "Cloudflare Temp Email 地址",
+        "label": "CFMail API 地址",
+        "smart": true
+      },
+      {
+        "key": "REMAIL_BASE_URL",
+        "default": "https://remail.aishop6.com",
+        "help": "Remail API 地址",
+        "label": "Remail API 地址",
+        "smart": true
+      },
+      {
+        "key": "REMAIL_API_KEY",
+        "secret": true,
+        "help": "Remail Bearer API key（rk- 开头）",
+        "label": "Remail API 密钥",
+        "smart": true
+      },
+      {
+        "key": "REMAIL_PROJECT_ID",
+        "type": "int",
+        "default": "0",
+        "help": "Remail 项目 ID；选择 Kiro 项目通常为 58",
+        "label": "Remail 项目 ID",
+        "smart": true
+      },
+      {
+        "key": "REMAIL_EMAIL_SUFFIX",
+        "default": "outlook.com",
+        "help": "Remail 邮箱后缀",
+        "label": "Remail 邮箱后缀",
+        "smart": true
+      },
+      {
+        "key": "REMAIL_SUPPLY",
+        "default": "private_first",
+        "help": "Remail 供应策略；通常保持 private_first",
+        "label": "Remail 供应策略",
+        "smart": true
+      }
+    ],
+    "area": "mail"
+  },
+  {
+    "group": "SUB2API(Codex / Grok 导入)",
+    "items": [
+      {
+        "key": "SUB2API_URL",
+        "help": "SUB2API 管理接口地址",
+        "label": "SUB2API 地址",
+        "smart": true
+      },
+      {
+        "key": "SUB2API_EMAIL",
+        "help": "SUB2API 登录邮箱",
+        "label": "SUB2API 管理员邮箱",
+        "smart": true
+      },
+      {
+        "key": "SUB2API_PASSWORD",
+        "secret": true,
+        "help": "SUB2API 登录密码",
+        "label": "SUB2API 管理员密码",
+        "smart": true
+      },
+      {
+        "key": "SUB2API_GROUP",
+        "default": "codex",
+        "help": "Codex 目标分组名(platform=openai)",
+        "label": "SUB2API Codex 分组",
+        "smart": true
+      },
+      {
+        "key": "SUB2API_GROK_GROUP",
+        "default": "grok",
+        "help": "Grok 目标分组名(platform=grok，需后台先建好)",
+        "label": "SUB2API Grok 分组"
+      },
+      {
+        "key": "SUB2API_GROK_PROXY_ID",
+        "type": "int",
+        "default": 0,
+        "help": "可选：SUB2API 后台代理 ID，供 Grok SSO 转 OAuth 使用；0=不指定",
+        "label": "SUB2API Grok 代理 ID"
+      }
+    ],
+    "area": "platform"
+  },
+  {
+    "group": "CPA(codex 授权文件导入)",
+    "items": [
+      {
+        "key": "CPA_URL",
+        "help": "CPA 管理接口地址",
+        "label": "CPA 管理接口地址",
+        "smart": true
+      },
+      {
+        "key": "CPA_MGMT_KEY",
+        "secret": true,
+        "help": "CPA 管理 key",
+        "label": "CPA 管理密钥",
+        "smart": true
+      },
+      {
+        "key": "CODEX_AUTH_URL_SOURCE",
+        "type": "choice",
+        "choices": [
+          "sub2",
+          "cpa"
+        ],
+        "default": "sub2",
+        "help": "Codex 授权地址来源；cpa 模式由 CPA 生成 PKCE 并直接接收 callback。",
+        "label": "Codex 授权地址来源",
+        "smart": true
+      },
+      {
+        "key": "CODEX_CPA_CALLBACK_RETRIES",
+        "type": "int",
+        "default": 5,
+        "help": "CPA callback 遇到 409/429/5xx 时的重试次数。",
+        "label": "CPA 回调重试次数"
+      },
+      {
+        "key": "CODEX_CPA_CALLBACK_RETRY_DELAY",
+        "type": "int",
+        "default": 3,
+        "help": "CPA callback 重试基础间隔秒数。",
+        "label": "CPA 回调重试间隔"
+      }
+    ],
+    "area": "platform"
+  },
+  {
+    "group": "chatgpt2api(普通网页号)",
+    "items": [
+      {
+        "key": "CHATGPT2API_URL",
+        "help": "chatgpt2api host(用 --import-c2a 时必填)",
+        "label": "chatgpt2api 地址",
+        "smart": true
+      },
+      {
+        "key": "CHATGPT2API_KEY",
+        "secret": true,
+        "help": "chatgpt2api admin key",
+        "label": "chatgpt2api 管理密钥",
+        "smart": true
+      }
+    ],
+    "area": "platform"
+  },
+  {
+    "group": "webchat2api(Grok sso)",
+    "items": [
+      {
+        "key": "WEBCHAT2API_URL",
+        "help": "webchat2api 地址(用 Grok 时)",
+        "label": "webchat2api 地址",
+        "smart": true
+      },
+      {
+        "key": "WEBCHAT2API_KEY",
+        "secret": true,
+        "help": "webchat2api key",
+        "label": "webchat2api 管理密钥",
+        "smart": true
+      }
+    ],
+    "area": "platform"
+  },
+  {
+    "group": "Codex add-phone 接码调参",
+    "items": [
+      {
+        "key": "CODEX_PHONE_SKIP_ATTEMPTS",
+        "default": "0",
+        "help": "先赌免手机次数(0=直接接码)",
+        "label": "Codex 免手机尝试次数"
+      },
+      {
+        "key": "CODEX_ADDPHONE_ATTEMPTS",
+        "default": "2",
+        "help": "接码换号上限次数",
+        "label": "Codex 接码换号次数"
+      },
+      {
+        "key": "CODEX_SMS_TIMEOUT",
+        "default": "150",
+        "help": "单号等码超时(秒)",
+        "label": "Codex 单号收码超时"
+      },
+      {
+        "key": "SMS_COUNTRY_BLACKLIST_OPENAI",
+        "default": "261,63",
+        "help": "拉黑号段(dialing code)",
+        "label": "OpenAI 接码国家黑名单"
+      }
+    ],
+    "area": "sms"
+  },
+  {
+    "group": "视觉模型与投票(可选)",
+    "items": [
+      {
+        "key": "VISION_API_BASE",
+        "help": "Claude/GitHub 共用的主视觉网关(OpenAI 兼容)",
+        "label": "主视觉模型 API 地址",
+        "smart": true
+      },
+      {
+        "key": "VISION_API_KEY",
+        "secret": true,
+        "help": "主视觉网关 key",
+        "label": "主视觉模型 API 密钥",
+        "smart": true
+      },
+      {
+        "key": "VOTE_ZZ_BASE",
+        "help": "投票中转网关(gemini/gpt)",
+        "label": "投票模型中转地址",
+        "smart": true
+      },
+      {
+        "key": "VOTE_ZZ_KEY",
+        "secret": true,
+        "help": "投票网关 gemini key",
+        "label": "Gemini 投票模型密钥",
+        "smart": true
+      },
+      {
+        "key": "VOTE_GPT_KEY",
+        "secret": true,
+        "help": "投票网关 gpt key",
+        "label": "GPT 投票模型密钥",
+        "smart": true
+      },
+      {
+        "key": "VOTE_OPUS_BASE",
+        "help": "claude opus 专用网关",
+        "label": "Opus 模型 API 地址",
+        "smart": true
+      },
+      {
+        "key": "VOTE_OPUS_KEY",
+        "secret": true,
+        "help": "opus 网关 key",
+        "label": "Opus 模型 API 密钥",
+        "smart": true
+      }
+    ],
+    "area": "captcha"
+  },
+  {
+    "group": "生产与修复出口",
+    "items": [
+      {
+        "key": "REG_FACTORY_PRODUCTION_PROXY",
+        "label": "生产与重新授权出口",
+        "secret": true,
+        "help": "账号修复、TEAM 生产与核验使用的出口。留空直连，不继承注册住宅代理。"
+      }
+    ],
+    "area": "proxy"
+  },
+  {
+    "group": "控制面运行",
+    "items": [
+      {
+        "key": "REG_FACTORY_MAX_CONCURRENCY",
+        "label": "最大执行并发",
+        "type": "int",
+        "default": 3,
+        "apply": "restart",
+        "help": "控制面并发槽位，范围1至32；保存后需重启。"
+      },
+      {
+        "key": "REG_FACTORY_MEMORY_GUARD_PCT",
+        "label": "内存保护阈值",
+        "type": "int",
+        "default": 85,
+        "apply": "restart",
+        "help": "达到此内存百分比时暂缓接新任务；原任务查询和恢复仍可访问。"
+      },
+      {
+        "key": "REGD_LOG_TAIL",
+        "label": "默认日志行数",
+        "type": "int",
+        "default": 2000,
+        "apply": "restart",
+        "help": "控制面读取历史日志的默认上限。"
+      }
+    ],
+    "area": "runtime"
+  },
+  {
+    "group": "节点身份与密钥",
+    "items": [
+      {
+        "key": "REG_FACTORY_NODE_ID",
+        "label": "节点身份",
+        "apply": "restart",
+        "help": "Core/Work登记的节点身份。修改需同步接入信息。"
+      },
+      {
+        "key": "REG_FACTORY_NODE_PLATFORM",
+        "label": "节点平台",
+        "apply": "restart",
+        "help": "签名任务默认平台，与本地可执行模式分开管理。"
+      },
+      {
+        "key": "REG_FACTORY_NODE_KEY",
+        "label": "工作签名密钥",
+        "secret": true,
+        "apply": "restart",
+        "help": "节点独立密钥；保存后需重启并核对双方指纹。"
+      },
+      {
+        "key": "REG_FACTORY_NODE_RECEIPT_KEY",
+        "label": "回执签名密钥",
+        "secret": true,
+        "apply": "restart",
+        "help": "节点独立密钥；保存后需重启并核对双方指纹。"
+      },
+      {
+        "key": "REG_FACTORY_NODE_BUSINESS_KEY",
+        "label": "业务签名密钥",
+        "secret": true,
+        "apply": "restart",
+        "help": "节点独立密钥；保存后需重启并核对双方指纹。"
+      },
+      {
+        "key": "REG_FACTORY_NODE_ARTIFACT_KEY",
+        "label": "工件加密密钥",
+        "secret": true,
+        "apply": "restart",
+        "help": "节点独立密钥；保存后需重启并核对双方指纹。"
+      }
+    ],
+    "area": "node"
+  }
+]

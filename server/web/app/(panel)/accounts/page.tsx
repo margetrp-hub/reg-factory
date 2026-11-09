@@ -5,10 +5,12 @@ import Link from "next/link";
 import { api, type AccountRow } from "@/lib/api";
 import { Badge, Card, Empty, Stat, timeAgo } from "@/components/ui";
 import { Drawer } from "@/components/drawer";
+import { accountAction, convertAccountCredentials } from "@/lib/account-actions";
 
 const STATUS_LABEL: Record<string, { text: string; tone: "ok" | "warn" | "bad" | "neutral" | "info" }> = {
   ok: { text: "正常", tone: "ok" },
   expired: { text: "过期", tone: "warn" },
+  needs_refresh: { text: "AT 待刷新", tone: "warn" },
   banned: { text: "封禁", tone: "bad" },
   invalid: { text: "失效", tone: "bad" },
   unknown: { text: "未测", tone: "neutral" },
@@ -72,18 +74,15 @@ export default function AccountsPage() {
     }
   };
 
-  const act = async (ref: string, plat: string, action: "liveness" | "refresh") => {
+  const act = async (ref: string, plat: string, action: "liveness" | "refresh" | "authorize") => {
+    if (busy) return;
     setBusy(ref + action);
     setNotice("");
     try {
-      if (action === "liveness") {
-        await api.accountLiveness(ref, plat, false);
-        setNotice(`已提交测活：${ref}`);
-      } else {
-        await api.accountRefresh(ref, plat, false);
-        setNotice(`已提交刷新：${ref}`);
-      }
+      const result = await accountAction(ref, plat, action === "liveness" ? "check" : action);
+      setNotice(result.task_id ? `已受理原任务 ${result.task_id}，请到任务中心查看结果` : result.message || "测试已返回");
       await load();
+      if (detail?.ref === ref) setDetail((await api.accountDetail(ref)).account);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -208,6 +207,7 @@ export default function AccountsPage() {
               <option value="">全部状态</option>
               <option value="ok">正常</option>
               <option value="expired">过期</option>
+              <option value="needs_refresh">AT 待刷新</option>
               <option value="banned">封禁</option>
               <option value="unknown">未测</option>
             </select>
@@ -218,7 +218,7 @@ export default function AccountsPage() {
               onClick={async () => {
                 setBusy("convert");
                 try {
-                  const data = await api.convertAccounts({ refs: Array.from(picked) });
+                  const data = await convertAccountCredentials(Array.from(picked));
                   setNotice(
                     `已排队 ${data.queued.length} 个转换任务${data.skipped.length ? `，跳过 ${data.skipped.length} 个（${data.skipped[0].reason}）` : ""}`,
                   );
@@ -230,9 +230,9 @@ export default function AccountsPage() {
                   setBusy("");
                 }
               }}
-              title="登录这些账号，产出标准 Free 凭据 JSON"
+              title="使用保存的密码/2FA重新授权，保存完整 AT、RT、ID Token；丢响应重试核对原任务"
             >
-              {busy === "convert" ? "转换中…" : `转 Free JSON ${picked.size > 0 ? `(${picked.size})` : ""}`}
+              {busy === "convert" ? "提交中…" : `获取 / 修复凭证 ${picked.size > 0 ? `(${picked.size})` : ""}`}
             </button>
             <button
               className="btn-ghost"
@@ -329,7 +329,8 @@ export default function AccountsPage() {
                         </button>
                         <button
                           className="btn-ghost px-2 py-0.5 text-[11px]"
-                          disabled={busy === row.ref + "refresh"}
+                          disabled={!!busy || row.claimed}
+                          title={row.claimed ? "已领取账号在主系统原任务中刷新" : undefined}
                           onClick={() => act(row.ref, row.platform, "refresh")}
                         >
                           刷新
@@ -520,28 +521,20 @@ export default function AccountsPage() {
             <>
               <button
                 className="btn-ghost px-2 py-1 text-[11px]"
-                disabled={busy === detail.ref + "liveness"}
-                onClick={async () => {
-                  setBusy(detail.ref + "liveness");
-                  await api.accountLiveness(detail.ref, detail.platform, false).catch(() => null);
-                  setBusy("");
-                  await load();
-                }}
+                disabled={!!busy}
+                onClick={() => act(detail.ref, detail.platform, "liveness")}
               >
                 测活
               </button>
               <button
                 className="btn-primary px-3 py-1 text-[11px]"
-                disabled={busy === detail.ref + "refresh"}
-                onClick={async () => {
-                  setBusy(detail.ref + "refresh");
-                  await api.accountRefresh(detail.ref, detail.platform, false).catch(() => null);
-                  setBusy("");
-                  await load();
-                }}
+                disabled={!!busy || detail.claimed}
+                title={detail.claimed ? "已领取账号在主系统原任务中刷新" : undefined}
+                onClick={() => act(detail.ref, detail.platform, "refresh")}
               >
-                刷新凭据
+                RT 刷新
               </button>
+              {detail.platform === "chatgpt" && <button className="btn-primary" disabled={!!busy || detail.claimed} onClick={() => act(detail.ref,detail.platform,"authorize")}>用密码/2FA修复凭证</button>}
             </>
           ) : null
         }
@@ -575,8 +568,8 @@ export default function AccountsPage() {
 
       <Card title="治理规则">
         <ul className="space-y-1.5 text-[11.5px] leading-relaxed text-muted-foreground">
-          <li>· 测活/刷新会以任务形式进队列，受并发与内存闸门约束，不会绕过调度直接扫号。</li>
-            <li>· 刷新会直接写回当前凭据 JSON；已交付账号也可由管理员按需修复 401。</li>
+          <li>· OAuth 测试只使用 AT，不交换 RT；401 表示需要刷新后复测，不代表账号或订阅失效。</li>
+          <li>· 显式刷新通过任务队列使用 RT 并保存新凭据；已领取账号由主系统原任务完成更新。</li>
           <li>· 封禁类只标记不可修；超时/断连标 unknown，不自动重试。</li>
           <li>· 定时巡检开关与频率在「配置」页：REG_FACTORY_LIVENESS_*。</li>
         </ul>

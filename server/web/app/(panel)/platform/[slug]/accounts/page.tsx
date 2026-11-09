@@ -1,9 +1,9 @@
 import { PlatformSubview } from "@/components/platform-subview";
 
-const SLUGS = ["claude", "chatgpt", "grok", "outlook"];
+import { PLATFORMS } from "@/lib/task-catalog";
 
 export function generateStaticParams() {
-  return SLUGS.map((slug) => ({ slug }));
+  return PLATFORMS.map(({slug}) => ({ slug }));
 }
 
 export default async function Page({ params }: { params: Promise<{ slug: string }> }) {

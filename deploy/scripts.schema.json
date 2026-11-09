@@ -5,6 +5,14 @@
     "file": "run_full_flow.py",
     "desc": "并发注册 Outlook 邮箱，并为每个邮箱只运行一个所选平台。",
     "platform": "",
+    "platforms": [
+      "claude",
+      "chatgpt",
+      "grok",
+      "kiro",
+      "github"
+    ],
+    "group": "pipeline",
     "category": "主流程",
     "warning": "浏览器流程统一使用所选 Chromium provider；推荐 BitBrowser 以获得独立 Profile、Cookie 和指纹。",
     "args": [
@@ -794,6 +802,14 @@
     "file": "register_three_platforms.py",
     "desc": "用现成邮箱(或从 emails.txt 池)只在一个所选平台注册。",
     "platform": "",
+    "platforms": [
+      "claude",
+      "chatgpt",
+      "grok",
+      "kiro",
+      "github"
+    ],
+    "group": "pipeline",
     "category": "主流程",
     "warning": "",
     "args": [
@@ -1502,6 +1518,10 @@
     "file": "oauth_codex.py",
     "desc": "用已存 cookie 重登 ChatGPT，走 OAuth 拿带 refresh_token 的凭据建到 SUB2API/CPA。默认直接接码过 add-phone。",
     "platform": "chatgpt",
+    "platforms": [
+      "chatgpt"
+    ],
+    "group": "authorize",
     "category": "主流程",
     "warning": "",
     "args": [
@@ -1606,6 +1626,10 @@
     "file": "tools/import_plus_codex.py",
     "desc": "兼容 Outlook/iCloud 邮箱、ChatGPT session token 和完整 OAuth JSON；手机号验证通过后导入 SUB2API。",
     "platform": "chatgpt",
+    "platforms": [
+      "chatgpt"
+    ],
+    "group": "authorize",
     "category": "主流程",
     "warning": "",
     "args": [
@@ -1806,6 +1830,10 @@
     "file": "register_chatgpt.py",
     "desc": "ChatGPT 单平台注册，支持 iCloud 接码，并可在成功后直接导入 SUB2API。",
     "platform": "chatgpt",
+    "platforms": [
+      "chatgpt"
+    ],
+    "group": "register",
     "category": "单平台注册",
     "warning": "",
     "args": [
@@ -2254,6 +2282,10 @@
     "file": "register_grok.py",
     "desc": "使用指纹浏览器注册 Grok，支持 Outlook 或配置的临时邮箱，成功后可导入 SUB2API。",
     "platform": "grok",
+    "platforms": [
+      "grok"
+    ],
+    "group": "register",
     "category": "单平台注册",
     "warning": "Grok 使用 Chromium CDP；推荐 BitBrowser 或内置 Chromium。",
     "args": [
@@ -2346,6 +2378,10 @@
     "file": "register.py",
     "desc": "Claude 单平台注册；支持 YYDS 临时邮箱，自动处理节点预检、magic-link 原生验证和 hCaptcha，成功后保存 sessionKey。",
     "platform": "claude",
+    "platforms": [
+      "claude"
+    ],
+    "group": "register",
     "category": "单平台注册",
     "warning": "运行前必须在“配置 (.env) → Claude 注册与验证”中填写视觉 API 地址和 key。Claude 使用 Chromium CDP。",
     "args": [
@@ -2574,6 +2610,10 @@
     "file": "register_kiro.py",
     "desc": "使用 Outlook、自建邮箱 API 或临时邮箱注册 AWS Builder ID，并导出 Kiro 所需的长期凭据。",
     "platform": "kiro",
+    "platforms": [
+      "kiro"
+    ],
+    "group": "register",
     "category": "单平台注册",
     "warning": "",
     "args": [
@@ -2706,6 +2746,10 @@
     "file": "register_github.py",
     "desc": "GitHub 注册(含 Arkose 验证视觉求解，需配 VISION_*/VOTE_*)。",
     "platform": "github",
+    "platforms": [
+      "github"
+    ],
+    "group": "register",
     "category": "单平台注册",
     "warning": "GitHub 会按设备、IP、自动化特征和近期行为限制注册；出现 Access is temporarily restricted、CLIENT_INTEGRITY 或 PAGE_BLANK 时会停止重试。CLIENT_INTEGRITY 表示 GitHub 未通过浏览器 JS/完整性检查；请检查浏览器 provider 和正常浏览器页面。",
     "args": [
@@ -2789,6 +2833,10 @@
     "file": "outlook_reg_loop.py",
     "desc": "持续自注册 Outlook；最近窗口成功率低于阈值时自动停止，避免持续消耗住宅流量。",
     "platform": "outlook",
+    "platforms": [
+      "outlook"
+    ],
+    "group": "register",
     "category": "邮箱注册",
     "warning": "Outlook 浏览器注册、Graph 授权和账号恢复均使用当前选择的 Chromium provider；推荐 BitBrowser。",
     "args": [
@@ -2908,6 +2956,10 @@
     "file": "tools/authorize_outlook.py",
     "desc": "仅使用邮箱和密码完成 Microsoft Graph OAuth 授权，成功后自动回写 refresh token；不会执行账号解锁或按住验证。",
     "platform": "outlook",
+    "platforms": [
+      "outlook"
+    ],
+    "group": "authorize",
     "category": "邮箱授权",
     "warning": "请仅提交你拥有或明确获准管理的 Outlook 账号；每行格式为 email----password。",
     "args": [
@@ -2946,6 +2998,8 @@
     "file": "mailbox_broker.py",
     "desc": "并行流水线时起共享取码服务，避免三窗口并发登录同一邮箱。常驻运行。",
     "platform": "",
+    "platforms": [],
+    "group": "helper",
     "category": "邮箱注册",
     "warning": "",
     "args": [
@@ -2984,6 +3038,10 @@
     "file": "tools/upload_tokens.py",
     "desc": "把 tokens/ 下标准 token 上传到 CPA/SUB2API/webchat2api；Grok 会导入 SUB2API Grok 渠道。",
     "platform": "",
+    "platforms": [
+      "chatgpt"
+    ],
+    "group": "data",
     "category": "导出/上传",
     "warning": "",
     "args": [
@@ -3008,6 +3066,10 @@
     "file": "tools/export_chatgpt2api.py",
     "desc": "聚合普通网页号导入 chatgpt2api(--post 直传 / 默认导出 txt)。",
     "platform": "",
+    "platforms": [
+      "chatgpt"
+    ],
+    "group": "data",
     "category": "导出/上传",
     "warning": "",
     "args": [
@@ -3055,11 +3117,17 @@
     "file": "tools/export_accounts.py",
     "desc": "按平台和 index 导出标准浏览器 Cookie，或生成直登扩展账号包。",
     "platform": "",
+    "platforms": [
+      "claude",
+      "chatgpt",
+      "grok"
+    ],
+    "group": "data",
     "category": "导出/上传",
     "warning": "",
     "args": [
       {
-        "flag": "platforms",
+        "flag": "--platform",
         "type": "choice",
         "default": "all",
         "help": "cookies 格式必须指定一个平台",
@@ -3070,7 +3138,7 @@
           "grok"
         ],
         "labels": {},
-        "positional": true
+        "positional": false
       },
       {
         "flag": "--format",
@@ -3110,6 +3178,10 @@
     "file": "tools/export_kiro_credentials.py",
     "desc": "把已保存的 Kiro 账号聚合成 hank9999/kiro.rs 可直接读取的 credentials.json。",
     "platform": "",
+    "platforms": [
+      "kiro"
+    ],
+    "group": "data",
     "category": "导出/上传",
     "warning": "",
     "args": [

@@ -1,146 +1,175 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import { api, type Task } from "@/lib/api";
-import { Badge, Card, Stat } from "@/components/ui";
-import { TASK_GROUPS, groupOf } from "@/lib/task-catalog";
+import { api, type Task, type TaskPage } from "@/lib/api";
+import { EntryArrow, ErrorNote, StatusBadge } from "@/components/ui";
+import { TASK_GROUPS } from "@/lib/task-catalog";
 import { TaskTable } from "@/components/task-table";
 import { LogView } from "@/components/log-view";
 
-export default function TaskCenterPage() {
-  const [tasks, setTasks] = useState<Task[]>([]);
-  const [error, setError] = useState("");
-  const [selected, setSelected] = useState("");
-  const [allLogs, setAllLogs] = useState(true);
+const FILTERS = [
+  ["", "全部"], ["running", "运行中"], ["queued", "排队"], ["waiting_user", "待人工"],
+  ["unknown", "待核对"], ["failed", "失败"], ["succeeded", "成功"], ["completed", "已完成"],
+  ["stopped", "已停止"], ["interrupted", "中断"], ["cancelled", "已取消"],
+];
+const PAGE_SIZE = 25;
 
-  const load = useCallback(async () => {
-    try {
-      const data = await api.tasks(120);
-      setTasks(data.tasks);
-      setSelected((prev) => (data.tasks.some((task) => task.id === prev) ? prev : data.tasks[0]?.id || ""));
-      setError("");
-    } catch (err) {
-      setError((err as Error).message);
-    }
+export default function TaskCenterPage() {
+  const [page, setPage] = useState<TaskPage | null>(null);
+  const [filter, setFilter] = useState({ status: "", q: "", offset: 0 });
+  const [search, setSearch] = useState("");
+  const [selected, setSelected] = useState<Task | null>(null);
+  const [selectedID, setSelectedID] = useState("");
+  const [allLogs, setAllLogs] = useState(false);
+  const [error, setError] = useState("");
+  const [actionError, setActionError] = useState("");
+  const [detailError, setDetailError] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
+  const [reload, setReload] = useState(0);
+  const [ready, setReady] = useState(false);
+  const [launchers, setLaunchers] = useState(false);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const status = params.get("status") || "";
+    const q = (params.get("q") || "").slice(0, 128);
+    const offset = Number(params.get("offset"));
+    setFilter({ status: FILTERS.some(([key]) => key === status) ? status : "", q,
+      offset: Number.isInteger(offset) && offset >= 0 && offset <= 10000000 ? offset : 0 });
+    setSearch(q);
+    setSelectedID(params.get("task") || "");
+    setReady(true);
   }, []);
 
   useEffect(() => {
-    load();
-    const timer = setInterval(load, 5000);
-    return () => clearInterval(timer);
-  }, [load]);
+    if (!ready) return;
+    const params = new URLSearchParams();
+    if (filter.status) params.set("status", filter.status);
+    if (filter.q) params.set("q", filter.q);
+    if (filter.offset) params.set("offset", String(filter.offset));
+    if (selectedID) params.set("task", selectedID);
+    window.history.replaceState(null, "", `${window.location.pathname}${params.size ? `?${params}` : ""}`);
+  }, [ready, filter, selectedID]);
 
-  const counts = useMemo(() => {
-    const latest = new Map<string, Task>();
-    for (const task of tasks) if (!latest.has(task.script)) latest.set(task.script, task);
-    const perGroup = new Map<string, Task>();
-    for (const [scriptId, task] of latest) {
-      const slug = groupOf(scriptId).slug;
-      if (!perGroup.has(slug)) perGroup.set(slug, task);
-    }
-    return {
-      perGroup,
-      running: tasks.filter((task) => task.status === "running").length,
-      queued: tasks.filter((task) => task.status === "queued").length,
-      succeeded: tasks.filter((task) => ["succeeded", "completed"].includes(task.status)).length,
-      unknown: tasks.filter((task) => task.status === "unknown").length,
-      failed: tasks.filter((task) => task.status === "failed").length,
+  useEffect(() => {
+    if (!ready) return;
+    let active = true;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout>;
+    const load = async () => {
+      if (active) setRefreshing(true);
+      try {
+        const data = await api.tasks(PAGE_SIZE, filter, controller.signal);
+        if (!active) return;
+        setPage(data);
+        setError("");
+        if (filter.offset > 0 && data.total <= filter.offset) {
+          setFilter(previous => ({ ...previous, offset: Math.max(0, Math.ceil(data.total / PAGE_SIZE) - 1) * PAGE_SIZE }));
+        }
+      } catch (err) {
+        if (active) setError(`任务读取失败，已保留上次结果。${(err as Error).message}`);
+      } finally {
+        if (active) {
+          setRefreshing(false);
+          timer = setTimeout(load, document.hidden ? 30000 : 10000);
+        }
+      }
     };
-  }, [tasks]);
+    void load();
+    return () => { active = false; clearTimeout(timer); controller.abort(); };
+  }, [ready, filter, reload]);
+
+  useEffect(() => {
+    if (!selectedID) return;
+    let active = true;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout>;
+    const load = async () => {
+      try {
+        const task = await api.task(selectedID, controller.signal);
+        if (active) { setSelected(task); setDetailError(""); }
+      } catch (err) {
+        if (active) setDetailError(`原任务暂时不可读：${(err as Error).message}`);
+      } finally {
+        if (active) timer = setTimeout(load, document.hidden ? 30000 : 10000);
+      }
+    };
+    void load();
+    return () => { active = false; clearTimeout(timer); controller.abort(); };
+  }, [selectedID, reload]);
+
+  const total = Object.values(page?.stats || {}).reduce((sum, count) => sum + count, 0);
+  const select = (id: string) => {
+    setDetailError("");
+    setSelectedID(id);
+    setSelected(page?.tasks.find(task => task.id === id) || null);
+    setAllLogs(false);
+  };
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="min-w-0 flex-1">
-          <h1 className="text-[16px] font-semibold leading-tight">任务中心</h1>
-          <p className="text-[11px] text-muted-foreground">
-            所有任务、历史输出和实时流统一在这里查看；分类页只负责发起业务流程。
-          </p>
+    <div className="sg-workspace">
+      <header className="sg-page-head">
+        <div><p className="sg-eyebrow">执行工作台</p><h1>任务中心</h1>
+          <p className="sg-description">查看每次执行、原始结果与下一步处理。</p></div>
+        <div className="flex flex-wrap items-center gap-2">
+          <button className="btn-ghost" onClick={() => setAllLogs(value => !value)}>{allLogs ? "返回任务日志" : "系统日志"}</button>
+          <button className="btn-ghost" disabled={refreshing} onClick={() => setReload(value => value + 1)}>{refreshing ? "刷新中…" : "刷新"}</button>
+          <button className="btn-primary" aria-expanded={launchers} onClick={() => setLaunchers(value => !value)}>发起任务</button>
         </div>
-        <Badge tone={counts.running > 0 ? "warn" : "info"}>
-          运行中 {counts.running} · 排队 {counts.queued}
-        </Badge>
-      </div>
+      </header>
+      <ErrorNote message={actionError} />
 
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Stat label="运行 / 排队" value={`${counts.running}/${counts.queued}`} tone={counts.queued > 0 ? "warn" : "neutral"} />
-        <Stat label="成功" value={counts.succeeded} />
-        <Stat label="失败" value={counts.failed} tone={counts.failed > 0 ? "bad" : "neutral"} />
-        <Stat label="结果待核对" value={counts.unknown} tone={counts.unknown > 0 ? "warn" : "neutral"} hint="查看原任务步骤和处理提示" />
-      </div>
+      {launchers && <nav aria-label="任务类型" className="sg-mode-grid sg-enter">
+        {TASK_GROUPS.map(group => <Link key={group.slug} className="sg-mode-card" href={`/tasks/group/${group.slug}/`}>
+          <span className="sg-mode-title">{group.title}<EntryArrow /></span>
+          <span className="sg-description">{group.desc}</span>
+        </Link>)}
+      </nav>}
 
-      {error && (
-        <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-[12px] text-destructive">
-          {error}
+      <section className="sg-task-surface" aria-label="任务记录">
+        <div className="sg-task-toolbar">
+          <form onSubmit={event => { event.preventDefault(); setFilter(previous => ({ ...previous, q: search.trim(), offset: 0 })); }} className="flex min-w-0 flex-1 gap-2">
+            <input aria-label="搜索任务" className="field max-w-sm" placeholder="搜索任务名称或编号" maxLength={128} value={search} onChange={event => setSearch(event.target.value)} />
+            <button className="btn-ghost" type="submit">搜索</button>
+          </form>
+          <span className="sg-description tabular-nums">{page ? `共 ${total} 条记录` : "正在读取…"}</span>
         </div>
-      )}
-
-      <div className="grid min-w-0 grid-cols-1 gap-4">
-        <Card title="全局任务流" bodyClass="p-0">
-          <div className="max-h-[520px] overflow-auto">
-            <TaskTable tasks={tasks} onSelect={(id) => { setSelected(id); setAllLogs(false); }} activeId={allLogs ? "" : selected} onStop={async (id) => {
-              try { await api.stopTask(id); await load(); } catch (err) { setError((err as Error).message); }
-            }} showScript />
+        <nav aria-label="任务状态筛选" className="sg-status-tabs">
+          {FILTERS.filter(([status]) => !status || (page?.stats[status] || 0) > 0 || filter.status === status).map(([status, label]) => (
+            <button key={status} aria-pressed={filter.status === status} onClick={() => setFilter(previous => ({ ...previous, status, offset: 0 }))}>
+              {label}<span className="tabular-nums">{page ? status ? page.stats[status] || 0 : total : "—"}</span>
+            </button>
+          ))}
+        </nav>
+        {error && <div className="px-5 py-3"><ErrorNote message={error} /><button className="btn-ghost mt-2" onClick={() => setReload(value => value + 1)}>重试读取</button></div>}
+        <div className="overflow-x-auto" aria-busy={refreshing}>
+          {page ? <TaskTable tasks={page.tasks} activeId={selectedID} onSelect={select} emptyText="没有匹配的任务，调整筛选后再试" onStop={async id => {
+            setActionError(""); try { await api.stopTask(id); setReload(value => value + 1); } catch (err) { setActionError(`停止未确认，请核对原任务：${(err as Error).message}`); }
+          }} /> : <div className="sg-table-skeleton" role="status">正在读取任务记录…</div>}
+        </div>
+        <footer className="sg-task-footer">
+          <span>{page ? `${page.total ? filter.offset + 1 : 0}–${Math.min(filter.offset + page.count, page.total)} / ${page.total}` : "—"}</span>
+          <div className="flex gap-2">
+            <button className="btn-ghost" disabled={!page || filter.offset === 0 || refreshing} onClick={() => setFilter(previous => ({ ...previous, offset: Math.max(0, previous.offset - PAGE_SIZE) }))}>上一页</button>
+            <button className="btn-ghost" disabled={!page || filter.offset + PAGE_SIZE >= page.total || refreshing} onClick={() => setFilter(previous => ({ ...previous, offset: previous.offset + PAGE_SIZE }))}>下一页</button>
           </div>
-        </Card>
-        <Card title="终端日志" bodyClass="p-2" actions={
-          <>
-            <button className={allLogs ? "btn-primary" : "btn-ghost"} onClick={() => setAllLogs(true)}>系统与全部任务</button>
-            <button className={!allLogs ? "btn-primary" : "btn-ghost"} disabled={!selected} onClick={() => setAllLogs(false)}>选中任务</button>
-          </>
-        }>
-          <LogView taskId={allLogs ? "" : selected} height={480} />
-        </Card>
-      </div>
+        </footer>
+      </section>
 
-      <div className="grid gap-3 sm:grid-cols-2">
-        {TASK_GROUPS.map((group) => {
-          const last = counts.perGroup.get(group.slug);
-          return (
-            <Link
-              key={group.slug}
-              href={`/tasks/group/${group.slug}/`}
-              className="group rounded-[var(--radius)] border border-border bg-card p-4 transition-colors hover:border-brand/50 hover:bg-accent/30"
-            >
-              <div className="flex items-center justify-between">
-                <span className="text-[14px] font-semibold">{group.title}</span>
-                <span className="font-mono text-[11px] text-muted-foreground">{group.ids.length} 个</span>
-              </div>
-              <p className="mt-1 text-[11px] leading-snug text-muted-foreground">{group.desc}</p>
-              <div className="mt-3 flex items-center justify-between text-[11px]">
-                <span className="text-muted-foreground">
-                  {last ? `最近：${last.title || last.script}` : "尚未运行"}
-                </span>
-                <span className="text-brand opacity-0 transition-opacity group-hover:opacity-100">进入 →</span>
-              </div>
-            </Link>
-          );
-        })}
-      </div>
-
-      <Card title="其他入口" bodyClass="p-0">
-        <table className="tbl">
-          <tbody>
-            {[
-              { name: "Claude 协议注册", desc: "零浏览器，IC / Outlook / magic link 取码", href: "/platform/claude/" },
-              { name: "批量测活", desc: "按号池扫描缓存刷新健康状态", href: "/accounts/" },
-              { name: "IC 邮箱", desc: "IMAP 多源收件与索引", href: "/apps/icmail/" },
-              { name: "物料补给", desc: "邮箱 / 代理 / 接码 / 验证码", href: "/materials/" },
-            ].map((row) => (
-              <tr key={row.name} className="border-b border-border/60 last:border-0 hover:bg-accent/40">
-                <td className="w-[220px] px-4 py-2 text-[12.5px] font-medium">
-                  <Link href={row.href} className="hover:text-brand">{row.name}</Link>
-                </td>
-                <td className="px-2 py-2 text-[11px] text-muted-foreground">{row.desc}</td>
-                <td className="w-[80px] px-4 py-2 text-right">
-                  <Link href={row.href} className="text-[11px] text-brand">进入 →</Link>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </Card>
+      {(allLogs || selectedID) && <section className="sg-task-surface sg-enter" aria-label="执行详情">
+        <header className="sg-task-toolbar">
+          <div className="min-w-0"><h2 className="text-sm font-semibold break-words">{allLogs ? "系统与全部任务日志" : selected?.title || "原任务详情"}</h2>
+            {!allLogs && <p className="mt-1 break-all text-[12px] text-muted-foreground">{selectedID}</p>}</div>
+          {!allLogs && selected && <StatusBadge status={selected.status} />}
+          <button className="btn-ghost ml-auto" onClick={() => { setSelectedID(""); setSelected(null); setAllLogs(false); }}>关闭详情</button>
+        </header>
+        {!allLogs && <div className="px-5 pt-3"><ErrorNote message={detailError} />
+          {selected?.error && <ErrorNote message={selected.error} />}
+          {selected?.id.startsWith("work-") && ["failed", "unknown", "waiting_user"].includes(selected.status) && <p className="sg-description py-2">在主系统的原任务中处理；明确失败可重新发起，结果待核对时先读取原结果。</p>}
+        </div>}
+        <div className="p-3 sm:p-5"><LogView key={allLogs ? "system" : selectedID} taskId={allLogs ? "" : selectedID} height={380} /></div>
+      </section>}
     </div>
   );
 }

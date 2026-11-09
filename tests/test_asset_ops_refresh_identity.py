@@ -43,3 +43,28 @@ def test_missing_subject_does_not_fall_back_to_same_email(tmp_path, monkeypatch)
         result = asset_ops._refresh_chatgpt("missing-original-subject", "same@example.test")
         factory.assert_not_called()
     assert result["result"] == "relogin_required"
+
+
+def test_refresh_uses_production_route_and_keeps_unrotated_id_token(tmp_path, monkeypatch):
+    monkeypatch.setenv("REG_FACTORY_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("REG_FACTORY_PROXY_URL", "http://registration-proxy.invalid:8080")
+    monkeypatch.setenv("REG_FACTORY_PRODUCTION_PROXY", "http://production-proxy.invalid:8080")
+    directory = tmp_path / "assets" / "chatgpt" / "oauth"
+    directory.mkdir(parents=True)
+    path = directory / "one.json"
+    path.write_text(json.dumps({"ref": "one", "payload": {
+        "access_token": "fixture-old-at", "refresh_token": "fixture-rt", "id_token": "fixture-id"
+    }}))
+    response = Mock(status_code=200, content=b"json")
+    response.json.return_value = {"access_token": "fixture-new-at", "expires_in": 3600}
+    with patch("requests.Session") as factory:
+        factory.return_value.post.return_value = response
+        assert asset_ops._refresh_chatgpt("one")["result"] == "refreshed"
+        factory.return_value.proxies.update.assert_called_once_with({
+            "http": "http://production-proxy.invalid:8080", "https": "http://production-proxy.invalid:8080"
+        })
+        assert factory.return_value.trust_env is False
+        assert factory.return_value.post.call_count == 1
+    credentials = json.loads(path.read_text())["payload"]
+    assert credentials["id_token"] == "fixture-id"
+    assert credentials["refresh_token"] == "fixture-rt"

@@ -54,6 +54,9 @@ type CodeResult struct {
 
 // LookupCode scans the newest messages of one mailbox for a code.
 func (a *App) LookupCode(email string, scan int) (CodeResult, error) {
+	if err := a.DB.MailboxAvailable(email); err != nil {
+		return CodeResult{}, err
+	}
 	if scan <= 0 {
 		scan = 20
 	}

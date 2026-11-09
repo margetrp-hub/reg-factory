@@ -18,21 +18,6 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-# schema 与真实 CLI 的已知偏差修正（只影响导出，不改上游 Python 面板行为）。
-# export_accounts.py 用的是位置参数 `platforms`（nargs="*"），schema 历史写成 --platform，
-# 直接透传会让 argparse 报 "invalid choice: []"。
-OVERRIDES = {
-    ("export_accounts", "--platform"): {"flag": "platforms", "positional": True},
-}
-
-
-def apply_overrides(script_id: str, arg: dict) -> dict:
-    patch = OVERRIDES.get((script_id, arg.get("flag")))
-    if patch:
-        arg.update(patch)
-    return arg
-
-
 def main() -> int:
     out_path = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "deploy" / "scripts.schema.json"
     # schema/scripts.py 是唯一任务定义来源；旧 webui 面板已经退役，
@@ -52,13 +37,15 @@ def main() -> int:
                 "labels": arg.get("labels") or {},
                 "positional": bool(arg.get("positional")),
             }
-            args.append(apply_overrides(item.get("id", ""), entry))
+            args.append(entry)
         exported.append({
             "id": item.get("id", ""),
             "title": item.get("title", ""),
             "file": item.get("file", ""),
             "desc": item.get("desc", ""),
             "platform": item.get("platform", ""),
+            "platforms": item.get("platforms", []),
+            "group": item.get("group", "other"),
             "category": item.get("category", ""),
             "warning": item.get("warning", ""),
             "args": args,
@@ -66,6 +53,11 @@ def main() -> int:
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(exported, ensure_ascii=False, indent=2), encoding="utf-8")
+    out_path.with_name("config.schema.json").write_text(json.dumps(schema.ENV_SCHEMA, ensure_ascii=False, indent=2), encoding="utf-8")
+    # Public navigation metadata contains no runtime values or credentials.
+    catalog = {"groups": schema.TASK_GROUPS, "platforms": schema.PLATFORMS, "tools": schema.EXTERNAL_LINKS}
+    if len(sys.argv) <= 1:
+        (ROOT / "server" / "web" / "lib" / "generated-catalog.json").write_text(json.dumps(catalog, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"导出 {len(exported)} 个任务 -> {out_path}")
     return 0
 

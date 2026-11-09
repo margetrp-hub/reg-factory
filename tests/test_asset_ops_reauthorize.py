@@ -43,6 +43,10 @@ def test_authorization_failure_releases_task_only_when_no_tokens_exchanged(tmp_p
     with patch('tools.chatgpt_reauthorize.authorize_document', new=AsyncMock(side_effect=failure)):
         result = asset_ops._reauthorize_chatgpt('import:original')
     assert result['result'] == expected and asset_ops._emit(result) == exit_code
+    if expected == 'failed':
+        assert result['error_schema'] == 'account.failure.v1'
+    else:
+        assert 'error_schema' not in result
     assert 'private-provider-body' not in json.dumps(result) and path.read_bytes() == before
     with patch('tools.chatgpt_reauthorize.authorize_document', new=AsyncMock(return_value={'refresh_token': 'new-refresh', 'access_token': 'new-access'})):
         assert asset_ops._reauthorize_chatgpt('import:original')['result'] == 'refreshed'

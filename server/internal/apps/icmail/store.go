@@ -1,4 +1,4 @@
-﻿package icmail
+package icmail
 
 // Store is the IC 邮箱 app's own SQLite database. It lives next to regd's data
 // (same /data volume) but in a separate file so the app can be dropped or
@@ -12,14 +12,13 @@
 
 import (
 	"context"
-	"sort"
-	"regexp"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -60,6 +59,14 @@ func OpenDB(path string) (*DB, error) {
 		handle.Close()
 		return nil, err
 	}
+	if err := d.ensurePool(); err != nil {
+		handle.Close()
+		return nil, err
+	}
+	if err := d.ensureSync(); err != nil {
+		handle.Close()
+		return nil, err
+	}
 	return d, nil
 }
 
@@ -91,7 +98,7 @@ CREATE TABLE IF NOT EXISTS mail_messages (
     snippet TEXT NOT NULL DEFAULT '',
     body_text TEXT NOT NULL DEFAULT '',
     indexed_at REAL NOT NULL,
-    UNIQUE(mailbox, uid)
+    UNIQUE(source_id, mailbox, uid)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ux_icmail_dedupe ON mail_messages(dedupe_key);
 CREATE INDEX IF NOT EXISTS idx_icmail_alias ON mail_messages(alias_key, sort_ts DESC);
@@ -155,6 +162,8 @@ CREATE TABLE IF NOT EXISTS mail_sync_requests (
 
 // Message is the read model used by both the app UI and the API.
 type Message struct {
+	ID         int64    `json:"id"`
+	SourceID   int64    `json:"sourceId"`
 	UID        string   `json:"uid"`
 	Subject    string   `json:"subject"`
 	From       string   `json:"from"`
@@ -170,6 +179,7 @@ type Message struct {
 
 // MessageRecord is the write shape for one indexed mail.
 type MessageRecord struct {
+	Recipients []string
 	Mailbox    string
 	UID        string
 	SourceID   int64
@@ -188,8 +198,21 @@ type MessageRecord struct {
 
 // StoreMessage inserts one message; false means the uid was already present.
 func (d *DB) StoreMessage(rec MessageRecord) (bool, error) {
+	return d.storeMessage(rec, nil)
+}
+
+func (d *DB) StoreSourceMessage(src Source, rec MessageRecord) (bool, error) {
+	return d.storeMessage(rec, &src)
+}
+
+func (d *DB) storeMessage(rec MessageRecord, src *Source) (bool, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if src != nil {
+		if err := d.checkSource(*src); err != nil {
+			return false, err
+		}
+	}
 
 	aliasKey := strings.ToLower(strings.TrimSpace(rec.AliasHME))
 	now := float64(time.Now().Unix())
@@ -204,7 +227,12 @@ func (d *DB) StoreMessage(rec MessageRecord) (bool, error) {
 	}
 	dedupe := fmt.Sprintf("%d:%s", sourceID, rec.UID)
 
-	res, err := d.db.Exec(`
+	tx, err := d.db.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(`
 INSERT INTO mail_messages(mailbox, uid, dedupe_key, alias_hme, alias_key, source_id, from_addr,
   to_header, subject, sent_at, sort_ts, message_id, tags, primary_tag, score, snippet, body_text, indexed_at)
 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
@@ -224,7 +252,7 @@ ON CONFLICT(dedupe_key) DO NOTHING`,
 		if rec.PrimaryTag == "banned" || rec.PrimaryTag == "risk" {
 			risk = 1
 		}
-		if _, err := d.db.Exec(`
+		if _, err := tx.Exec(`
 INSERT INTO mail_alias_counters(alias_key, total, risk_hits, last_ts, updated_at)
 VALUES(?,1,?,?,?)
 ON CONFLICT(alias_key) DO UPDATE SET
@@ -235,64 +263,21 @@ ON CONFLICT(alias_key) DO UPDATE SET
 			return true, err
 		}
 	}
-	return true, nil
+	id, err := res.LastInsertId()
+	if err != nil {
+		return false, err
+	}
+	recipients := append(append([]string{}, rec.Recipients...), extractAddresses(rec.ToHeader+","+rec.AliasHME)...)
+	if err := indexRecipients(tx, id, sourceID, recipients); err != nil {
+		return false, err
+	}
+	return true, tx.Commit()
 }
 
 // Query returns messages newest first.
 func (d *DB) Query(alias, tag string, limit int) ([]Message, error) {
-	clauses := []string{}
-	args := []any{}
-	if alias != "" {
-		// 别名既可能是 IC 的 alias_key（命中预登记别名时才有值），
-		// 也可能是实际收件人（to_header）。两者都要能查到。
-		clauses = append(clauses, "(alias_key = ? OR lower(to_header) LIKE ?)")
-		normalized := strings.ToLower(strings.TrimSpace(alias))
-		args = append(args, normalized, "%"+normalized+"%")
-	}
-	if tag != "" {
-		clauses = append(clauses, "primary_tag = ?")
-		args = append(args, tag)
-	}
-	if limit <= 0 || limit > 500 {
-		limit = 100
-	}
-	where := ""
-	if len(clauses) > 0 {
-		where = " WHERE " + strings.Join(clauses, " AND ")
-	}
-	args = append(args, limit)
-	rows, err := d.db.Query(
-		"SELECT uid, subject, from_addr, to_header, sent_at, snippet, body_text, tags, primary_tag, alias_hme"+
-			" FROM mail_messages"+where+" ORDER BY sort_ts DESC, id DESC LIMIT ?", args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var out []Message
-	for rows.Next() {
-		var (
-			m       Message
-			sentAt  sql.NullFloat64
-			tagsRaw string
-			aliasDB sql.NullString
-		)
-		if err := rows.Scan(&m.UID, &m.Subject, &m.From, &m.To, &sentAt, &m.Snippet, &m.BodyText,
-			&tagsRaw, &m.PrimaryTag, &aliasDB); err != nil {
-			return nil, err
-		}
-		if sentAt.Valid {
-			v := sentAt.Float64
-			m.SentAt = &v
-			m.Date = time.Unix(int64(v), 0).UTC().Format(time.RFC1123Z)
-		}
-		if aliasDB.Valid {
-			m.Alias = aliasDB.String
-		}
-		_ = json.Unmarshal([]byte(tagsRaw), &m.Tags)
-		out = append(out, m)
-	}
-	return out, rows.Err()
+	items, _, err := d.MessagePage(context.Background(), alias, tag, 0, limit, 0)
+	return items, err
 }
 
 // Totals reports indexed counts.
@@ -358,29 +343,41 @@ func (d *DB) UpsertSource(src Source) (Source, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	now := float64(time.Now().Unix())
-	var id int64
-	err := d.db.QueryRow("SELECT id FROM mail_sources WHERE name = ?", src.Name).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
-		res, err := d.db.Exec(`
-INSERT INTO mail_sources(name, host, port, username, password, folder, enabled, idle,
-  interval_seconds, heartbeat_seconds, created_at, updated_at)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-			src.Name, src.Host, defaultInt(src.Port, 993), src.Username, src.Password,
-			defaultStr(src.Folder, "INBOX"), boolInt(src.Enabled), boolInt(src.Idle),
-			defaultInt(src.IntervalSeconds, 10), defaultInt(src.HeartbeatSeconds, 60), now, now)
+	id := src.ID
+	if id == 0 {
+		err := d.db.QueryRow("SELECT id FROM mail_sources WHERE name=?", src.Name).Scan(&id)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return Source{}, err
+		}
+	}
+	if id == 0 {
+		res, err := d.db.Exec(`INSERT INTO mail_sources(name,host,port,username,password,folder,enabled,idle,interval_seconds,heartbeat_seconds,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+			src.Name, src.Host, defaultInt(src.Port, 993), src.Username, src.Password, defaultStr(src.Folder, "INBOX"), src.Enabled, src.Idle, defaultInt(src.IntervalSeconds, 10), defaultInt(src.HeartbeatSeconds, 60), now, now)
 		if err != nil {
 			return Source{}, err
 		}
 		id, _ = res.LastInsertId()
-	} else if err != nil {
-		return Source{}, err
 	} else {
-		if _, err := d.db.Exec(`
-UPDATE mail_sources SET host=?, port=?, username=?, password=?, folder=?, enabled=?, idle=?,
-  interval_seconds=?, heartbeat_seconds=?, updated_at=? WHERE id=?`,
-			src.Host, defaultInt(src.Port, 993), src.Username, src.Password,
-			defaultStr(src.Folder, "INBOX"), boolInt(src.Enabled), boolInt(src.Idle),
-			defaultInt(src.IntervalSeconds, 10), defaultInt(src.HeartbeatSeconds, 60), now, id); err != nil {
+		old, err := d.getSource(id)
+		if err != nil {
+			return Source{}, err
+		}
+		if src.Password == "" {
+			src.Password = old.Password
+		}
+		changed := old.Username != src.Username || old.Folder != defaultStr(src.Folder, "INBOX") || old.Host != src.Host || old.Port != defaultInt(src.Port, 993)
+		if changed {
+			var count int
+			if err = d.db.QueryRow("SELECT count(*) FROM mail_messages WHERE source_id=?", id).Scan(&count); err != nil {
+				return Source{}, err
+			}
+			if count > 0 {
+				return Source{}, errors.New("此来源已有收信记录；更换账号、服务器或文件夹请新建来源，原记录会保留")
+			}
+		}
+		_, err = d.db.Exec(`UPDATE mail_sources SET name=?,host=?,port=?,username=?,password=?,folder=?,enabled=?,idle=?,interval_seconds=?,heartbeat_seconds=?,updated_at=?,last_uid=CASE WHEN ? THEN 0 ELSE last_uid END WHERE id=?`,
+			src.Name, src.Host, defaultInt(src.Port, 993), src.Username, src.Password, defaultStr(src.Folder, "INBOX"), src.Enabled, src.Idle, defaultInt(src.IntervalSeconds, 10), defaultInt(src.HeartbeatSeconds, 60), now, changed, id)
+		if err != nil {
 			return Source{}, err
 		}
 	}
@@ -403,12 +400,12 @@ func (d *DB) ListSources(onlyEnabled bool) ([]Source, error) {
 	var out []Source
 	for rows.Next() {
 		var (
-			s          Source
-			enabled    int
-			idle       int
-			lastOK     sql.NullFloat64
-			lastIdle   sql.NullFloat64
-			lastErr    sql.NullString
+			s        Source
+			enabled  int
+			idle     int
+			lastOK   sql.NullFloat64
+			lastIdle sql.NullFloat64
+			lastErr  sql.NullString
 		)
 		if err := rows.Scan(&s.ID, &s.Name, &s.Host, &s.Port, &s.Username, &s.Password, &s.Folder,
 			&enabled, &idle, &s.IntervalSeconds, &s.HeartbeatSeconds, &s.LastUID, &lastOK, &lastIdle, &lastErr); err != nil {
@@ -464,9 +461,12 @@ func (d *DB) getSource(id int64) (Source, error) {
 }
 
 // Cursor persists runner progress for one source.
-func (d *DB) Cursor(id int64, lastUID *uint32, lastOK *time.Time, lastErr string) error {
+func (d *DB) Cursor(src Source, lastUID *uint32, lastOK *time.Time, lastErr string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if err := d.checkSource(src); err != nil {
+		return err
+	}
 	sets := []string{"updated_at = ?"}
 	args := []any{float64(time.Now().Unix())}
 	if lastUID != nil {
@@ -483,9 +483,27 @@ func (d *DB) Cursor(id int64, lastUID *uint32, lastOK *time.Time, lastErr string
 	} else if lastOK != nil {
 		sets = append(sets, "last_error = NULL")
 	}
-	args = append(args, id)
+	args = append(args, src.ID)
 	_, err := d.db.Exec("UPDATE mail_sources SET "+strings.Join(sets, ", ")+" WHERE id = ?", args...)
 	return err
+}
+
+var ErrSourceChanged = errors.New("收件来源已变更或停用，原连接停止写入；新配置由收件器自动接续")
+
+// Called under the writer lock, so a configuration update cannot cross the
+// final ownership check and attribute old connection data to a new mailbox.
+func (d *DB) checkSource(src Source) error {
+	current, err := d.getSource(src.ID)
+	if errors.Is(err, ErrNotFound) {
+		return ErrSourceChanged
+	}
+	if err != nil {
+		return err
+	}
+	if !current.Enabled || !sameSource(current, src) {
+		return ErrSourceChanged
+	}
+	return nil
 }
 
 // --- helpers ---------------------------------------------------------------
@@ -549,16 +567,28 @@ func (d *DB) PruneOlderThan(days int) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	cutoff := float64(time.Now().Add(-time.Duration(days) * 24 * time.Hour).Unix())
-	if _, err := d.db.Exec("DELETE FROM mail_messages WHERE sort_ts < ?", cutoff); err != nil {
+	tx, err := d.db.Begin()
+	if err != nil {
 		return err
 	}
-	_, err := d.db.Exec(`DELETE FROM mail_alias_counters;
+	defer tx.Rollback()
+	if _, err := tx.Exec("DELETE FROM mail_recipients WHERE message_id IN (SELECT id FROM mail_messages WHERE sort_ts < ?)", cutoff); err != nil {
+		return err
+	}
+	if _, err := tx.Exec("DELETE FROM mail_messages WHERE sort_ts < ?", cutoff); err != nil {
+		return err
+	}
+	_, err = tx.Exec(`DELETE FROM mail_alias_counters;
 INSERT INTO mail_alias_counters(alias_key, total, risk_hits, last_ts, updated_at)
 SELECT alias_key, COUNT(*), SUM(CASE WHEN primary_tag IN ('banned','risk') THEN 1 ELSE 0 END),
        MAX(sort_ts), strftime('%s','now')
 FROM mail_messages WHERE alias_key IS NOT NULL AND alias_key != '' GROUP BY alias_key`)
-	return err
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
+
 // --- aliases / sources management -----------------------------------------
 
 // AliasState 是别名 + 计数 + 状态的联表视图。
@@ -573,84 +603,21 @@ type AliasState struct {
 	UpdatedAt float64 `json:"updatedAt"`
 }
 
-// ListAliases 以「实际收件地址」为准聚合：IC 的 alias_key 只有命中预登记别名时才非空，
-// 因此这里从 to_header 提取邮箱再统计，并左连接人工状态。
+// ListAliases retains the original API over the persistent address pool.
 func (d *DB) ListAliases(ctx context.Context) ([]AliasState, error) {
-	rows, err := d.db.QueryContext(ctx, `SELECT COALESCE(to_header,''), COALESCE(primary_tag,''), COALESCE(sort_ts,0) FROM mail_messages`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	type agg struct {
-		total, risk int
-		lastTag     string
-		lastTS      float64
-	}
-	bucket := map[string]*agg{}
-	for rows.Next() {
-		var to, tag string
-		var ts float64
-		if err := rows.Scan(&to, &tag, &ts); err != nil {
+	out := []AliasState{}
+	for offset := 0; ; offset += 100 {
+		page, total, err := d.PoolPage(ctx, "", "", 0, 100, offset)
+		if err != nil {
 			return nil, err
 		}
-		for _, addr := range extractAddresses(to) {
-			item := bucket[addr]
-			if item == nil {
-				item = &agg{}
-				bucket[addr] = item
-			}
-			item.total++
-			if tag == "risk" || tag == "banned" {
-				item.risk++
-			}
-			if ts >= item.lastTS {
-				item.lastTS = ts
-				item.lastTag = tag
-			}
+		for _, m := range page {
+			out = append(out, AliasState{HME: m.Email, State: m.State, Manual: m.Manual, Total: m.Total, RiskHits: m.RiskHits, LastTS: m.LastAt, LastTag: m.LastTag, UpdatedAt: m.UpdatedAt})
+		}
+		if offset+len(page) >= total {
+			return out, nil
 		}
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	states := map[string]struct {
-		state  string
-		manual bool
-	}{}
-	stateRows, err := d.db.QueryContext(ctx, `SELECT lower(alias_hme), state, manual FROM mail_alias_state`)
-	if err == nil {
-		for stateRows.Next() {
-			var hme, state string
-			var manual bool
-			if scanErr := stateRows.Scan(&hme, &state, &manual); scanErr == nil {
-				states[strings.TrimSpace(hme)] = struct {
-					state  string
-					manual bool
-				}{state, manual}
-			}
-		}
-		stateRows.Close()
-	}
-
-	out := make([]AliasState, 0, len(bucket))
-	for addr, item := range bucket {
-		state, manual := "active", false
-		if found, ok := states[addr]; ok {
-			state, manual = found.state, found.manual
-		}
-		out = append(out, AliasState{
-			HME: addr, State: state, Manual: manual,
-			Total: item.total, RiskHits: item.risk, LastTag: item.lastTag, LastTS: item.lastTS,
-		})
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Total != out[j].Total {
-			return out[i].Total > out[j].Total
-		}
-		return out[i].HME < out[j].HME
-	})
-	return out, nil
 }
 
 var addrInHeader = regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`)
@@ -671,31 +638,57 @@ func extractAddresses(header string) []string {
 
 // SetAliasState 更新别名状态（active / paused / blocked）。
 func (d *DB) SetAliasState(ctx context.Context, hme, state string) error {
-	_, err := d.db.ExecContext(ctx, `
+	hme = strings.ToLower(strings.TrimSpace(hme))
+	if !looksLikeEmail(hme) || (state != "active" && state != "paused" && state != "blocked") {
+		return errors.New("邮箱或状态无效")
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec("INSERT OR IGNORE INTO mail_pool(email,origin,created_at) VALUES(?,'manual',?)", hme, float64(time.Now().Unix())); err != nil {
+		return err
+	}
+	_, err = tx.Exec(`
 INSERT INTO mail_alias_state(alias_hme, state, manual, updated_at)
 VALUES(?,?,1,?)
 ON CONFLICT(alias_hme) DO UPDATE SET state=excluded.state, manual=1, updated_at=excluded.updated_at`,
 		hme, state, float64(time.Now().UnixNano())/1e9)
-	return err
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // SetSourceEnabled 启停一个 IMAP 源。
 func (d *DB) SetSourceEnabled(ctx context.Context, id int64, enabled bool) error {
-	_, err := d.db.ExecContext(ctx, `UPDATE mail_sources SET enabled=? WHERE id=?`, enabled, id)
-	return err
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	result, err := d.db.ExecContext(ctx, `UPDATE mail_sources SET enabled=? WHERE id=?`, enabled, id)
+	return sourceWriteResult(result, err)
 }
 
 // DeleteSource 删除一个 IMAP 源（不动已索引的消息）。
 func (d *DB) DeleteSource(ctx context.Context, id int64) error {
-	_, err := d.db.ExecContext(ctx, `DELETE FROM mail_sources WHERE id=?`, id)
-	return err
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	result, err := d.db.ExecContext(ctx, `DELETE FROM mail_sources WHERE id=?`, id)
+	return sourceWriteResult(result, err)
 }
 
-// RequestSync 插入一条按需同步请求（worker 会在下一轮消费）。
-func (d *DB) RequestSync(ctx context.Context, sourceID int64, alias string) error {
-	_, err := d.db.ExecContext(ctx, `
-INSERT INTO mail_sync_requests(source_id, alias_key, state, requested_at)
-VALUES(?,?, 'pending', ?)`, sourceID, strings.ToLower(strings.TrimSpace(alias)),
-		float64(time.Now().UnixNano())/1e9)
-	return err
+func sourceWriteResult(result sql.Result, err error) error {
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
