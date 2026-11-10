@@ -94,6 +94,18 @@
 .sg-entry-arrow { transition:transform 160ms; color:hsl(var(--muted-foreground)); }
 .sg-mode-card:hover .sg-entry-arrow { transform:translate(2px,-2px); }
 .sg-enter { animation:sg-surface-enter 200ms cubic-bezier(.16,1,.3,1); }
+.sg-config-selectors { display:grid; grid-template-columns:minmax(150px,.8fr) minmax(180px,1fr) minmax(190px,1.2fr); gap:16px; padding:18px; border:1px solid hsl(var(--border)); border-radius:10px; background:hsl(var(--muted)/.3); }
+.sg-config-selectors-scoped { grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); }
+.sg-config-selectors > label { min-width:0; }
+.sg-config-selectors .field { width:100%; min-height:38px; font-size:13px; }
+.sg-config-context { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px 20px; padding:14px 2px; color:hsl(var(--muted-foreground)); font-size:13px; line-height:1.6; }
+.sg-config-context > span { font-size:12px; }
+.sg-config-draft { margin-bottom:14px; border-left:2px solid hsl(var(--warning)); padding:8px 12px; background:hsl(var(--warning)/.05); font-size:13px; line-height:1.6; }
+.sg-config-fields { min-width:0; }
+.sg-config-breadcrumb { margin-bottom:7px; font-size:11px; color:hsl(var(--muted-foreground)); }
+.sg-config-workspace .card-head button { white-space:nowrap; }
+@media(max-width:1000px) { .sg-config-selectors { grid-template-columns:repeat(2,minmax(0,1fr)); } .sg-config-selectors > label:last-child { grid-column:1 / -1; } }
+@media(max-width:640px) { .sg-config-selectors { grid-template-columns:minmax(0,1fr); gap:12px; padding:14px; } .sg-config-workspace .card-head > div { gap:8px; } .sg-config-workspace .card-body { padding:14px; } .sg-config-context { align-items:flex-start; } }
 @keyframes sg-surface-enter { from { opacity:.4; transform:translateY(5px); } to { opacity:1; transform:none; } }
 .sg-drawer { position:fixed; inset:0 0 0 auto; margin:0; height:100dvh; max-height:100dvh; max-width:94vw; padding:0; border:0; border-left:1px solid hsl(var(--border)); background:hsl(var(--card)); color:hsl(var(--foreground)); box-shadow:-8px 0 32px #00000018; }
 .sg-drawer[open][data-state=open] { animation:sg-drawer-in 240ms cubic-bezier(.16,1,.3,1); }

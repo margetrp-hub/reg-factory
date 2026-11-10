@@ -23,12 +23,23 @@ func TestConfigMergePreservesMissingConfiguredAndUnrecognizedFields(t *testing.T
 func TestUnknownProviderSettingsRemainInMaterials(t *testing.T) {
 	entries := []Entry{{Key: "ICMAIL_CUSTOM_HOST", Value: "fixture", Line: 1}, {Key: "REG_FACTORY_PROXY_URL", Value: "fixture", Line: 2}, {Key: "SMS_NEW_TOKEN", Value: "fixture", Line: 3}}
 	groups := MergeConfig(nil, entries, func(string) string { return "other" })
-	for i, area := range []string{"mail", "proxy", "sms"} {
-		if groups["other"][i].Area != area {
-			t.Fatal("material setting disappeared", area)
+	for group, area := range map[string]string{"邮箱 · IC 邮箱池": "mail", "网络 · 住宅代理": "proxy", "短信 · 通用与重试": "sms"} {
+		if len(groups[group]) != 1 || groups[group][0].Area != area {
+			t.Fatal("material setting disappeared", group)
 		}
 	}
-	if !groups["other"][2].Secret {
+	if !groups["短信 · 通用与重试"][0].Secret {
 		t.Fatal("unknown token must stay masked")
+	}
+}
+
+func TestUnknownProviderOptionsJoinTheirExistingObject(t *testing.T) {
+	schema := []ConfigGroup{{Group: "浏览器 · RoxyBrowser", Area: "browser", Items: []ConfigField{{Key: "ROXY_API"}}}, {Group: "对接 · SUB2API", Area: "integration", Items: []ConfigField{{Key: "SUB2API_URL"}}}}
+	entries := []Entry{{Key: "ROXY_API", Value: "fixture", Line: 1}, {Key: "ROXY_PROXY_TOKEN", Value: "private", Line: 2}, {Key: "SUB2API_PROXY_TOKEN", Value: "private", Line: 3}, {Key: "ROXY_PROXY_TOKEN", Value: "ignored", Line: 4}}
+	groups := MergeConfig(schema, entries, func(string) string { return "网络出口" })
+	for group, area := range map[string]string{"浏览器 · RoxyBrowser": "browser", "对接 · SUB2API": "integration"} {
+		if len(groups[group]) != 2 || groups[group][1].Area != area || !groups[group][1].Secret || groups[group][1].Value != "private" {
+			t.Fatalf("provider option split or modified: %+v", groups[group])
+		}
 	}
 }

@@ -27,13 +27,30 @@ class ControlCatalogTests(unittest.TestCase):
 
     def test_config_and_navigation_generated_from_complete_catalog(self):
         self.assertEqual(json.loads((ROOT / "deploy/config.schema.json").read_text(encoding="utf-8")), ENV_SCHEMA)
-        self.assertEqual(sum(len(group["items"]) for group in ENV_SCHEMA), 182)
+        fields = {item["key"]: (group, item) for group in ENV_SCHEMA for item in group["items"]}
+        self.assertEqual(sum(len(group["items"]) for group in ENV_SCHEMA), len(fields))
+        self.assertEqual(len(fields), 181)
         catalog = json.loads((ROOT / "server/web/lib/generated-catalog.json").read_text(encoding="utf-8"))
         self.assertEqual(catalog, {"groups": TASK_GROUPS, "platforms": PLATFORMS, "tools": EXTERNAL_LINKS})
-        groups = {group["group"]: group["area"] for group in ENV_SCHEMA}
-        self.assertEqual(groups["Outlook 自注册"], "mail")
-        self.assertEqual(groups["ChatGPT 邮箱"], "mail")
-        self.assertEqual(groups["Codex add-phone 接码调参"], "sms")
+        for key, area, section in [
+            ("OUTLOOK_GRAPH_RECOVERY_TIMEOUT", "mail", "Outlook 与辅助邮箱"),
+            ("CHATGPT_EMAIL_PROVIDER", "mail", "来源选择"),
+            ("ICLOUD_MAIL_API_KEY", "mail", "iCloud"),
+            ("CODEX_ADDPHONE_ATTEMPTS", "sms", "通用与重试"),
+            ("SMS_TOKEN", "sms", "firefox.fun"),
+            ("ROXY_CREATE_USE_PROXY_POOL", "browser", "RoxyBrowser"),
+            ("CUSTOM_BROWSER_API_KEY", "browser", "自定义 API"),
+            ("SUB2API_GROK_PROXY_ID", "integration", "SUB2API"),
+            ("REG_FACTORY_PRODUCTION_PROXY", "proxy", "生产与凭据修复"),
+            ("CHATGPT_PROXY_MODE", "proxy", "模式与平台覆盖"),
+        ]:
+            group, _ = fields[key]
+            self.assertEqual(group["area"], area, key)
+            self.assertEqual(group["group"].split(" · ")[-1], section, key)
+        group, concurrency = fields["REG_FACTORY_MAX_CONCURRENCY"]
+        self.assertEqual(group["area"], "runtime")
+        self.assertEqual(concurrency["default"], 3)
+        self.assertEqual(concurrency["apply"], "restart")
 
 
 if __name__ == "__main__":

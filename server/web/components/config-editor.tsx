@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { api, type ConfigEntry } from "@/lib/api";
 import { isNodeConfig, NODE_CONFIG_FIELDS } from "@/lib/node-config";
+import { CONFIG_CATEGORIES, configCategory, configSectionLabel } from "@/lib/config-categories";
 import { Card, Empty, ErrorNote } from "@/components/ui";
 import { Drawer } from "@/components/drawer";
 
@@ -13,6 +14,7 @@ export function ConfigEditor({ scope, area }: { scope: "system" | "node"; area?:
   const isNode = scope === "node";
   const [groups, setGroups] = useState<Record<string, Entry[]>>({});
   const [activeGroup, setActiveGroup] = useState("");
+  const [activeCategory, setActiveCategory] = useState("");
   const [path, setPath] = useState("");
   const [dirty, setDirty] = useState<Record<string, string>>({});
   const [query, setQuery] = useState("");
@@ -24,6 +26,7 @@ export function ConfigEditor({ scope, area }: { scope: "system" | "node"; area?:
   const [rawOpen, setRawOpen] = useState(false);
   const [rawReady, setRawReady] = useState(false);
   const [raw, setRaw] = useState("");
+  const [rawOriginal, setRawOriginal] = useState("");
   const [reveal, setReveal] = useState(false);
   const [proxy, setProxy] = useState("");
   const [target, setTarget] = useState("https://claude.ai");
@@ -56,7 +59,10 @@ export function ConfigEditor({ scope, area }: { scope: "system" | "node"; area?:
   }, []);
 
   useEffect(() => {
-    setQuery(new URLSearchParams(window.location.search).get("q") || "");
+    const params = new URLSearchParams(window.location.search);
+    setQuery(params.get("q") || "");
+    setActiveCategory(params.get("category") || "");
+    setActiveGroup(params.get("section") || "");
     load();
   }, [load]);
 
@@ -102,13 +108,31 @@ export function ConfigEditor({ scope, area }: { scope: "system" | "node"; area?:
     }
     return out;
   }, [groups, isNode, area]);
-  const tabItems = Object.entries(scopedGroups).map(([id, list]) => ({
-    id, label: id, count: list.length,
-  }));
-  const activeId = scopedGroups[activeGroup]?.length ? activeGroup : tabItems[0]?.id;
-  const entries = query.trim()
-    ? Object.values(scopedGroups).flat().filter((entry) => `${entry.key} ${entry.label || ""} ${entry.help || ""}`.toLowerCase().includes(query.trim().toLowerCase()))
-    : scopedGroups[activeId] || [];
+  const rows = Object.entries(scopedGroups).flatMap(([group, list]) => list.map(entry => ({ entry, group, category: configCategory(entry.area) })));
+  const categories = CONFIG_CATEGORIES.filter(category => rows.some(row => row.category === category.id));
+  const categoryId = area || (categories.some(category => category.id === activeCategory) ? activeCategory : categories[0]?.id);
+  const category = CONFIG_CATEGORIES.find(item => item.id === categoryId);
+  const sections = Object.entries(scopedGroups).map(([id, list]) => ({
+    id, label: configSectionLabel(id), entries: list.filter(entry => isNode || configCategory(entry.area) === categoryId),
+  })).filter(section => section.entries.length).sort((a, b) => {
+    const priority = (label: string) => /通用|来源选择|模式与平台/.test(label) ? 0 : 1;
+    return priority(a.label) - priority(b.label) || a.label.localeCompare(b.label, "zh-CN");
+  });
+  const activeId = sections.some(section => section.id === activeGroup) ? activeGroup : sections[0]?.id;
+  const search = query.trim().toLowerCase();
+  const entries = rows.filter(row => search
+    ? `${row.entry.key} ${row.entry.label || ""} ${row.entry.help || ""} ${row.group} ${CONFIG_CATEGORIES.find(item => item.id === row.category)?.label || ""}`.toLowerCase().includes(search)
+    : (isNode || row.category === categoryId) && row.group === activeId);
+  const changedCategories = categories.filter(category => rows.some(row => row.category === category.id && row.entry.key in dirty));
+
+  useEffect(() => {
+    if (!loaded || isNode) return;
+    const url = new URL(window.location.href);
+    if (categoryId) url.searchParams.set("category", categoryId);
+    if (activeId) url.searchParams.set("section", activeId);
+    if (query) url.searchParams.set("q", query); else url.searchParams.delete("q");
+    window.history.replaceState(window.history.state, "", url);
+  }, [loaded, isNode, categoryId, activeId, query]);
 
   const save = async () => {
     if (Object.keys(dirty).length === 0) return;
@@ -129,15 +153,26 @@ export function ConfigEditor({ scope, area }: { scope: "system" | "node"; area?:
   };
 
   const openRaw = async () => {
+    if (Object.keys(dirty).length) {
+      setError("请先保存当前修改，再打开原始编辑，避免两种编辑方式互相覆盖。");
+      return;
+    }
     setRawOpen(true);
     setRawReady(false);
+    setError("");
     try {
       const data = await api.configRaw();
       setRaw(data.content);
+      setRawOriginal(data.content);
       setRawReady(true);
     } catch (err) {
       setError((err as Error).message);
     }
+  };
+
+  const closeRaw = () => {
+    if (busy || (raw !== rawOriginal && !window.confirm("放弃原始配置的未保存修改？"))) return;
+    setRawOpen(false);
   };
 
   const saveRaw = async () => {
@@ -177,70 +212,57 @@ export function ConfigEditor({ scope, area }: { scope: "system" | "node"; area?:
     <div className="space-y-4">
       <div className="grid gap-4">
         <Card
-          title={isNode ? "节点配置" : "执行配置"}
-          className="min-w-0 [&>.card-head]:flex-wrap [&>.card-head>div]:flex-wrap"
+          title={isNode ? "节点配置" : area ? category?.label || "配置" : "系统配置"}
+          className="sg-config-workspace min-w-0 [&>.card-head]:flex-wrap [&>.card-head>div]:flex-wrap"
           actions={
             <>
-              <input
-                className="field w-[170px] py-1 text-[12px]"
-                placeholder="搜索配置或用途"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-              />
               <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                <input type="checkbox" checked={reveal} onChange={(e) => setReveal(e.target.checked)} /> 明文
+                <input type="checkbox" checked={reveal} onChange={(e) => setReveal(e.target.checked)} /> 显示密钥
               </label>
-              <button className="btn-ghost" onClick={load} disabled={busy || loading}>
+              <button className="btn-ghost" onClick={load} disabled={busy || loading || rawOpen}>
                 {loading ? "读取中…" : "重新读取"}
               </button>
-              {!isNode && !area && <button className="btn-ghost" onClick={openRaw}>原始编辑</button>}
-              {!isNode && <button className="btn-ghost" onClick={() => setProbeOpen(true)}>检测出口</button>}
-              <button className="btn-primary" onClick={save} disabled={busy || loading || !loaded || Object.keys(dirty).length === 0}>
-                保存 {Object.keys(dirty).length > 0 ? `(${Object.keys(dirty).length})` : ""}
+              {!isNode && !area && <button className="btn-ghost" onClick={openRaw} disabled={busy || loading || rawOpen}>原始编辑</button>}
+              {!isNode && categoryId === "proxy" && <button className="btn-ghost" onClick={() => setProbeOpen(true)}>检测出口</button>}
+              <button className="btn-primary" onClick={save} disabled={busy || loading || rawOpen || !loaded || Object.keys(dirty).length === 0}>
+                保存全部修改 {Object.keys(dirty).length > 0 ? `(${Object.keys(dirty).length})` : ""}
               </button>
             </>
           }
         >
-          <div className="mb-2 text-[11px] text-muted-foreground">
-            文件 <span className="font-mono">{path || "读取中"}</span> · {isNode
+          <div className="mb-4 text-[13px] leading-relaxed text-muted-foreground">
+            {isNode
               ? "节点在启动时读取配置；保存后需重启节点进程，容器环境变量优先。"
               : "任务配置由新任务读取；进程级配置需重启，容器环境变量优先。"}
           </div>
           <ErrorNote message={error} />
           {notice && <div className="mb-2 rounded border border-success/30 bg-success/10 px-2 py-1 text-[11px] text-success">{notice}</div>}
-          {!loaded ? <Empty>{loading ? "正在读取配置文件…" : "配置尚未读取，请重试读取。"}</Empty> : <div className={isNode ? "" : "grid gap-3 lg:grid-cols-[196px_1fr]"}>
-            {!isNode && <nav className="space-y-0.5 overflow-auto">
-              {tabItems.map((item) => {
-                const active = (query.trim() ? "__all" : activeId) === item.id;
-                return (
-                  <button
-                    key={item.id}
-                    onClick={() => setActiveGroup(item.id)}
-                    className={`flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[12.5px] transition-colors ${
-                      active ? "bg-brand/15 font-medium text-brand" : "text-muted-foreground hover:bg-accent/60 hover:text-foreground"
-                    }`}
-                  >
-                    <span className="min-w-0 flex-1 truncate">{item.label}</span>
-                    <span className="font-mono text-[10.5px] opacity-70">{item.count}</span>
-                  </button>
-                );
-              })}
-            </nav>}
-
-            <div className="max-h-[calc(100vh-260px)] overflow-auto">
-              {query.trim() && (
-                <div className="mb-1.5 px-1 text-[11px] text-muted-foreground">搜索结果（{isNode ? "节点配置" : "系统配置，跨分组"}）</div>
-              )}
+          {!loaded ? <Empty>{loading ? "正在读取配置文件…" : "配置尚未读取，请重试读取。"}</Empty> : <div>
+            <div className={`sg-config-selectors ${isNode || area ? "sg-config-selectors-scoped" : ""}`}>
+              {!isNode && !area && <label><span className="label">配置类别</span><select className="field" aria-label="配置类别" value={categoryId || ""} onChange={event => { setActiveCategory(event.target.value); setActiveGroup(""); setQuery(""); }}>
+                {categories.map(item => <option key={item.id} value={item.id}>{item.label}{changedCategories.includes(item) ? " · 未保存" : ""}</option>)}
+              </select></label>}
+              {!isNode && <label><span className="label">配置对象</span><select className="field" aria-label="配置对象" value={activeId || ""} onChange={event => { setActiveGroup(event.target.value); setQuery(""); }}>
+                {sections.map(item => <option key={item.id} value={item.id}>{item.label}{item.entries.some(entry => entry.key in dirty) ? " · 未保存" : ""}</option>)}
+              </select></label>}
+              <label><span className="label">{isNode ? "搜索节点配置" : area ? "搜索本类配置" : "搜索全部配置"}</span><input className="field" aria-label="搜索配置" placeholder="名称、用途或配置键" value={query} onChange={event => setQuery(event.target.value)} /></label>
+            </div>
+            <div className="sg-config-context">
+              <p>{search ? `找到 ${entries.length} 项${isNode ? "节点配置" : area ? "本类配置" : "配置，含所有类别"}` : category?.description || "节点在启动时读取身份和密钥。"}</p>
+              {search ? <button className="btn-ghost" onClick={() => setQuery("")}>返回当前配置</button> : !isNode && <span>切换类别和对象仅改变查看范围</span>}
+            </div>
+            {Object.keys(dirty).length > 0 && <p role="status" className="sg-config-draft">{Object.keys(dirty).length} 项修改尚未保存{changedCategories.length ? ` · ${changedCategories.map(item => item.label).join("、")}` : ""}。切换查看会保留修改，保存将一次提交全部修改。</p>}
+            <div key={`${categoryId}:${activeId}:${Boolean(search)}`} className="sg-config-fields sg-enter">
               <table className="tbl sg-config-table">
                 <thead>
                   <tr>
                     <th>配置与用途</th>
-                    <th>文件值</th>
-                    <th className="w-[42px] text-right">改</th>
+                    <th>设置</th>
+                    <th className="w-[42px] text-right"><span className="sr-only">修改状态</span></th>
                   </tr>
                 </thead>
                 <tbody>
-                  {entries.map((entry) => {
+                  {entries.map(({ entry, group, category: entryCategory }) => {
                     const value = dirty[entry.key] ?? entry.value;
                     const changed = entry.key in dirty;
                     const update = (next: string) => {
@@ -252,6 +274,7 @@ export function ConfigEditor({ scope, area }: { scope: "system" | "node"; area?:
                     return (
                       <tr key={entry.key}>
                         <td className="max-w-[240px] text-[11px] text-muted-foreground">
+                          {search && !isNode && <p className="sg-config-breadcrumb">{CONFIG_CATEGORIES.find(item => item.id === entryCategory)?.label} / {configSectionLabel(group)}</p>}
                           <div className="mb-1 text-[13px] text-foreground">{entry.label || (isNode ? NODE_CONFIG_FIELDS.find((field) => field.key === entry.key)?.label : "") || entry.key}</div>
                           <div className="truncate font-mono" title={entry.key}>{entry.key}</div>
                           {entry.help && <p className="mt-2 max-w-lg text-[12px] leading-relaxed">{entry.help}</p>}
@@ -259,7 +282,7 @@ export function ConfigEditor({ scope, area }: { scope: "system" | "node"; area?:
                           {isNode && <div className="mt-1 text-[10.5px]">{entry.line ? `文件第 ${entry.line} 行` : "文件未配置 · 当前环境值未知"}</div>}
                         </td>
                         <td>
-                          {choices?.length && !entry.secret ? <select className={`field ${changed ? "border-warning/50" : ""}`} aria-label={entry.label || entry.key} disabled={busy || loading || entry.readonly} value={value} onChange={event=>update(event.target.value)}>
+                          {choices?.length && !entry.secret ? <select className={`field ${changed ? "border-warning/50" : ""}`} aria-label={entry.label || entry.key} disabled={busy || loading || rawOpen || entry.readonly} value={value} onChange={event=>update(event.target.value)}>
                             <option value="">{placeholder}</option>
                             {value && !choices.includes(value) && <option value={value}>{value}（已保存）</option>}
                             {choices.map(choice=><option key={choice} value={choice}>{entry.type==="bool" ? choice==="true" ? "开启" : "关闭" : choice}</option>)}
@@ -268,13 +291,13 @@ export function ConfigEditor({ scope, area }: { scope: "system" | "node"; area?:
                             type={entry.secret && !reveal ? "password" : "text"}
                             aria-label={entry.label || entry.key}
                             autoComplete="off"
-                            disabled={busy || loading || entry.readonly}
+                            disabled={busy || loading || rawOpen || entry.readonly}
                             placeholder={placeholder}
                             value={value}
                             onChange={(e) => update(e.target.value)}
                           />}
                         </td>
-                        <td className="text-right text-[11px] text-warning">{changed ? "●" : ""}</td>
+                        <td className="text-right text-[11px] text-warning" aria-label={changed ? "已修改" : "未修改"}>{changed ? "●" : ""}</td>
                       </tr>
                     );
                   })}
@@ -300,6 +323,7 @@ export function ConfigEditor({ scope, area }: { scope: "system" | "node"; area?:
           </Drawer>
 
         <details className="rounded-lg border border-border p-4 text-[13px]"><summary className="cursor-pointer font-medium">配置生效与保存说明</summary><div className="mt-3">
+          <p className="mb-3 break-all text-[12px] text-muted-foreground">配置文件：{path || "尚未读取"}</p>
           <Card title={isNode ? "配置与当前运行值" : "说明"}>
             {isNode ? <div className="space-y-3 text-[11.5px] leading-relaxed text-muted-foreground">
               <p>这里编辑同一份环境配置文件，不代表当前节点进程的有效值。文件缺少的字段也会显示，填写并保存后追加到文件。</p>
@@ -310,7 +334,7 @@ export function ConfigEditor({ scope, area }: { scope: "system" | "node"; area?:
             <ul className="space-y-1.5 text-[11.5px] leading-relaxed text-muted-foreground">
               <li>· 与节点和 Python worker 共用同一份配置文件。</li>
               <li>· 同一键只认第一次出现；保存时替换首个匹配、其余的保持原样。</li>
-              <li>· 含 KEY / TOKEN / PASSWORD 的项默认打码，勾选「明文」可查看。</li>
+              <li>· 密钥字段默认隐藏，勾选「显示密钥」可查看。</li>
               <li>· 原始编辑会做 KEY=VALUE 校验，拒绝任何非注释的其它行。</li>
               <li>· 节点字段统一在 <Link className="text-brand" href="/nodes/config/">节点配置</Link> 中管理；原始编辑仍包含完整文件。</li>
             </ul>
@@ -324,10 +348,11 @@ export function ConfigEditor({ scope, area }: { scope: "system" | "node"; area?:
           title="原始 .env 编辑"
           actions={
             <>
-              <button className="btn-ghost" onClick={() => setRawOpen(false)}>
+              <button className="btn-ghost" onClick={closeRaw} disabled={busy}>
                 取消
               </button>
-              <button className="btn-primary" onClick={saveRaw} disabled={busy || !rawReady}>
+              {!rawReady && <button className="btn-ghost" onClick={openRaw}>重试读取</button>}
+              <button className="btn-primary" onClick={saveRaw} disabled={busy || !rawReady || raw === rawOriginal}>
                 保存
               </button>
             </>

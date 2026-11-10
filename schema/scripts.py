@@ -660,8 +660,6 @@ ENV_SCHEMA = [
          "help": "住宅代理浏览器节流：极限模式还会压制 BitBrowser 后台联网、预取、清单和更多遥测；验证码域名始终放行。"},
         {"key": "OUTLOOK_GRAPH_AUTH_TIMEOUT", "type": "int", "default": 240,
          "help": "Outlook 注册完成后的 Graph 授权独立超时秒数，不计入注册阶段超时。"},
-        {"key": "REG_FACTORY_MAX_CONCURRENCY", "type": "int", "default": 10,
-         "help": "单个注册任务允许的最大并发数，防止浏览器和代理资源过载。"},
         {"key": "REG_FACTORY_ALLOW_SHARED_EGRESS", "type": "bool", "default": False,
          "help": "允许多个并发账号共享同一公网出口；默认关闭以降低关联和限流风险。"},
         {"key": "CHATGPT_RESIDENTIAL_ROTATE_RETRIES", "default": "3",
@@ -1149,6 +1147,76 @@ _CONFIG_AREAS = {
 }
 for _group in ENV_SCHEMA:
     _group["area"] = _CONFIG_AREAS.get(_group["group"], "platform")
+
+
+def _config_location(key, area, group):
+    """One category and one configuration object per key, for every UI entry."""
+    if area == "node":
+        return area, group
+    if key in {"REG_FACTORY_MAX_CONCURRENCY", "REG_FACTORY_MEMORY_GUARD_PCT", "REGD_LOG_TAIL"}:
+        return "runtime", "运行 · 并发与资源"
+    if key == "REG_FACTORY_ASSET_API_KEY":
+        return "runtime", "运行 · 接口访问"
+    if key == "REG_FACTORY_PRODUCTION_PROXY":
+        return "proxy", "网络 · 生产与凭据修复"
+    if key.startswith("CLASH_"):
+        return "proxy", "网络 · Clash"
+    if key.startswith(("REG_FACTORY_PROXY", "REG_FACTORY_RESIDENTIAL_")):
+        return "proxy", "网络 · 住宅代理"
+    if key.endswith("_PROXY_MODE") or key in {"PROXY_MODE", "OUTLOOK_PROXIES", "CLAUDE_ALLOW_ROTATING_PROXY", "REG_FACTORY_ALLOW_SHARED_EGRESS", "OUTLOOK_NODE_REGION_KEYWORDS", "OUTLOOK_NODE_EXCLUDE_REGION_KEYWORDS", "CLAUDE_CHALLENGE_NODE_RETRIES", "CLAUDE_RESIDENTIAL_PROFILE_RETRIES", "CHATGPT_RESIDENTIAL_ROTATE_RETRIES"} or key.startswith("CLAUDE_NODE_PROBE_"):
+        return "proxy", "网络 · 模式与平台覆盖"
+    if key.startswith("CUSTOM_BROWSER_API"):
+        return "browser", "浏览器 · 自定义 API"
+    for prefix, label in [("CLOAK_", "CloakBrowser"), ("ROXY_", "RoxyBrowser"), ("ADSPOWER_", "AdsPower")]:
+        if key.startswith(prefix):
+            return "browser", "浏览器 · " + label
+    if key in {"BITBROWSER_API", "BB_CORE_VERSION"} or "BROWSER_CORE_VERSION" in key or "BROWSER_FALLBACK_CORE_VERSION" in key:
+        return "browser", "浏览器 · BitBrowser 与内核"
+    if key == "CUSTOM_BROWSER_PATH":
+        return "browser", "浏览器 · 本机 Chrome"
+    if area == "browser":
+        return area, "浏览器 · 通用设置"
+    if key in {"SMS_API_NAME", "SMS_TOKEN"}:
+        return "sms", "短信 · firefox.fun"
+    if key.startswith("SMSMAN_"):
+        return "sms", "短信 · SMS-Man"
+    if key.startswith("HERO_SMS_"):
+        return "sms", "短信 · Hero SMS"
+    if area == "sms":
+        return area, "短信 · 通用与重试"
+    for prefix, label in [("CAPSOLVER_", "CapSolver"), ("EZCAPTCHA_", "EZCaptcha"), ("YESCAPTCHA_", "YesCaptcha")]:
+        if key.startswith(prefix):
+            return "captcha", "验证 · " + label
+    if key.startswith(("CLAUDE_VISION_", "CLAUDE_HCAPTCHA_", "CLAUDE_CAPTCHA_")):
+        return "captcha", "验证 · Claude 识别与验证"
+    if area == "captcha":
+        return area, "验证 · 视觉模型与投票"
+    if key == "CHATGPT_ENABLE_2FA":
+        return "platform", "平台 · ChatGPT"
+    if key in {"CHATGPT_EMAIL_PROVIDER", "CLAUDE_USE_TEMP_EMAIL", "TEMP_EMAIL_PROVIDER"}:
+        return "mail", "邮箱 · 来源选择"
+    if key.startswith("CHATGPT_VERIFICATION_"):
+        return "mail", "邮箱 · 收码与等待"
+    for prefix, label in [("ICLOUD_MAIL_", "iCloud"), ("YYDS_", "YYDS"), ("GPTMAIL_", "GPTMail"), ("MOEMAIL_", "MoeMail"), ("CFMAIL_", "CFMail"), ("REMAIL_", "Remail"), ("OUTLOOK_", "Outlook 与辅助邮箱")]:
+        if key.startswith(prefix):
+            return "mail", "邮箱 · " + label
+    for prefixes, label in [(("SUB2API_",), "SUB2API"), (("CPA_", "CODEX_CPA_", "CODEX_AUTH_URL_SOURCE"), "CPA"), (("CHATGPT2API_",), "chatgpt2api"), (("WEBCHAT2API_",), "webchat2api"), (("K12_",), "K12 控制台")]:
+        if key.startswith(prefixes):
+            return "integration", "对接 · " + label
+    if key.startswith("CLAUDE_"):
+        return "platform", "平台 · Claude"
+    if key.startswith(("CHATGPT_", "ASSET_SCAN_CHATGPT_", "REG_FACTORY_PROTOCOL_PAYMENT_")):
+        return "platform", "平台 · ChatGPT"
+    return area, group
+
+
+_config_groups = {}
+for _group in ENV_SCHEMA:
+    for _item in _group["items"]:
+        _area, _section = _config_location(_item["key"], _group["area"], _group["group"])
+        _target = _config_groups.setdefault((_area, _section), {"group": _section, "area": _area, "items": []})
+        _target["items"].append(_item)
+ENV_SCHEMA = list(_config_groups.values())
 
 
 # 所有 schema 里出现的 .env key（用于读 .env 时补齐未在模板里的项不丢）

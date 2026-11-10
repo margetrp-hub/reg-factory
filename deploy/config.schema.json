@@ -1,12 +1,7 @@
 [
   {
-    "group": "Codex K12 控制台",
-    "tests": [
-      {
-        "target": "k12",
-        "label": "测试 K12 控制台"
-      }
-    ],
+    "group": "对接 · K12 控制台",
+    "area": "integration",
     "items": [
       {
         "key": "K12_CONSOLE_URL",
@@ -26,11 +21,11 @@
         "label": "自动启动 K12 控制台",
         "readonly": true
       }
-    ],
-    "area": "platform"
+    ]
   },
   {
-    "group": "本地资产 API",
+    "group": "运行 · 接口访问",
+    "area": "runtime",
     "items": [
       {
         "key": "REG_FACTORY_ASSET_API_KEY",
@@ -38,7 +33,13 @@
         "help": "可选；配置后调用邮箱/Cookie 读取 API 必须提供 X-API-Key 或 Bearer Token。留空时仅允许本机访问。",
         "label": "本地资产 API 密钥",
         "smart": true
-      },
+      }
+    ]
+  },
+  {
+    "group": "平台 · ChatGPT",
+    "area": "platform",
+    "items": [
       {
         "key": "ASSET_SCAN_CHATGPT_PLUS_TRIAL",
         "type": "bool",
@@ -51,30 +52,44 @@
         "default": "plus-1-month-free",
         "help": "ChatGPT Plus 试用资格检测使用的活动标识。",
         "label": "Plus 试用活动标识"
-      }
-    ],
-    "area": "platform"
-  },
-  {
-    "group": "Plus 协议提链",
-    "items": [
+      },
       {
         "key": "REG_FACTORY_PROTOCOL_PAYMENT_ROOT",
         "help": "可选；GPT-Register-Tool 本地目录。留空时自动查找同级目录，用于 Plus 导入后的批量协议提链。",
         "label": "Plus 协议提链程序目录",
         "smart": true
+      },
+      {
+        "key": "CHATGPT_GOTO_TIMEOUT_SECONDS",
+        "type": "int",
+        "default": 30,
+        "help": "ChatGPT 登录页单次导航超时；超时后会检查已提交页面，否则换节点并新建标签页。",
+        "label": "ChatGPT 页面打开超时"
+      },
+      {
+        "key": "CHATGPT_GOTO_ATTEMPTS",
+        "type": "int",
+        "default": 3,
+        "help": "ChatGPT 登录页最多导航次数，范围 1 到 4。",
+        "label": "ChatGPT 页面打开次数"
+      },
+      {
+        "key": "CHATGPT_ENABLE_2FA",
+        "type": "choice",
+        "choices": [
+          "true",
+          "false"
+        ],
+        "default": "true",
+        "help": "注册完成后重认证并启用验证器 TOTP，同时保存密钥",
+        "label": "注册后开启 ChatGPT 2FA",
+        "smart": true
       }
-    ],
-    "area": "platform"
+    ]
   },
   {
-    "group": "网络出口",
-    "tests": [
-      {
-        "target": "clash",
-        "label": "测试 Clash 连通"
-      }
-    ],
+    "group": "网络 · 模式与平台覆盖",
+    "area": "proxy",
     "items": [
       {
         "key": "PROXY_MODE",
@@ -168,6 +183,73 @@
         "label": "GitHub 代理模式"
       },
       {
+        "key": "REG_FACTORY_ALLOW_SHARED_EGRESS",
+        "type": "bool",
+        "default": false,
+        "help": "允许多个并发账号共享同一公网出口；默认关闭以降低关联和限流风险。",
+        "label": "允许并发共用出口"
+      },
+      {
+        "key": "CHATGPT_RESIDENTIAL_ROTATE_RETRIES",
+        "default": "3",
+        "help": "ChatGPT 遇到 Cloudflare 拦截时最多轮换住宅 IP 的次数。",
+        "label": "ChatGPT 住宅代理轮换次数"
+      },
+      {
+        "key": "CLAUDE_CHALLENGE_NODE_RETRIES",
+        "default": "3",
+        "help": "auto 模式提交邮箱前最多轮换节点次数",
+        "label": "Claude 风控换节点次数"
+      },
+      {
+        "key": "CLAUDE_RESIDENTIAL_PROFILE_RETRIES",
+        "default": "3",
+        "help": "住宅出口在提交邮箱前被拒绝时，新建浏览器会话的总尝试次数",
+        "label": "Claude 住宅代理重建次数"
+      },
+      {
+        "key": "CLAUDE_ALLOW_ROTATING_PROXY",
+        "type": "bool",
+        "default": false,
+        "help": "跳过 Claude 住宅代理粘性检测；仅用于已确认出口连续性的特殊代理",
+        "label": "允许 Claude 使用动态代理"
+      },
+      {
+        "key": "CLAUDE_NODE_PROBE_LIMIT",
+        "default": "6",
+        "help": "启动时最多快速探测的候选节点数",
+        "label": "Claude 候选节点探测数"
+      },
+      {
+        "key": "CLAUDE_NODE_PROBE_TIMEOUT_SECONDS",
+        "default": "8",
+        "help": "单个候选节点的快速探测超时秒数",
+        "label": "Claude 节点探测超时"
+      },
+      {
+        "key": "OUTLOOK_PROXIES",
+        "help": "Outlook 自注册住宅代理池(换行/逗号分隔)",
+        "label": "Outlook 代理列表"
+      },
+      {
+        "key": "OUTLOOK_NODE_REGION_KEYWORDS",
+        "default": "",
+        "help": "Outlook Clash 节点国家关键词，逗号分隔；留空沿用 NODE_REGION_KEYWORDS",
+        "label": "Outlook 节点地区关键词"
+      },
+      {
+        "key": "OUTLOOK_NODE_EXCLUDE_REGION_KEYWORDS",
+        "default": "香港,Hong Kong,🇭🇰",
+        "help": "Outlook Clash 强制排除的节点国家关键词；默认排除香港",
+        "label": "Outlook 排除地区关键词"
+      }
+    ]
+  },
+  {
+    "group": "网络 · Clash",
+    "area": "proxy",
+    "items": [
+      {
         "key": "CLASH_SECRET",
         "required": true,
         "secret": true,
@@ -201,7 +283,13 @@
         "help": "固定节点模式使用的 Clash 节点全名。",
         "label": "Clash 固定节点",
         "smart": true
-      },
+      }
+    ]
+  },
+  {
+    "group": "网络 · 住宅代理",
+    "area": "proxy",
+    "items": [
       {
         "key": "REG_FACTORY_PROXY",
         "secret": true,
@@ -245,7 +333,13 @@
         "default": "balanced",
         "help": "住宅代理浏览器节流：极限模式还会压制 BitBrowser 后台联网、预取、清单和更多遥测；验证码域名始终放行。",
         "label": "住宅代理流量模式"
-      },
+      }
+    ]
+  },
+  {
+    "group": "邮箱 · Outlook 与辅助邮箱",
+    "area": "mail",
+    "items": [
       {
         "key": "OUTLOOK_GRAPH_AUTH_TIMEOUT",
         "type": "int",
@@ -254,50 +348,62 @@
         "label": "Outlook Graph 授权超时"
       },
       {
-        "key": "REG_FACTORY_MAX_CONCURRENCY",
-        "type": "int",
-        "default": 10,
-        "help": "单个注册任务允许的最大并发数，防止浏览器和代理资源过载。",
-        "label": "最大并发数"
+        "key": "OUTLOOK_UI_LOCALE",
+        "default": "en-US",
+        "help": "Microsoft 页面语言提示；印度可用 hi-IN，印度尼西亚可用 id-ID",
+        "label": "Outlook 页面语言"
       },
       {
-        "key": "REG_FACTORY_ALLOW_SHARED_EGRESS",
+        "key": "OUTLOOK_EMAIL_DOMAIN",
+        "default": "auto",
+        "help": "auto 按当前网络出口的注册页域名选项选择；也可填 outlook.jp、outlook.eu 或其它区域后缀",
+        "label": "Outlook 注册邮箱域名"
+      },
+      {
+        "key": "OUTLOOK_GRAPH_RECOVERY_EMAIL",
         "type": "bool",
-        "default": false,
-        "help": "允许多个并发账号共享同一公网出口；默认关闭以降低关联和限流风险。",
-        "label": "允许并发共用出口"
+        "default": "true",
+        "help": "启用 Graph proofs/Add 辅助邮箱自动绑定和接码；关闭后无法保证 RT 可提取",
+        "label": "启用 Outlook 辅助邮箱",
+        "smart": true
       },
       {
-        "key": "CHATGPT_RESIDENTIAL_ROTATE_RETRIES",
-        "default": "3",
-        "help": "ChatGPT 遇到 Cloudflare 拦截时最多轮换住宅 IP 的次数。",
-        "label": "ChatGPT 住宅代理轮换次数"
+        "key": "OUTLOOK_GRAPH_RECOVERY_PROVIDER",
+        "type": "choice",
+        "choices": [
+          "yyds",
+          "custom",
+          "outlook"
+        ],
+        "default": "yyds",
+        "help": "Graph 辅助邮箱提供方；outlook 使用下方用户自有邮箱并通过 Graph API 收码",
+        "label": "Outlook 辅助邮箱来源",
+        "smart": true
       },
       {
-        "key": "CHATGPT_GOTO_TIMEOUT_SECONDS",
-        "type": "int",
-        "default": 30,
-        "help": "ChatGPT 登录页单次导航超时；超时后会检查已提交页面，否则换节点并新建标签页。",
-        "label": "ChatGPT 页面打开超时"
+        "key": "OUTLOOK_GRAPH_RECOVERY_OUTLOOK_MAILBOX",
+        "secret": true,
+        "help": "provider=outlook 时必填：email@outlook.com----password----refresh_token----client_id。保存前可点本组验证按钮检查 Graph API。",
+        "label": "自有 Outlook 辅助邮箱",
+        "smart": true
       },
       {
-        "key": "CHATGPT_GOTO_ATTEMPTS",
-        "type": "int",
-        "default": 3,
-        "help": "ChatGPT 登录页最多导航次数，范围 1 到 4。",
-        "label": "ChatGPT 页面打开次数"
+        "key": "OUTLOOK_GRAPH_RECOVERY_TIMEOUT",
+        "default": "120",
+        "help": "Graph 辅助邮箱验证码最大等待秒数",
+        "label": "辅助邮箱收码超时"
+      },
+      {
+        "key": "OUTLOOK_GRAPH_RECOVERY_POLL_INTERVAL",
+        "default": "5",
+        "help": "Graph 辅助邮箱轮询间隔秒数",
+        "label": "辅助邮箱轮询间隔"
       }
-    ],
-    "area": "proxy"
+    ]
   },
   {
-    "group": "指纹浏览器",
-    "tests": [
-      {
-        "target": "bitbrowser",
-        "label": "测试 指纹浏览器连通"
-      }
-    ],
+    "group": "浏览器 · 通用设置",
+    "area": "browser",
     "items": [
       {
         "key": "FINGERPRINT_BROWSER",
@@ -316,6 +422,22 @@
         "label": "指纹浏览器类型",
         "smart": true
       },
+      {
+        "key": "REG_FACTORY_BROWSER_PATH",
+        "help": "内置 Chromium 可执行文件路径",
+        "label": "内置 Chromium 路径"
+      },
+      {
+        "key": "REG_FACTORY_BROWSER_HELPER",
+        "help": "内置 Chromium 启动器路径",
+        "label": "内置浏览器启动器路径"
+      }
+    ]
+  },
+  {
+    "group": "浏览器 · CloakBrowser",
+    "area": "browser",
+    "items": [
       {
         "key": "CLOAK_HEADLESS",
         "type": "bool",
@@ -385,7 +507,13 @@
         "advanced": true,
         "help": "调试时保留 CloakBrowser 窗口。",
         "label": "保留 CloakBrowser 窗口"
-      },
+      }
+    ]
+  },
+  {
+    "group": "浏览器 · RoxyBrowser",
+    "area": "browser",
+    "items": [
       {
         "key": "ROXY_API_BASE",
         "default": "http://127.0.0.1:50100",
@@ -484,18 +612,25 @@
         "advanced": true,
         "help": "调试时保留 RoxyBrowser 窗口。",
         "label": "保留 RoxyBrowser 窗口"
-      },
-      {
-        "key": "REG_FACTORY_BROWSER_PATH",
-        "help": "内置 Chromium 可执行文件路径",
-        "label": "内置 Chromium 路径"
-      },
+      }
+    ]
+  },
+  {
+    "group": "浏览器 · 本机 Chrome",
+    "area": "browser",
+    "items": [
       {
         "key": "CUSTOM_BROWSER_PATH",
         "help": "custom 模式的 Chrome/Chromium 可执行文件；留空会尝试自动查找。",
         "label": "自定义 Chrome 路径",
         "smart": true
-      },
+      }
+    ]
+  },
+  {
+    "group": "浏览器 · 自定义 API",
+    "area": "browser",
+    "items": [
       {
         "key": "CUSTOM_BROWSER_API",
         "help": "custom_api 的 API 根地址，例如 http://127.0.0.1:5000。",
@@ -664,12 +799,13 @@
         "advanced": true,
         "help": "generic 模式将额外 profile 字段原样转发。",
         "label": "转发额外 Profile 字段"
-      },
-      {
-        "key": "REG_FACTORY_BROWSER_HELPER",
-        "help": "内置 Chromium 启动器路径",
-        "label": "内置浏览器启动器路径"
-      },
+      }
+    ]
+  },
+  {
+    "group": "浏览器 · BitBrowser 与内核",
+    "area": "browser",
+    "items": [
       {
         "key": "BITBROWSER_API",
         "default": "http://127.0.0.1:54345",
@@ -702,6 +838,24 @@
         "label": "Grok 浏览器内核版本"
       },
       {
+        "key": "CLAUDE_BROWSER_CORE_VERSION",
+        "default": "146",
+        "help": "Claude 注册和 sessionKey 校验使用的 Chromium 指纹版本",
+        "label": "Claude 浏览器内核版本"
+      },
+      {
+        "key": "CLAUDE_BROWSER_FALLBACK_CORE_VERSION",
+        "default": "130",
+        "help": "首选内核安装失败时，本次 Claude 注册自动回退的 BitBrowser 内核；留空禁用",
+        "label": "Claude 备用内核版本"
+      }
+    ]
+  },
+  {
+    "group": "浏览器 · AdsPower",
+    "area": "browser",
+    "items": [
+      {
         "key": "ADSPOWER_API",
         "default": "http://127.0.0.1:50325",
         "help": "AdsPower 本地 API",
@@ -722,11 +876,11 @@
         "label": "AdsPower 分组 ID",
         "smart": true
       }
-    ],
-    "area": "browser"
+    ]
   },
   {
-    "group": "Claude 注册与验证",
+    "group": "平台 · Claude",
+    "area": "platform",
     "items": [
       {
         "key": "CLAUDE_CHALLENGE_WAIT_SECONDS",
@@ -735,36 +889,30 @@
         "label": "Claude 风控等待时间"
       },
       {
-        "key": "CLAUDE_CHALLENGE_NODE_RETRIES",
-        "default": "3",
-        "help": "auto 模式提交邮箱前最多轮换节点次数",
-        "label": "Claude 风控换节点次数"
+        "key": "CLAUDE_REGISTRATION_PROTOCOL",
+        "type": "choice",
+        "choices": [
+          "browser",
+          "http"
+        ],
+        "default": "browser",
+        "help": "Claude registration implementation (Chromium or ClaudeX HTTP)",
+        "label": "Claude 协议实现",
+        "smart": true
       },
       {
-        "key": "CLAUDE_RESIDENTIAL_PROFILE_RETRIES",
-        "default": "3",
-        "help": "住宅出口在提交邮箱前被拒绝时，新建浏览器会话的总尝试次数",
-        "label": "Claude 住宅代理重建次数"
-      },
-      {
-        "key": "CLAUDE_ALLOW_ROTATING_PROXY",
-        "type": "bool",
-        "default": false,
-        "help": "跳过 Claude 住宅代理粘性检测；仅用于已确认出口连续性的特殊代理",
-        "label": "允许 Claude 使用动态代理"
-      },
-      {
-        "key": "CLAUDE_NODE_PROBE_LIMIT",
-        "default": "6",
-        "help": "启动时最多快速探测的候选节点数",
-        "label": "Claude 候选节点探测数"
-      },
-      {
-        "key": "CLAUDE_NODE_PROBE_TIMEOUT_SECONDS",
-        "default": "8",
-        "help": "单个候选节点的快速探测超时秒数",
-        "label": "Claude 节点探测超时"
-      },
+        "key": "CLAUDE_PROTOCOL_VERSION",
+        "default": "1.0.0",
+        "help": "Claude HTTP anthropic-client-version header",
+        "label": "Claude HTTP 协议版本",
+        "smart": true
+      }
+    ]
+  },
+  {
+    "group": "验证 · Claude 识别与验证",
+    "area": "captcha",
+    "items": [
       {
         "key": "CLAUDE_CAPTCHA_MANUAL_TIMEOUT",
         "default": "0",
@@ -797,53 +945,12 @@
         "default": "gemini-3.6-flash",
         "help": "Claude hCaptcha 主视觉模型",
         "label": "Claude 视觉识别模型"
-      },
-      {
-        "key": "CLAUDE_REGISTRATION_PROTOCOL",
-        "type": "choice",
-        "choices": [
-          "browser",
-          "http"
-        ],
-        "default": "browser",
-        "help": "Claude registration implementation (Chromium or ClaudeX HTTP)",
-        "label": "Claude 协议实现",
-        "smart": true
-      },
-      {
-        "key": "CLAUDE_PROTOCOL_VERSION",
-        "default": "1.0.0",
-        "help": "Claude HTTP anthropic-client-version header",
-        "label": "Claude HTTP 协议版本",
-        "smart": true
-      },
-      {
-        "key": "CLAUDE_BROWSER_CORE_VERSION",
-        "default": "146",
-        "help": "Claude 注册和 sessionKey 校验使用的 Chromium 指纹版本",
-        "label": "Claude 浏览器内核版本"
-      },
-      {
-        "key": "CLAUDE_BROWSER_FALLBACK_CORE_VERSION",
-        "default": "130",
-        "help": "首选内核安装失败时，本次 Claude 注册自动回退的 BitBrowser 内核；留空禁用",
-        "label": "Claude 备用内核版本"
       }
-    ],
-    "area": "platform"
+    ]
   },
   {
-    "group": "短信接码",
-    "tests": [
-      {
-        "target": "smsman",
-        "label": "测试 sms-man"
-      },
-      {
-        "target": "firefox",
-        "label": "测试 firefox.fun"
-      }
-    ],
+    "group": "短信 · firefox.fun",
+    "area": "sms",
     "items": [
       {
         "key": "SMS_API_NAME",
@@ -857,14 +964,26 @@
         "help": "firefox.fun 持久 token；取号时还会使用 OpenAI 项目 ID",
         "label": "firefox.fun 接码令牌",
         "smart": true
-      },
+      }
+    ]
+  },
+  {
+    "group": "短信 · Hero SMS",
+    "area": "sms",
+    "items": [
       {
         "key": "HERO_SMS_API_KEY",
         "secret": true,
         "help": "hero-sms.com 备用接码 key",
         "label": "Hero SMS API 密钥",
         "smart": true
-      },
+      }
+    ]
+  },
+  {
+    "group": "短信 · SMS-Man",
+    "area": "sms",
+    "items": [
       {
         "key": "SMSMAN_TOKEN",
         "secret": true,
@@ -889,17 +1008,47 @@
         "default": "0",
         "help": "国家 id(0=随机/按价格)",
         "label": "SMS-Man OpenAI 国家"
-      },
+      }
+    ]
+  },
+  {
+    "group": "短信 · 通用与重试",
+    "area": "sms",
+    "items": [
       {
         "key": "CUSTOM_SMS_ALLOWED_HOSTS",
         "help": "自定义接码记录域名白名单；仅对明确添加的 host 放宽 DNS 公网校验",
         "label": "自定义接码域名白名单"
+      },
+      {
+        "key": "CODEX_PHONE_SKIP_ATTEMPTS",
+        "default": "0",
+        "help": "先赌免手机次数(0=直接接码)",
+        "label": "Codex 免手机尝试次数"
+      },
+      {
+        "key": "CODEX_ADDPHONE_ATTEMPTS",
+        "default": "2",
+        "help": "接码换号上限次数",
+        "label": "Codex 接码换号次数"
+      },
+      {
+        "key": "CODEX_SMS_TIMEOUT",
+        "default": "150",
+        "help": "单号等码超时(秒)",
+        "label": "Codex 单号收码超时"
+      },
+      {
+        "key": "SMS_COUNTRY_BLACKLIST_OPENAI",
+        "default": "261,63",
+        "help": "拉黑号段(dialing code)",
+        "label": "OpenAI 接码国家黑名单"
       }
-    ],
-    "area": "sms"
+    ]
   },
   {
-    "group": "打码平台(可选)",
+    "group": "验证 · CapSolver",
+    "area": "captcha",
     "items": [
       {
         "key": "CAPSOLVER_API_KEY",
@@ -907,14 +1056,26 @@
         "help": "CapSolver 打码 key",
         "label": "CapSolver API 密钥",
         "smart": true
-      },
+      }
+    ]
+  },
+  {
+    "group": "验证 · EZCaptcha",
+    "area": "captcha",
+    "items": [
       {
         "key": "EZCAPTCHA_API_KEY",
         "secret": true,
         "help": "EZ-Captcha 打码 key(解锁 Outlook 用)",
         "label": "EZCaptcha API 密钥",
         "smart": true
-      },
+      }
+    ]
+  },
+  {
+    "group": "验证 · YesCaptcha",
+    "area": "captcha",
+    "items": [
       {
         "key": "YESCAPTCHA_API_KEY",
         "secret": true,
@@ -922,94 +1083,11 @@
         "label": "YesCaptcha API 密钥",
         "smart": true
       }
-    ],
-    "area": "captcha"
+    ]
   },
   {
-    "group": "Outlook 自注册",
-    "notice": "需要提取 Graph RT 时，必须配置可接收验证码的辅助邮箱。请选择 YYDS/custom，或选择 outlook 并填入下方四段凭据；未配置时 Microsoft 安全信息页无法完成授权。",
-    "notice_level": "warning",
-    "tests": [
-      {
-        "target": "outlook-recovery",
-        "label": "验证 Outlook 辅助邮箱 RT"
-      }
-    ],
-    "items": [
-      {
-        "key": "OUTLOOK_PROXIES",
-        "help": "Outlook 自注册住宅代理池(换行/逗号分隔)",
-        "label": "Outlook 代理列表"
-      },
-      {
-        "key": "OUTLOOK_UI_LOCALE",
-        "default": "en-US",
-        "help": "Microsoft 页面语言提示；印度可用 hi-IN，印度尼西亚可用 id-ID",
-        "label": "Outlook 页面语言"
-      },
-      {
-        "key": "OUTLOOK_EMAIL_DOMAIN",
-        "default": "auto",
-        "help": "auto 按当前网络出口的注册页域名选项选择；也可填 outlook.jp、outlook.eu 或其它区域后缀",
-        "label": "Outlook 注册邮箱域名"
-      },
-      {
-        "key": "OUTLOOK_NODE_REGION_KEYWORDS",
-        "default": "",
-        "help": "Outlook Clash 节点国家关键词，逗号分隔；留空沿用 NODE_REGION_KEYWORDS",
-        "label": "Outlook 节点地区关键词"
-      },
-      {
-        "key": "OUTLOOK_NODE_EXCLUDE_REGION_KEYWORDS",
-        "default": "香港,Hong Kong,🇭🇰",
-        "help": "Outlook Clash 强制排除的节点国家关键词；默认排除香港",
-        "label": "Outlook 排除地区关键词"
-      },
-      {
-        "key": "OUTLOOK_GRAPH_RECOVERY_EMAIL",
-        "type": "bool",
-        "default": "true",
-        "help": "启用 Graph proofs/Add 辅助邮箱自动绑定和接码；关闭后无法保证 RT 可提取",
-        "label": "启用 Outlook 辅助邮箱",
-        "smart": true
-      },
-      {
-        "key": "OUTLOOK_GRAPH_RECOVERY_PROVIDER",
-        "type": "choice",
-        "choices": [
-          "yyds",
-          "custom",
-          "outlook"
-        ],
-        "default": "yyds",
-        "help": "Graph 辅助邮箱提供方；outlook 使用下方用户自有邮箱并通过 Graph API 收码",
-        "label": "Outlook 辅助邮箱来源",
-        "smart": true
-      },
-      {
-        "key": "OUTLOOK_GRAPH_RECOVERY_OUTLOOK_MAILBOX",
-        "secret": true,
-        "help": "provider=outlook 时必填：email@outlook.com----password----refresh_token----client_id。保存前可点本组验证按钮检查 Graph API。",
-        "label": "自有 Outlook 辅助邮箱",
-        "smart": true
-      },
-      {
-        "key": "OUTLOOK_GRAPH_RECOVERY_TIMEOUT",
-        "default": "120",
-        "help": "Graph 辅助邮箱验证码最大等待秒数",
-        "label": "辅助邮箱收码超时"
-      },
-      {
-        "key": "OUTLOOK_GRAPH_RECOVERY_POLL_INTERVAL",
-        "default": "5",
-        "help": "Graph 辅助邮箱轮询间隔秒数",
-        "label": "辅助邮箱轮询间隔"
-      }
-    ],
-    "area": "mail"
-  },
-  {
-    "group": "ChatGPT 邮箱",
+    "group": "邮箱 · 来源选择",
+    "area": "mail",
     "items": [
       {
         "key": "CHATGPT_EMAIL_PROVIDER",
@@ -1025,17 +1103,40 @@
         "smart": true
       },
       {
-        "key": "CHATGPT_ENABLE_2FA",
+        "key": "CLAUDE_USE_TEMP_EMAIL",
         "type": "choice",
         "choices": [
-          "true",
-          "false"
+          "false",
+          "true"
         ],
-        "default": "true",
-        "help": "注册完成后重认证并启用验证器 TOTP，同时保存密钥",
-        "label": "注册后开启 ChatGPT 2FA",
+        "default": "false",
+        "help": "Claude 命令行未指定邮箱时默认使用下方临时邮箱；任务表单选择 provider 时无需打开",
+        "label": "Claude 使用临时邮箱",
         "smart": true
       },
+      {
+        "key": "TEMP_EMAIL_PROVIDER",
+        "type": "choice",
+        "choices": [
+          "yyds",
+          "gptmail",
+          "moemail",
+          "cfmail",
+          "icloud",
+          "remail",
+          "custom"
+        ],
+        "default": "yyds",
+        "help": "Claude/Grok 默认临时邮箱 provider(需配好对应 key)，任务表单也可临时指定。",
+        "label": "临时邮箱服务商",
+        "smart": true
+      }
+    ]
+  },
+  {
+    "group": "邮箱 · 收码与等待",
+    "area": "mail",
+    "items": [
       {
         "key": "CHATGPT_VERIFICATION_CODE_TIMEOUT",
         "type": "int",
@@ -1049,7 +1150,13 @@
         "default": "5",
         "help": "ChatGPT 邮箱 API 轮询间隔秒数，建议 3-8",
         "label": "ChatGPT 验证码轮询间隔"
-      },
+      }
+    ]
+  },
+  {
+    "group": "邮箱 · iCloud",
+    "area": "mail",
+    "items": [
       {
         "key": "ICLOUD_MAIL_API_BASE",
         "default": "https://mail.no-replyca.xyz",
@@ -1083,47 +1190,12 @@
         "label": "iCloud 接码服务",
         "smart": true
       }
-    ],
-    "area": "mail"
+    ]
   },
   {
-    "group": "临时邮箱(Claude/Grok 注册取码)",
-    "tests": [
-      {
-        "target": "yyds",
-        "label": "测试 YYDS"
-      }
-    ],
+    "group": "邮箱 · YYDS",
+    "area": "mail",
     "items": [
-      {
-        "key": "CLAUDE_USE_TEMP_EMAIL",
-        "type": "choice",
-        "choices": [
-          "false",
-          "true"
-        ],
-        "default": "false",
-        "help": "Claude 命令行未指定邮箱时默认使用下方临时邮箱；任务表单选择 provider 时无需打开",
-        "label": "Claude 使用临时邮箱",
-        "smart": true
-      },
-      {
-        "key": "TEMP_EMAIL_PROVIDER",
-        "type": "choice",
-        "choices": [
-          "yyds",
-          "gptmail",
-          "moemail",
-          "cfmail",
-          "icloud",
-          "remail",
-          "custom"
-        ],
-        "default": "yyds",
-        "help": "Claude/Grok 默认临时邮箱 provider(需配好对应 key)，任务表单也可临时指定。",
-        "label": "临时邮箱服务商",
-        "smart": true
-      },
       {
         "key": "YYDS_API_KEY",
         "secret": true,
@@ -1137,14 +1209,26 @@
         "help": "YYDS Mail API 根地址；可粘贴 vip.215.im 或完整 /v1/accounts 地址，程序会自动纠正",
         "label": "YYDS 邮箱 API 地址",
         "smart": true
-      },
+      }
+    ]
+  },
+  {
+    "group": "邮箱 · GPTMail",
+    "area": "mail",
+    "items": [
       {
         "key": "GPTMAIL_API_KEY",
         "secret": true,
         "help": "GPTMail key(mail.chatgpt.org.uk)",
         "label": "GPTMail API 密钥",
         "smart": true
-      },
+      }
+    ]
+  },
+  {
+    "group": "邮箱 · MoeMail",
+    "area": "mail",
+    "items": [
       {
         "key": "MOEMAIL_API_KEY",
         "secret": true,
@@ -1157,7 +1241,13 @@
         "help": "MoeMail 自部署地址",
         "label": "MoeMail API 地址",
         "smart": true
-      },
+      }
+    ]
+  },
+  {
+    "group": "邮箱 · CFMail",
+    "area": "mail",
+    "items": [
       {
         "key": "CFMAIL_ADMIN_PASSWORD",
         "secret": true,
@@ -1170,7 +1260,13 @@
         "help": "Cloudflare Temp Email 地址",
         "label": "CFMail API 地址",
         "smart": true
-      },
+      }
+    ]
+  },
+  {
+    "group": "邮箱 · Remail",
+    "area": "mail",
+    "items": [
       {
         "key": "REMAIL_BASE_URL",
         "default": "https://remail.aishop6.com",
@@ -1207,11 +1303,11 @@
         "label": "Remail 供应策略",
         "smart": true
       }
-    ],
-    "area": "mail"
+    ]
   },
   {
-    "group": "SUB2API(Codex / Grok 导入)",
+    "group": "对接 · SUB2API",
+    "area": "integration",
     "items": [
       {
         "key": "SUB2API_URL",
@@ -1252,11 +1348,11 @@
         "help": "可选：SUB2API 后台代理 ID，供 Grok SSO 转 OAuth 使用；0=不指定",
         "label": "SUB2API Grok 代理 ID"
       }
-    ],
-    "area": "platform"
+    ]
   },
   {
-    "group": "CPA(codex 授权文件导入)",
+    "group": "对接 · CPA",
+    "area": "integration",
     "items": [
       {
         "key": "CPA_URL",
@@ -1297,11 +1393,11 @@
         "help": "CPA callback 重试基础间隔秒数。",
         "label": "CPA 回调重试间隔"
       }
-    ],
-    "area": "platform"
+    ]
   },
   {
-    "group": "chatgpt2api(普通网页号)",
+    "group": "对接 · chatgpt2api",
+    "area": "integration",
     "items": [
       {
         "key": "CHATGPT2API_URL",
@@ -1316,11 +1412,11 @@
         "label": "chatgpt2api 管理密钥",
         "smart": true
       }
-    ],
-    "area": "platform"
+    ]
   },
   {
-    "group": "webchat2api(Grok sso)",
+    "group": "对接 · webchat2api",
+    "area": "integration",
     "items": [
       {
         "key": "WEBCHAT2API_URL",
@@ -1335,41 +1431,11 @@
         "label": "webchat2api 管理密钥",
         "smart": true
       }
-    ],
-    "area": "platform"
+    ]
   },
   {
-    "group": "Codex add-phone 接码调参",
-    "items": [
-      {
-        "key": "CODEX_PHONE_SKIP_ATTEMPTS",
-        "default": "0",
-        "help": "先赌免手机次数(0=直接接码)",
-        "label": "Codex 免手机尝试次数"
-      },
-      {
-        "key": "CODEX_ADDPHONE_ATTEMPTS",
-        "default": "2",
-        "help": "接码换号上限次数",
-        "label": "Codex 接码换号次数"
-      },
-      {
-        "key": "CODEX_SMS_TIMEOUT",
-        "default": "150",
-        "help": "单号等码超时(秒)",
-        "label": "Codex 单号收码超时"
-      },
-      {
-        "key": "SMS_COUNTRY_BLACKLIST_OPENAI",
-        "default": "261,63",
-        "help": "拉黑号段(dialing code)",
-        "label": "OpenAI 接码国家黑名单"
-      }
-    ],
-    "area": "sms"
-  },
-  {
-    "group": "视觉模型与投票(可选)",
+    "group": "验证 · 视觉模型与投票",
+    "area": "captcha",
     "items": [
       {
         "key": "VISION_API_BASE",
@@ -1417,11 +1483,11 @@
         "label": "Opus 模型 API 密钥",
         "smart": true
       }
-    ],
-    "area": "captcha"
+    ]
   },
   {
-    "group": "生产与修复出口",
+    "group": "网络 · 生产与凭据修复",
+    "area": "proxy",
     "items": [
       {
         "key": "REG_FACTORY_PRODUCTION_PROXY",
@@ -1429,11 +1495,11 @@
         "secret": true,
         "help": "账号修复、TEAM 生产与核验使用的出口。留空直连，不继承注册住宅代理。"
       }
-    ],
-    "area": "proxy"
+    ]
   },
   {
-    "group": "控制面运行",
+    "group": "运行 · 并发与资源",
+    "area": "runtime",
     "items": [
       {
         "key": "REG_FACTORY_MAX_CONCURRENCY",
@@ -1459,11 +1525,11 @@
         "apply": "restart",
         "help": "控制面读取历史日志的默认上限。"
       }
-    ],
-    "area": "runtime"
+    ]
   },
   {
     "group": "节点身份与密钥",
+    "area": "node",
     "items": [
       {
         "key": "REG_FACTORY_NODE_ID",
@@ -1505,7 +1571,6 @@
         "apply": "restart",
         "help": "节点独立密钥；保存后需重启并核对双方指纹。"
       }
-    ],
-    "area": "node"
+    ]
   }
 ]
