@@ -65,7 +65,7 @@ RUN set -eux; \
     fi; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
-        ca-certificates curl tini util-linux \
+        ca-certificates curl tini util-linux libatomic1 \
         xvfb x11-utils xauth \
         tzdata procps \
         fonts-liberation2 fonts-noto-color-emoji fonts-noto-cjk \
