@@ -88,7 +88,7 @@ def candidates(db, root):
         if (plan != 'free' or c.get('exp', 0) <= time.time() or not payload.get('refresh_token')):
             continue
         logins = [r for r in aliases if str(r['identity']).lower() == email and r['password'] and r['totp']
-                  and r['status'] in ('normal', 'active')]
+                  and r['status'] in ('normal', 'active', 'ok')]
         if not logins:
             continue
         raw = canonical(payload)

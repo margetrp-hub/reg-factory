@@ -78,6 +78,22 @@ class ProductionTests(unittest.TestCase):
                 return {'access_token':t,'id_token':t,'refresh_token':'new-synthetic-refresh'}
         self.backend=Backend
 
+    def test_liveness_ok_input_produces_once_and_stays_excluded_after_use(self):
+        self.db.execute("UPDATE accounts SET status='ok' WHERE ref='free'")
+        self.db.commit()
+        self.assertEqual(len(candidates(self.db, self.root)), 1)
+        self.assertEqual(self.run.advance(self.backend)['status'], 'ready')
+        self.assertEqual(candidates(self.db, self.root), [])
+        self.run.advance(self.backend)
+        self.assertEqual((self.backend.invites, self.backend.logins), (1, 1))
+
+    def test_unhealthy_or_unknown_input_is_not_selected(self):
+        for status in ('unknown', 'expired', 'banned', 'error', 'needs_refresh'):
+            with self.subTest(status=status):
+                self.db.execute("UPDATE accounts SET status=? WHERE ref='free'", (status,))
+                self.db.commit()
+                self.assertEqual(candidates(self.db, self.root), [])
+
     def restart(self, *, slot='slot'):
         material = {**self.material, 'parameters': {**self.material['parameters'], 'production_ref':slot}}
         self.db.execute("INSERT INTO production_runs(operation_id,material,stage,status) VALUES('restart',?,'admitted','queued')", (self.run.seal(material),))
