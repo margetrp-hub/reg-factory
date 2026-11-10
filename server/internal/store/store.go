@@ -58,7 +58,8 @@ type Audit struct {
 
 // Store 包装数据库句柄。
 type Store struct {
-	db *sql.DB
+	db   *sql.DB
+	read *sql.DB // WAL readers never occupy the single task-state writer connection.
 }
 
 const schema = `
@@ -230,11 +231,23 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("recover read-only quota records: %w", err)
 	}
+	st.read, err = sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=busy_timeout(2000)&_pragma=query_only(1)")
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	st.read.SetMaxOpenConns(4)
+	st.read.SetMaxIdleConns(4)
+	if err = st.read.Ping(); err != nil {
+		st.read.Close()
+		db.Close()
+		return nil, err
+	}
 	return st, nil
 }
 
 // Close 关闭数据库。
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error { _ = s.read.Close(); return s.db.Close() }
 
 func now() string { return time.Now().Format(time.RFC3339) }
 
@@ -274,7 +287,7 @@ func (s *Store) Finish(id, status string, exitCode int, errMsg string) error {
 // GetTask 取单条。
 func (s *Store) GetTask(id string) (Task, error) {
 	var t Task
-	err := s.db.QueryRow(
+	err := s.read.QueryRow(
 		`SELECT id, script, title, args_json, status, pid, created_at, started_at,
 		        finished_at, exit_code, error, actor FROM tasks WHERE id=?`, id,
 	).Scan(&t.ID, &t.Script, &t.Title, &t.ArgsJSON, &t.Status, &t.PID, &t.CreatedAt,
@@ -294,9 +307,9 @@ func (s *Store) ListTasks(status string, limit int) ([]Task, error) {
 	q := `SELECT id, script, title, args_json, status, pid, created_at, started_at,
 	             finished_at, exit_code, error, actor FROM tasks`
 	if strings.TrimSpace(status) != "" {
-		rows, err = s.db.Query(q+` WHERE status=? ORDER BY created_at DESC LIMIT ?`, status, limit)
+		rows, err = s.read.Query(q+` WHERE status=? ORDER BY created_at DESC LIMIT ?`, status, limit)
 	} else {
-		rows, err = s.db.Query(q+` ORDER BY created_at DESC LIMIT ?`, limit)
+		rows, err = s.read.Query(q+` ORDER BY created_at DESC LIMIT ?`, limit)
 	}
 	if err != nil {
 		return nil, err
@@ -410,7 +423,7 @@ func (s *Store) TailEvents(taskID string, limit int) ([]Event, error) {
 		query += ` WHERE task_id=?`
 		args = append(args, taskID)
 	}
-	rows, err := s.db.Query(query+` ORDER BY id DESC LIMIT ?`, append(args, limit)...)
+	rows, err := s.read.Query(query+` ORDER BY id DESC LIMIT ?`, append(args, limit)...)
 	if err != nil {
 		return nil, err
 	}
@@ -443,7 +456,7 @@ func (s *Store) EventsAfter(taskID string, after int64, limit int) ([]Event, err
 		query += ` AND task_id=?`
 		args = append(args, taskID)
 	}
-	rows, err := s.db.Query(query+` ORDER BY id LIMIT ?`, append(args, limit)...)
+	rows, err := s.read.Query(query+` ORDER BY id LIMIT ?`, append(args, limit)...)
 	if err != nil {
 		return nil, err
 	}
@@ -545,7 +558,7 @@ func (s *Store) ListAudit(limit int) ([]Audit, error) {
 // Stats 返回概览计数。
 func (s *Store) Stats() (map[string]int, error) {
 	out := map[string]int{}
-	rows, err := s.db.Query(`SELECT status, COUNT(1) FROM tasks GROUP BY status`)
+	rows, err := s.read.Query(`SELECT status, COUNT(1) FROM tasks GROUP BY status`)
 	if err != nil {
 		return nil, err
 	}
@@ -789,7 +802,7 @@ func (s *Store) ListAccountsPage(kind, platform, status string, limit, offset in
 		where += " AND status=?"
 		args = append(args, status)
 	}
-	tx, err := s.db.Begin()
+	tx, err := s.read.Begin()
 	if err != nil {
 		return nil, 0, err
 	}
@@ -831,7 +844,7 @@ func (s *Store) GetAccount(ref string) (Account, error) {
 	// 账号引用证明需要 oauth/join/liveness 与 version：这些是 Team 判定源号
 	// 是否可派单的唯一依据，漏查会让 reference 里的 liveness 恒为空，
 	// Team 只能把每个候选号判成 pending，生产单永远起不来。
-	err := s.db.QueryRow(`SELECT ref, platform, kind, identity, secret_ref, status, health_checked_at,
+	err := s.read.QueryRow(`SELECT ref, platform, kind, identity, secret_ref, status, health_checked_at,
 		health_message, claimed, claimed_at, refresh_state, refresh_at, note, version,
 		oauth_status, join_status, liveness_status, liveness_checked_at, updated_at, `+accountLibraryStatusSQL+`
 		FROM accounts WHERE ref=?`, ref).Scan(&a.Ref, &a.Platform, &a.Kind, &a.Identity, &a.SecretRef,

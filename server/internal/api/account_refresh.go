@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
@@ -33,7 +34,28 @@ func (s *Server) getAccountRefresh(c *gin.Context) {
 	if check, err := s.st.GetTask(store.RefreshVerificationID(task.ID)); err == nil {
 		verificationID, verificationStatus = check.ID, check.Status
 	}
+	method := "refresh"
+	var args []string
+	_ = json.Unmarshal([]byte(task.ArgsJSON), &args)
+	for _, arg := range args {
+		if arg == "--allow-relogin" {
+			method = "authorize"
+		}
+	}
+	var progress *store.StageEvent
+	stages, err := s.st.CredentialStages(task.ID)
+	if err != nil {
+		c.JSON(503, gin.H{"error": "refresh_progress_unavailable"})
+		return
+	}
+	for _, stage := range stages {
+		if stage.Stage == "credential_authorize" {
+			method = "authorize"
+		}
+		progress = &stage
+	}
 	c.JSON(200, gin.H{"task": task, "evidence": evidence, "can_resolve": pending && !owned,
+		"method": method, "progress": progress,
 		"library_status": account.LibraryStatus, "verification_task_id": verificationID, "verification_status": verificationStatus,
 		"can_reconcile": pending && !owned && account.Platform == "chatgpt" && evidence.SourceSHA != "",
 		"can_retry":     !owned && (task.Status == "failed" || ((task.Status == "stopped" || task.Status == "interrupted") && task.StartedAt == ""))})

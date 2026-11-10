@@ -167,6 +167,10 @@ func (s *Store) FinishAccountRefresh(taskID, ref, status string, code int, messa
 		return err
 	}
 	if n != 1 {
+		var existing, digest string
+		if err := tx.QueryRow(`SELECT t.status,COALESCE(r.result_sha,'') FROM tasks t LEFT JOIN account_refreshes r ON r.task_id=t.id WHERE t.id=?`, taskID).Scan(&existing, &digest); err == nil && existing == status && digest == resultSHA {
+			return nil
+		}
 		return errors.New("refresh_already_finished")
 	}
 	if _, err = tx.Exec(`INSERT INTO account_refreshes(task_id,ref,result_sha) VALUES(?,?,?) ON CONFLICT(task_id) DO UPDATE SET result_sha=excluded.result_sha`, taskID, ref, resultSHA); err != nil {
@@ -181,6 +185,38 @@ func (s *Store) FinishAccountRefresh(taskID, ref, status string, code int, messa
 		}
 	}
 	return tx.Commit()
+}
+
+// UnfinishedCredentials is consumed before generic restart recovery or queue
+// dispatch. It never reruns a worker or rewrites an already ended task.
+func (s *Store) UnfinishedCredentials() ([]Task, error) {
+	rows, err := s.db.Query(`SELECT id FROM tasks WHERE script='asset_ops' AND status IN ('queued','running','stopping') AND json_valid(args_json) AND json_extract(args_json,'$[0]')='refresh' ORDER BY created_at,id`)
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err = rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	var tasks []Task
+	for _, id := range ids {
+		task, err := s.GetTask(id)
+		if err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, task)
+	}
+	return tasks, nil
 }
 
 func (s *Store) ResolveAccountRefresh(taskID, actor, reason, outcome, resultSHA string) error {

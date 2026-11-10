@@ -13,7 +13,7 @@ const STREAM_COLOR: Record<string, string> = {
 function stageText(line: string) {
   try {
     const value = JSON.parse(line) as { stage: string; status: string; duration_ms?: number; error_code?: string; next_action?: string; result_sha256?: string };
-    const stages: Record<string, string> = { admission: "接收成品", recovery: "恢复原任务", result_saved: "原结果已保存", verification: "成品核验", verification_timing: "核验耗时", execution: "脚本执行", queue: "等待执行" };
+    const stages: Record<string, string> = { admission: "接收成品", recovery: "恢复原任务", result_saved: "原结果已保存", verification: "成品核验", verification_timing: "核验耗时", execution: "脚本执行", queue: "等待执行", credential_rt: "RT 刷新", credential_authorize: "重新登录授权", credential_save: "保存最新凭据", credential_settlement: "保存任务结果", credential_recovery: "恢复已保存结果" };
     const states: Record<string, string> = { queued: "已排队", running: "执行中", completed: "已完成", succeeded: "成功", failed: "失败", unknown: "结果待核对", stopped: "已停止" };
     return [stages[value.stage] || value.stage, states[value.status] || value.status,
       value.duration_ms !== undefined ? `${value.duration_ms} ms` : "", value.error_code,
@@ -135,7 +135,7 @@ export function LogView({ taskId = "", height = 420 }: { taskId?: string; height
       </div>
 
       <div className="space-y-2 border-b border-white/10 px-3 py-2 text-[11px] text-white/70">
-        {latestStage && <p role="status">{stageText(latestStage.line)}</p>}
+        {latestStage && !done && <p role="status">{stageText(latestStage.line)}</p>}
         <div className="flex flex-wrap gap-2">
           <select aria-label="日志类型" value={filter} onChange={e => setFilter(e.target.value)} className="rounded bg-[#192130] px-2 py-1">
             <option value="all">全部输出</option><option value="stage">执行步骤</option><option value="stderr">错误输出</option><option value="system">系统事件</option>

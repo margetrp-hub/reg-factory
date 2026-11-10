@@ -60,6 +60,9 @@ func main() {
 		log.Fatalf("[regd] 账号库 relay 迁移失败: %v", err)
 	}
 
+	if err := runner.RecoverCredentials(cfg, st); err != nil {
+		log.Fatalf("[regd] 原凭据任务收尾失败: %v", err)
+	}
 	if recovered, err := st.RecoverInterrupted(); err == nil && recovered > 0 {
 		log.Printf("[regd] 上次退出遗留 %d 个任务已标记为 interrupted", recovered)
 	}

@@ -335,6 +335,8 @@ export const api = {
 };
 
 export type RefreshDetail = {
+  method: "refresh" | "authorize";
+  progress: {stage: string; status: string; next_action?: string; attempt?: number} | null;
 	 library_status: string;
 	 verification_task_id: string;
 	 verification_status: string;

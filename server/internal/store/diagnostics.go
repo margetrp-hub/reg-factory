@@ -22,6 +22,7 @@ func RedactLog(line string) string {
 }
 
 type StageEvent struct {
+	Attempt    int    `json:"attempt,omitempty"`
 	Stage      string `json:"stage"`
 	Status     string `json:"status"`
 	DurationMS int64  `json:"duration_ms,omitempty"`
@@ -37,6 +38,32 @@ func stageLine(event StageEvent) string {
 
 func (s *Store) Stage(taskID string, event StageEvent) error {
 	return s.AppendEvent(taskID, "stage", stageLine(event))
+}
+
+// Keep the latest occurrence of each credential stage, even after a long
+// browser log or settlement retry sequence has filled the visible log tail.
+func (s *Store) CredentialStages(taskID string) ([]StageEvent, error) {
+	rows, err := s.read.Query(`SELECT line FROM events WHERE id IN (
+		SELECT MAX(id) FROM events WHERE task_id=? AND stream='stage'
+		AND json_valid(line) AND json_extract(line,'$.stage') GLOB 'credential_*'
+		GROUP BY json_extract(line,'$.stage')) ORDER BY id`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var stages []StageEvent
+	for rows.Next() {
+		var line string
+		if err = rows.Scan(&line); err != nil {
+			return nil, err
+		}
+		var stage StageEvent
+		if err = json.Unmarshal([]byte(line), &stage); err != nil {
+			return nil, err
+		}
+		stages = append(stages, stage)
+	}
+	return stages, rows.Err()
 }
 
 func productionActionFor(state string) string {

@@ -57,7 +57,7 @@
 
 项目将 Outlook 邮箱、ChatGPT、Grok、Claude、Kiro 注册，Codex OAuth、账号导出和下游导入整合到同一个 Web 控制台，同时保留可组合的命令行入口。
 
-当前主版本为 `2.1.2`，新增 K12 协议重登、2FA 验证、Sub2 / CPA / Cockpit 文件转换与批量下载，支持可选上游卡密兑换；Plus Codex 导入同时支持重新授权 Team 工作区并原位更新已有 Sub2API 账号。详见 [2.1.2 更新日志](CHANGELOG.md) 和 [K12 使用说明](k12/README.md)。
+当前主版本为 `2.1.19`，补齐凭据保存与任务结案的自动恢复，隔离任务查询和写入，并在运行页区分 AT 测试、RT 刷新和重新登录授权。原有平台、模式、参数和 K12 能力保留。详见 [更新日志](CHANGELOG.md)、[架构与验收记录](docs/architecture.md) 和 [K12 使用说明](k12/README.md)。
 
 > 仅用于学习、开发和经授权的测试。密钥、账号、Cookie、Token 和运行日志均应保留在本机，不要提交到仓库。
 

@@ -35,7 +35,7 @@ const accountProjectionSQL = accountProjectionPrefix + accountProjectionSuffix
 // AccountSources exposes the original metadata behind a display identity.
 // Credentials and receipt ownership remain attached to each original ref.
 func (s *Store) AccountSources(ref string) ([]Account, error) {
-	tx, err := s.db.Begin()
+	tx, err := s.read.Begin()
 	if err != nil {
 		return nil, err
 	}

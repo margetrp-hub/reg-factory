@@ -26,7 +26,7 @@ func (s *Store) AccountSummaries(platform string) ([]AccountSummary, error) {
 		query += " WHERE platform=?"
 		args = append(args, platform)
 	}
-	rows, err := s.db.Query(query+" GROUP BY platform ORDER BY platform", args...)
+	rows, err := s.read.Query(query+" GROUP BY platform ORDER BY platform", args...)
 	if err != nil {
 		return nil, err
 	}

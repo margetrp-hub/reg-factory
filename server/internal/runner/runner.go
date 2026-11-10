@@ -37,9 +37,11 @@ type Manager struct {
 	cfg *settings.Settings
 	st  *store.Store
 
-	mu    sync.Mutex
-	procs map[string]*proc
-	slots int
+	mu       sync.Mutex
+	launchMu sync.Mutex // launch/cancel ordering; never held by status or capacity reads
+	workers  sync.WaitGroup
+	procs    map[string]*proc
+	slots    int
 	// weight 是当前占用的“浏览器槽位”总数。任务可用 --concurrency 一次占多槽，
 	// 避免“全局 6 并发 × 任务内 3 并发”互相超卖把内存打爆。
 	weight int
@@ -176,6 +178,9 @@ func (m *Manager) dispatch() {
 				}
 			}
 			if err := m.launch(*next, w); err != nil {
+				if current, readErr := m.st.GetTask(next.ID); readErr == nil && current.Status != "queued" && current.Status != "running" {
+					continue
+				}
 				m.record(next.ID, "system", "启动失败: "+err.Error())
 				if ref := store.AccountRefreshRef(*next); ref != "" {
 					_ = m.st.FinishAccountRefresh(next.ID, ref, "failed", -1, err.Error(), "")
@@ -365,22 +370,38 @@ func (m *Manager) launch(task store.Task, weight int) error {
 		}
 	}
 	// Serialize launch and stop so a queued cancellation cannot race a spawn.
-	m.mu.Lock()
+	m.launchMu.Lock()
+	select {
+	case <-m.stop:
+		m.launchMu.Unlock()
+		return errors.New("服务正在停止，未启动进程")
+	default:
+	}
 	if refreshRef != "" {
 		if err := m.st.BeginAccountRefresh(task.ID, refreshRef, sourceSHA); err != nil {
-			m.mu.Unlock()
+			m.launchMu.Unlock()
 			return err
 		}
+	} else if current, err := m.st.GetTask(task.ID); err != nil || current.Status != "queued" {
+		m.launchMu.Unlock()
+		return errors.New("任务已停止或状态不可读，未启动进程")
 	}
 	if err := cmd.Start(); err != nil {
-		m.mu.Unlock()
+		m.launchMu.Unlock()
 		return err
 	}
 
+	m.mu.Lock()
 	m.procs[task.ID] = &proc{cmd: cmd, taskID: task.ID}
 	m.weight += weight
+	m.workers.Add(1)
 	m.mu.Unlock()
-	_ = m.st.MarkRunning(task.ID, cmd.Process.Pid)
+	m.launchMu.Unlock()
+	if err := m.st.MarkRunning(task.ID, cmd.Process.Pid); err != nil {
+		// BeginAccountRefresh already records the running state; retain the
+		// process so the normal settlement path can recover its durable result.
+		m.record(task.ID, "system", "进程已启动，运行状态写入暂时失败；等待本次结果收尾")
+	}
 	started := time.Now()
 	_ = m.st.Stage(task.ID, store.StageEvent{Stage: "execution", Status: "running"})
 	m.record(task.ID, "system", fmt.Sprintf("任务启动 script=%s pid=%d", task.Script, cmd.Process.Pid))
@@ -396,6 +417,7 @@ func (m *Manager) launch(task store.Task, weight int) error {
 
 	var wg sync.WaitGroup
 	var refreshResult string // written only by stdout pump; read after wg.Wait
+	var refreshMessage string
 	pump := func(reader io.Reader, stream string) {
 		defer wg.Done()
 		scanner := bufio.NewScanner(reader)
@@ -403,12 +425,22 @@ func (m *Manager) launch(task store.Task, weight int) error {
 		for scanner.Scan() {
 			text := scanner.Text()
 			if credentialRef != "" && stream == "stdout" {
+				var stage struct {
+					Schema string `json:"schema"`
+					store.StageEvent
+				}
+				if json.Unmarshal([]byte(text), &stage) == nil && stage.Schema == "credential.stage.v1" {
+					_ = m.st.Stage(task.ID, stage.StageEvent)
+					continue
+				}
 				var result struct {
-					Ref    string `json:"ref"`
-					Result string `json:"result"`
+					Ref     string `json:"ref"`
+					Result  string `json:"result"`
+					Message string `json:"message"`
 				}
 				if json.Unmarshal([]byte(text), &result) == nil && result.Ref == credentialRef {
 					refreshResult = result.Result
+					refreshMessage = store.RedactLog(result.Message)
 				}
 			}
 			m.record(task.ID, stream, text)
@@ -422,6 +454,7 @@ func (m *Manager) launch(task store.Task, weight int) error {
 	go pump(stderr, "stderr")
 
 	go func() {
+		defer m.workers.Done()
 		wg.Wait()
 		if timer != nil {
 			timer.Stop()
@@ -439,7 +472,7 @@ func (m *Manager) launch(task store.Task, weight int) error {
 
 		code := 0
 		status := "succeeded"
-		message := ""
+		message := refreshMessage
 		if err != nil {
 			var exitErr *exec.ExitError
 			if errors.As(err, &exitErr) {
@@ -457,7 +490,13 @@ func (m *Manager) launch(task store.Task, weight int) error {
 				status = "failed"
 			}
 		}
-		if refreshRef != "" {
+		if isChatGPTCredential(task) {
+			var finishErr error
+			status, code, message, finishErr = m.settleCredential(task, refreshResult, status, code, message)
+			if finishErr != nil {
+				return
+			}
+		} else if refreshRef != "" {
 			var finishErr error
 			status, code, message, finishErr = m.finishRefresh(task, refreshResult, status, code, message)
 			if finishErr != nil {
@@ -487,13 +526,15 @@ func (m *Manager) Stop(taskID string) error {
 	if task, err := m.st.GetTask(taskID); err == nil && task.Script == "production.team_json" {
 		return errors.New("生产任务由 Work 管理，请在生产中心取消或核对原任务")
 	}
+	m.launchMu.Lock()
+	defer m.launchMu.Unlock()
 	m.mu.Lock()
 	entry := m.procs[taskID]
 	if entry != nil {
 		entry.stopping = true
 	}
 	if entry == nil {
-		defer m.mu.Unlock()
+		m.mu.Unlock()
 		// 还没启动的排队任务：直接标记停止
 		if task, err := m.st.GetTask(taskID); err == nil && task.Status == "queued" {
 			m.record(taskID, "system", "任务在启动前已停止")
@@ -511,14 +552,16 @@ func (m *Manager) Stop(taskID string) error {
 // StopAll 停止全部任务。
 func (m *Manager) StopAll() []string {
 	_ = m.st.StopCredentialChecks()
+	m.launchMu.Lock()
 	m.mu.Lock()
 	ids := make([]string, 0, len(m.procs))
 	for id, entry := range m.procs {
 		entry.stopping = true
 		ids = append(ids, id)
 	}
-	_ = m.st.StopQueuedScripts()
 	m.mu.Unlock()
+	_ = m.st.StopQueuedScripts()
+	m.launchMu.Unlock()
 	for _, id := range ids {
 		m.mu.Lock()
 		entry := m.procs[id]
@@ -601,7 +644,12 @@ func (m *Manager) Shutdown(ctx context.Context) {
 	}
 	close(m.stop)
 	m.StopAll()
-	_ = ctx
+	done := make(chan struct{})
+	go func() { m.workers.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
 }
 
 // afterFinish 任务收尾的副作用：改密码结果回写到账号状态。

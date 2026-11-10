@@ -6,6 +6,7 @@ from tools import asset_ops
 
 def test_import_authorization_publishes_complete_credentials_and_keeps_login(tmp_path, monkeypatch):
     monkeypatch.setenv("REG_FACTORY_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("REG_FACTORY_RUN_ID", "import-authorization")
     source = tmp_path / "assets/chatgpt/imported/first.json"
     source.parent.mkdir(parents=True)
     original = {"ref": "import:one@example.test", "platform": "chatgpt", "kind": "imported",

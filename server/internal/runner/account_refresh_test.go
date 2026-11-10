@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,7 +20,9 @@ func TestRefreshProcessReceiptAndSavedCredentialMustAgree(t *testing.T) {
 		t.Fatal("Python required for subprocess acceptance", err)
 	}
 	for _, tc := range []struct{ name, body, status string }{
-		{"saved", `p=json.loads(path.read_text());p["payload"]["access_token"]="new-at";p["payload"]["refresh_token"]="new-rt";path.write_text(json.dumps(p));print(json.dumps({"ref":"one","result":"refreshed"}))`, "succeeded"},
+		{"saved", `p=json.loads(path.read_text());asset_ops._refresh_document_copies("one","",path,p,{"access_token":"new-at","refresh_token":"new-rt"});print(json.dumps({"ref":"one","result":"refreshed"}))`, "succeeded"},
+		{"saved-then-crashed", `p=json.loads(path.read_text());asset_ops._refresh_document_copies("one","",path,p,{"access_token":"new-at","refresh_token":"new-rt"});sys.exit(75)`, "succeeded"},
+		{"foreign-success", `p=json.loads(path.read_text());p["payload"]["access_token"]="foreign-at";path.write_text(json.dumps(p));print(json.dumps({"ref":"one","result":"refreshed"}))`, "failed"},
 		{"false-success", `print(json.dumps({"ref":"one","result":"refreshed"}))`, "failed"},
 		{"missing-id", `p=json.loads(path.read_text());p["payload"]["access_token"]="new-at";p["payload"].pop("id_token");path.write_text(json.dumps(p));print(json.dumps({"ref":"one","result":"refreshed"}))`, "failed"},
 		{"unknown", `print(json.dumps({"ref":"one","result":"unknown"}));sys.exit(75)`, "failed"},
@@ -39,7 +42,8 @@ func TestRefreshProcessReceiptAndSavedCredentialMustAgree(t *testing.T) {
 				t.Fatal(err)
 			}
 			os.MkdirAll(filepath.Join(root, "tools"), 0700)
-			script := "import json,os,sys\nfrom pathlib import Path\npath=Path(os.environ['REG_FACTORY_DATA_DIR'])/'assets/chatgpt/oauth/one.json'\n" + tc.body + "\n"
+			repo, _ := filepath.Abs("../../..")
+			script := fmt.Sprintf("import json,os,sys\nfrom pathlib import Path\nsys.path.insert(0,%q)\nfrom tools import asset_ops\nif sys.argv[1]=='recover-publication': raise SystemExit(asset_ops.main())\npath=Path(os.environ['REG_FACTORY_DATA_DIR'])/'assets/chatgpt/oauth/one.json'\n", repo) + tc.body + "\n"
 			if err = os.WriteFile(filepath.Join(root, "tools", "asset_ops.py"), []byte(script), 0600); err != nil {
 				t.Fatal(err)
 			}

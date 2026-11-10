@@ -50,7 +50,7 @@ func (s *Store) QueryTasks(q TaskQuery) (TaskPage, error) {
 		where += ` AND (id LIKE ? ESCAPE '\' OR title LIKE ? ESCAPE '\' OR script LIKE ? ESCAPE '\')`
 		args = append(args, literal, literal, literal)
 	}
-	tx, err := s.db.Begin()
+	tx, err := s.read.Begin()
 	if err != nil {
 		return page, err
 	}

@@ -54,6 +54,12 @@ def _emit(payload: dict) -> int:
     return 0
 
 
+def _stage(stage: str, message: str) -> None:
+    if os.environ.get('REG_FACTORY_RUN_ID'):
+        print(json.dumps({'schema': 'credential.stage.v1', 'stage': stage,
+                          'status': 'running', 'next_action': message}, ensure_ascii=False), flush=True)
+
+
 def _normalize_status(status: str) -> str:
     """把 asset_scanner 的状态口径收敛成 Team 认的四个值 + unknown。"""
     value = str(status or "").strip().lower()
@@ -376,6 +382,7 @@ def _update_oauth_document(document: dict, tokens: dict) -> dict:
 def _refresh_document_copies(ref: str, email: str, selected_path: Path,
                              selected_document: dict, updates: dict) -> list[str]:
     """Publish one complete result atomically; every alias resolves this version."""
+    _stage('credential_save', '正在保存本次完整凭据与恢复材料')
     current = _find_credential(ref)
     if current is None or versions.fingerprint(versions.tokens(current[1]) or {}) != versions.fingerprint(versions.tokens(selected_document) or {}):
         raise OSError('CREDENTIAL_CHANGED_BEFORE_SAVE')
@@ -403,8 +410,12 @@ def _refresh_document_copies(ref: str, email: str, selected_path: Path,
     # Persist the entire supplier response and intended write set first. If a
     # projection fails halfway through, the new token is still recoverable
     # without replaying the consumed refresh grant.
-    result = {"ref": ref, "email": email, "received_at": datetime.now(timezone.utc).isoformat(),
-              "updates": updates, "files": [{"path": str(p.relative_to(root)), "before": old,
+    task_id = os.environ.get('REG_FACTORY_RUN_ID', '').strip()
+    result = {"ref": ref, "email": email, "task_id": task_id,
+              "received_at": datetime.now(timezone.utc).isoformat(),
+              "source": selected_document,
+              "updates": updates, "files": [{"path": str(p.relative_to(root)),
+               "before": json.loads(p.read_text(encoding='utf-8')) if p.exists() else None,
               "after": new} for p, old, new in prepared]}
     result_raw = json.dumps(result, ensure_ascii=False, sort_keys=True).encode()
     result_id = hashlib.sha256(result_raw).hexdigest()
@@ -412,22 +423,99 @@ def _refresh_document_copies(ref: str, email: str, selected_path: Path,
     written: list[str] = []
     # Freeze the task output before publishing. A later account reuse must not
     # change this task's signed receipt or the artifact being received by Core.
-    task_id = os.environ.get('REG_FACTORY_RUN_ID', '').strip()
-    if task_id.startswith('work-'):
+    if task_id:
         document = versions.tokens(prepared[-1][2])
         if not document or not document.get('refresh_token'):
             raise OSError('CREDENTIAL_RESULT_INCOMPLETE')
-        task_result = {'task_id': task_id, 'ref': ref, 'email': email,
+        task_result = {'task_id': task_id, 'ref': ref, 'email': email, 'publication_id': result_id,
                        'credential_updated_at': prepared[-1][2]['credential_updated_at'], 'document': document}
         name = hashlib.sha256(task_id.encode()).hexdigest() + '.json'
         _atomic_json_write(root / 'credential-task-results' / name, task_result)
     for path, _, updated in prepared:
         _atomic_json_write(path, updated)
         written.append(str(path))
-    # Recovery material is only needed until the atomic publication completes.
-    # Work keeps its own immutable response until the receiving operation settles.
-    (root / "oauth-results" / (result_id + ".json")).unlink()
+    # The runner acknowledges only after the task/account transaction commits.
+    # Keep this journal through process exit and service restart.
+    if not task_id:
+        (root / "oauth-results" / (result_id + ".json")).unlink()
     return written
+
+
+def _recover_publication(ref: str) -> dict:
+    """Finish this task's saved write set locally, without contacting a provider."""
+    root = Path(os.environ.get('REG_FACTORY_DATA_DIR') or ROOT).resolve()
+    task_id = os.environ.get('REG_FACTORY_RUN_ID', '').strip()
+    if not task_id:
+        return {'ref': ref, 'result': 'failed', 'message': '缺少原任务编号'}
+    try:
+        name = hashlib.sha256(task_id.encode()).hexdigest() + '.json'
+        receipt_path = root / 'credential-task-results' / name
+        if not receipt_path.exists():
+            # A crash can occur between journal fsync and receipt publication.
+            matches = []
+            for path in (root / 'oauth-results').glob('*.json'):
+                try:
+                    saved = json.loads(path.read_text(encoding='utf-8'))
+                except (OSError, ValueError):
+                    continue
+                if saved.get('task_id') == task_id and saved.get('ref') == ref:
+                    matches.append((path.stem, saved))
+            if not matches:
+                return {'ref': ref, 'result': 'not_saved', 'message': '原任务没有已保存结果'}
+            if len(matches) != 1:
+                raise ValueError('CREDENTIAL_PUBLICATION_MISSING')
+            publication_id, saved = matches[0]
+            after = saved['files'][-1]['after']
+            receipt = {'task_id': task_id, 'ref': ref, 'email': saved['email'],
+                       'publication_id': publication_id, 'credential_updated_at': after['credential_updated_at'],
+                       'document': versions.tokens(after)}
+            _atomic_json_write(receipt_path, receipt)
+        receipt = json.loads(receipt_path.read_text(encoding='utf-8'))
+        if receipt['task_id'] != task_id or receipt['ref'] != ref:
+            raise ValueError('CREDENTIAL_TASK_MISMATCH')
+        document = versions.tokens(receipt['document'])
+        if not document or not document.get('refresh_token'):
+            raise ValueError('CREDENTIAL_RESULT_INCOMPLETE')
+        with versions.account_lock(root, receipt['email'], ref):
+            current = _find_credential(ref, root)
+            if (current and versions.fingerprint(versions.tokens(current[1]) or {}) == versions.fingerprint(document)
+                    and current[1].get('credential_updated_at') == receipt['credential_updated_at']):
+                return {'ref': ref, 'result': 'refreshed', 'message': '原任务最新凭据已保存'}
+            publication_id = receipt.get('publication_id', '')
+            if len(publication_id) != 64 or any(c not in '0123456789abcdef' for c in publication_id):
+                raise ValueError('CREDENTIAL_PUBLICATION_MISSING')
+            journal = json.loads((root / 'oauth-results' / (publication_id + '.json')).read_text(encoding='utf-8'))
+            if journal.get('task_id') != task_id or journal.get('ref') != ref or journal.get('email') != receipt['email']:
+                raise ValueError('CREDENTIAL_TASK_MISMATCH')
+            if (not current or versions.fingerprint(versions.tokens(current[1]) or {}) !=
+                    versions.fingerprint(versions.tokens(journal['source']) or {})
+                    or current[1].get('credential_updated_at') != journal['source'].get('credential_updated_at')):
+                raise ValueError('CREDENTIAL_CHANGED_BEFORE_SAVE')
+            # Validate the entire write set before changing any current file.
+            writes = []
+            for item in journal['files']:
+                path = (root / item['path']).resolve()
+                if path.suffix != '.json' or root / 'assets' not in path.parents:
+                    raise ValueError('CREDENTIAL_PUBLICATION_PATH_INVALID')
+                after = item['after']
+                if (versions.fingerprint(versions.tokens(after) or {}) != versions.fingerprint(document)
+                        or after.get('credential_updated_at') != receipt['credential_updated_at']
+                        or not versions.compatible(journal['source'], after)):
+                    raise ValueError('CREDENTIAL_RESULT_MISMATCH')
+                before = json.loads(path.read_text(encoding='utf-8')) if path.exists() else None
+                if before != item['before'] and before != after:
+                    raise ValueError('CREDENTIAL_CHANGED_BEFORE_SAVE')
+                writes.append((path, after))
+            if not writes:
+                raise ValueError('CREDENTIAL_PUBLICATION_EMPTY')
+            for path, after in writes:
+                _atomic_json_write(path, after)
+        return {'ref': ref, 'result': 'refreshed', 'message': '已恢复原任务保存结果，未重复请求上游'}
+    except BlockingIOError:
+        return {'ref': ref, 'result': 'failed', 'error_code': 'CREDENTIAL_BUSY', 'message': '凭据正在写入，稍后重试本地收尾'}
+    except (OSError, ValueError, KeyError, TypeError):
+        return {'ref': ref, 'result': 'failed', 'error_code': 'CREDENTIAL_PUBLICATION_UNCONFIRMED',
+                'message': '本次凭据保存未确认或已被更新；原资料保留，可重新授权'}
 
 
 def _same_oauth_source(selected: dict, candidate: dict) -> bool:
@@ -453,6 +541,10 @@ def _credential_operation(fn):
     @wraps(fn)
     def guarded(ref, email='', *args, **kwargs):
         try:
+            if os.environ.get('REG_FACTORY_RUN_ID'):
+                saved = _recover_publication(ref)
+                if saved['result'] != 'not_saved':
+                    return saved
             found = _find_credential(ref or email)
             identity = _json_email(found[1]) if found else email
             root = Path(os.environ.get('REG_FACTORY_DATA_DIR') or ROOT)
@@ -460,7 +552,10 @@ def _credential_operation(fn):
                 if _other_credential_task(root, identity, ref):
                     return {'ref': ref, 'result': 'failed', 'message': '原账号凭据任务尚未结案，本次未执行；请从原任务核对或恢复'}
                 if fn.__name__ == '_refresh_chatgpt' and _retry_needs_authorization(root, identity, ref):
+                    _stage('credential_authorize', '上次刷新未确认完成，本次改用登录授权；不重复使用旧 RT')
                     return _reauthorize_chatgpt.__wrapped__(ref, email, *args, **kwargs)
+                _stage('credential_rt' if fn.__name__ == '_refresh_chatgpt' else 'credential_authorize',
+                       '使用 RT 获取新凭据' if fn.__name__ == '_refresh_chatgpt' else '使用原账号资料重新登录授权')
                 return fn(ref, email, *args, **kwargs)
         except BlockingIOError:
             return {'ref': ref, 'result': 'failed', 'message': '该账号已有凭据任务执行中，本次未执行；请查看原任务'}
@@ -793,6 +888,10 @@ def main() -> int:
     refresh.add_argument("--account", default="", help="email----password（仅 outlook 重授权用）")
     refresh.add_argument("--timeout", type=int, default=600)
     refresh.set_defaults(func=cmd_refresh)
+
+    recover = sub.add_parser('recover-publication', help=argparse.SUPPRESS)
+    recover.add_argument('--ref', required=True)
+    recover.set_defaults(func=lambda args: _emit(_recover_publication(args.ref)))
 
     args = parser.parse_args()
     return args.func(args)
