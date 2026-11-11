@@ -1,4 +1,6 @@
-# 新手教程
+# Python 本地工具教程
+
+本教程对应 `start.bat/start.sh` 与Python便携工具，默认8799；不是SG生产控制台的部署手册。SG使用[Go部署入口](../deploy/README-GO.md)，接口见[API](api.md)，上线身份见[验收](acceptance.md)。下文上游便携包链接不代表本仓已构建或验收同名发行附件。
 
 这篇教程面向第一次使用 reg-factory 的用户。建议按顺序完成，不要一开始就把并发设为 10。先用单并发确认网络、浏览器、邮箱和 Graph 授权全部正常，再逐步提高并发。
 
@@ -81,7 +83,7 @@ macOS / Linux：
 单代理填写完整 URL：
 
 ```text
-http://username:password@host:port
+http://<PROXY_USER>:<PROXY_PASSWORD>@<PROXY_HOST>:<PROXY_PORT>
 ```
 
 代理池在 WebUI 中每行一个。并发槽按顺序领取端点：槽 1 使用第 1 条，槽 2 使用第 2 条。超过池大小时，程序默认降低有效并发，不让多个账号静默共享同一出口。

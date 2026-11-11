@@ -90,11 +90,11 @@ restart_standalone.cmd
 └── standalone_config.example.json
 ```
 
-架构与数据边界见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)，漏洞报告流程见 [`SECURITY.md`](SECURITY.md)。
+上游的 `docs/ARCHITECTURE.md`、`SECURITY.md` 未随本地vendor快照导入。来源提交和本地改动见 [UPSTREAM.md](UPSTREAM.md)；本仓集成边界见[架构](../../docs/architecture.md)。
 
 ## 贡献
 
-提交补丁前请阅读 [`CONTRIBUTING.md`](CONTRIBUTING.md)，运行完整测试与发布检查，并确保新网络请求具备超时、脱敏日志和不可重放保护。
+上游 `CONTRIBUTING.md` 未随快照导入。提交本地补丁前核对 [UPSTREAM.md](UPSTREAM.md) 的来源与集成改动，运行受影响测试及发布检查，确保新网络请求具备超时、脱敏日志和不可重放保护。
 
 ## 许可证
 

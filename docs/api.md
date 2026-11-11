@@ -1,10 +1,89 @@
-# 本地资产 API
+# 接口与对接
+
+本仓有三种入口，部署及调用方必须先选对服务。Go面板路由以[api.go](../server/internal/api/api.go)为准，节点路由以[nodeserver](../server/internal/nodeserver/server.go)为准；Python本地接口是独立工具协议，不能把8799示例直接发到SG8800。
+
+| 接口 | 认证 | 状态与副作用 |
+| --- | --- | --- |
+| Go regd面板，默认8800 | 登录Cookie `rf_sess`、Basic，或以面板密码作为Bearer / X-API-Key | 管理任务/配置/账号；资产列表GET只读，领取使用POST |
+| Work节点监听 | 节点签名及Core业务授权，固定协议域与原操作身份 | 新生产、原结果核对及恢复；不是普通浏览器入口 |
+| Python本地面板，默认8799 | 本地资产Key `REG_FACTORY_ASSET_API_KEY`，详见下文 | 部分资产GET会记录领取，不能作为只读健康探针 |
+
+Core的 `X-Admin-API-Key` 和客户开发者Bearer属于Aishop平台，不是SG面板或节点凭据。Token、Cookie、密码、账号原文及签名材料只经受控通道传递，不出现在日志、工单或示例中。
+
+## Go 面板 API
+
+匿名可访问 `GET /api/health`、`GET /api/memory` 及 `POST /api/login`；IC公开取码另有Turnstile边界。生产关闭匿名管理，其余API要求认证。具体认证实现见[auth.go](../server/internal/auth/auth.go)；面板密码具有管理权限，不当作只读第三方Key分发。
+
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| POST / GET | `/api/login`、`/api/logout`（POST）；`/api/session`（GET） | 会话管理；登录体为username/password |
+| GET | `/api/system`、`/api/scripts` | 运行信息及当前任务参数schema |
+| POST / GET | `/api/tasks` | 受理任务 / 查询列表 |
+| GET | `/api/tasks/{id}`、`/api/tasks/{id}/logs`、`/api/tasks/{id}/stream` | 原任务状态、历史日志及SSE |
+| POST | `/api/tasks/{id}/stop`、`/api/tasks/stop-all` | 请求停止；回读实际终态，不把响应当外部副作用已撤销 |
+| POST | `/api/tasks/{id}/production/{action}` | 原生产任务的允许控制动作；按当前阶段校验 |
+| GET | `/api/logs`、`/api/logs/stream`、`/api/audit` | 日志及审计 |
+| GET | `/api/accounts`、`/api/accounts/summary`、`/api/accounts/detail`、`/api/accounts/sources` | 去重账号、全量统计、详情及原来源 |
+| POST | `/api/accounts/import`、`/api/accounts/convert`、`/api/accounts/change-password`、`/api/accounts/sync` | 账号资料操作；按各处理器校验输入及执行权限 |
+| POST / GET | `/api/accounts/checks`；`/api/accounts/checks/{id}`（GET） | 创建/查询持久AT检查批次；不刷新RT |
+| POST | `/api/accounts/liveness`、`/api/accounts/refresh` | 账号核验 / 显式凭据刷新 |
+| GET / POST | `/api/accounts/refresh/{id}`（GET）；其 `/reconcile`、`/resolve`（POST） | 原刷新查询、核对及证据处理 |
+| GET | `/api/assets`、`/api/assets/{kind}`、`/api/assets/tree`、`/api/assets/results`、`/api/assets/export` | 资产及受权限约束的导出 |
+| POST | `/api/assets/{kind}/claim`、`/api/assets/claims/reset` | 领取及重置，改变领取事实 |
+| GET / PUT | `/api/config`、`/api/config/raw` | 读取 / 保存原配置文件，保留未修改键 |
+| GET | `/api/proxy/check` | 指定代理和目标的连通性探测，不修改已保存配置 |
+
+### 任务受理与重试
+
+先从 `GET /api/scripts` 取得实际script及参数，再提交：
+
+```http
+POST /api/tasks
+Authorization: Bearer <PANEL_PASSWORD>
+Content-Type: application/json
+
+{
+  "request_id": "61c85973-8657-4719-a759-32c3881a48bf",
+  "script": "<从任务schema选择的ID>",
+  "args": {}
+}
+```
+
+新受理返回202及 `id/status/title/args/slots`，随后查询 `GET /api/tasks/{id}`。自动化调用应提交小写UUID格式 `request_id`；虽然字段可省略，但省略后每次POST都可能新建任务。丢响应沿相同身份、script和规范化参数重发找回原任务；同ID换参数返回409，读取暂不可用返回503，内存保护拒绝新任务返回429。原已受理任务仍可查询，不能更换编号绕过保护。
+
+普通任务为queued → running → succeeded/failed/stopped，重启中断保留interrupted及原结果；凭据保存后的收尾优先恢复本次成功工件。AT单条网络未知、历史刷新unknown及Work外部unknown按各自原任务处理，不统一降成失败或重新生产。详见[状态与恢复](architecture.md#状态与恢复)。检查批次与凭据刷新有各自输入及幂等校验，分别见[检查处理器](../server/internal/api/credential_checks.go)与[刷新处理器](../server/internal/api/account_refresh.go)，不能把普通任务请求体原样发到这些接口。
+
+SSE使用 `Last-Event-ID` 补读持久事件，任务终态补齐后发送done。网络断流不取消服务端工作；配置保存响应未知时先回读，确认已落盘再清除草稿。
+
+## Work 机器接口
+
+节点地址由部署配置和Work注册表提供，不假定与面板8800同一监听。签名请求、授权材料、资源版本、预算和operation身份由Core/Work生成，接入方不要自行拼一份面板请求代替。
+
+| 方法 | 路径 | 责任 |
+| --- | --- | --- |
+| GET | `/ready`、`/node/capabilities` | 实际就绪及能力，不等于平台商品可售 |
+| POST | `/internal/work/v1/tasks` | 原签名授权接单 |
+| GET | `/internal/work/v1/tasks/{task_id}` | 原任务状态，不创建新执行 |
+| POST | `/internal/work/v1/tasks/{task_id}/result`、`/events`、`/artifact` | 按原授权读取回执、事件及工件，各路径独立验签 |
+| POST | `/internal/work/v1/resolve`、`/internal/work/v1/stop` | 原结果查询及停止控制 |
+| POST | `/internal/work/v1/production/admit` | `produce`，签名域 `work-production-admit-v1\n` |
+| POST | `/internal/work/v1/production/resume` | `existing_result`，签名域 `work-production-existing-resume-v1\n` |
+| POST | `/internal/work/v1/production/continue`、`/internal/work/v1/team/materials` | 原生产继续与授权物料交接，不作为重新下单入口 |
+| POST | `/internal/work/v1/inventory/library`、`/internal/work/v1/inventory/reference` | 签名账号目录及原引用证明 |
+
+生产动作均为 `production.team_json`，两种模式不能互换签名域。生产入口拒绝Cookie/Origin/Sec-Fetch-Site浏览器请求；密封资料、业务授权与回执密钥必须就绪。完整字段和校验见[生产接单](../server/internal/nodeserver/production.go)及主平台的 `docs/contracts/work-node-integration.md`，不能以面板密码替代节点签名。
+
+unknown保留原任务、输入及外部证据，先查询/恢复已保存结果；Core决定库存、权益和终态账务。AT检查在节点执行，目录只读不隐式兑换、刷新或领取。
+
+## Python 本地接口
+
+以下仅适用于 `start.bat/start.sh` 启动的Python本地面板及其辅助服务，不是SG Go API。保留源工具的接口说明以免现有调用失去维护入口；本次SG部署没有对它们重新验收。
 
 主 WebUI 提供资产领取接口，用于按顺序或指定下标读取邮箱与已注册平台凭据。默认地址为 `http://127.0.0.1:8799`。每个读取请求直接从本地尚未领取的资产中输出数据，不会先调用在线状态扫描。接口不修改原始邮箱、Cookie 或 Token 文件，只持久化领取标识。
 
 控制台左侧打开“资产 API”，可以配置 API Key、选择平台和输出格式、生成 `curl` 命令、在线调用并重置领取记录；下面的接口也可供其他本地程序直接调用。
 
-## 鉴权
+### 鉴权
 
 未配置 `REG_FACTORY_ASSET_API_KEY` 时，接口只接受本机请求。配置后，请求必须携带其中一种请求头：
 
@@ -15,7 +94,7 @@ Authorization: Bearer your-key
 
 不要把 WebUI 监听到公网；这些接口返回邮箱密码、refresh token、Cookie 或平台 token。
 
-## 邮箱
+### 邮箱
 
 ```bash
 # 领取下一个未领取邮箱
@@ -44,7 +123,7 @@ curl "http://127.0.0.1:8799/api/assets/emails?status=normal,error"
 
 邮箱与平台资产响应都会包含 `email_provider`：`outlook`、`icloud`、`temporary` 或 `other`。可用 `email_provider` 查询参数按注册邮箱来源筛选。
 
-## 平台 Cookie 与下游格式
+### 平台 Cookie 与下游格式
 
 ```bash
 # Claude 有效 Cookie 数组
@@ -90,7 +169,7 @@ curl "http://127.0.0.1:8799/api/assets/cookies/kiro?format=session"
 | Grok | `cookies`、`raw`、`header`、`session`、`sub2api` |
 | Kiro | `session` |
 
-## 批量文件导出
+### 批量文件导出
 
 ```bash
 curl -X POST http://127.0.0.1:8799/api/assets/export \
@@ -110,7 +189,7 @@ curl -X POST http://127.0.0.1:8799/api/assets/export \
 
 响应中的 `index` 是本次在未领取列表中的下标，`total` 是领取前可用总数，`remaining` 是领取后的剩余数量，`claim_recorded=true` 表示领取记录已持久化。省略 `index` 时选择第一条；指定 `index` 时从当前未领取列表中选择。两种方式都会记录领取。同一平台账号按邮箱或来源文件识别，切换 `raw`、`cookies`、`session`、`sub2api`、`cpa`、`chatgpt2api` 等格式也不会重复返回。除邮箱显式设置 `normal_only=true` 外，领取接口不读取上次扫描结论；所有领取请求都不会在请求时联网检测。
 
-## ChatGPT 注册国家与 Plus 优惠
+### ChatGPT 注册国家与 Plus 优惠
 
 ChatGPT 注册可通过 `--country JP` 等两位 ISO 国家码约束出口。脚本会在浏览器启动前校验 Cloudflare `loc`，找不到匹配网络则停止；成功后在 session 和号池扫描结果中写入 `registration_country` 与 `network_node`。
 
@@ -130,7 +209,7 @@ ChatGPT 注册可通过 `--country JP` 等两位 ISO 国家码约束出口。脚
 
 默认检测活动为 `plus-1-month-free`。可通过 `ASSET_SCAN_CHATGPT_PLUS_TRIAL=false` 关闭，或用 `ASSET_SCAN_CHATGPT_PLUS_CAMPAIGN` 修改活动标识。检测结果只用于标记，最终优惠仍以用户自行打开的官方结账页为准。
 
-## Plus 协议提链
+### Plus 协议提链
 
 Plus 导入页把“授权导入”“渠道选择”“批量协议提链”和“批量协议支付”放在一个任务面板中。OAuth 导入成功后可从本地 session 读取当前 AT；也可选择“号池有资格账号”，直接载入资产扫描缓存中标记为 `zero_price` 且存在可用本地 session 的账号。`eligible`、`discount` 和 `unknown` 不会进入协议号池。无论来源如何，协议任务都会逐账号实时复检优惠资格，未再次命中的账号不会进入提链或支付。
 
@@ -138,7 +217,7 @@ Plus 导入页把“授权导入”“渠道选择”“批量协议提链”和
 
 协议执行复用本机的 GPT-Register-Tool 引擎。默认自动查找同级 `GPT-Register-Tool` 目录；发布包或其他目录可在 `.env` 中设置 `REG_FACTORY_PROTOCOL_PAYMENT_ROOT`。Plus 提链默认跟随 ChatGPT 的 Clash 出口；需要其他出口时，通过 `REG_FACTORY_PLUS_LINK_ROUTE`、`REG_FACTORY_PLUS_BIND_ROUTE` 或对应的显式 proxy override 配置。
 
-## 号池状态扫描
+### 号池状态扫描
 
 扫描任务在 WebUI 后台运行，不阻塞其他 API，也不是默认领取的前置条件。支持的平台是 `outlook`、`chatgpt`、`claude`、`grok`、`kiro`。安全扫描模式按小批次并行同平台账号，`account_concurrency` 默认 4、上限 8；不同平台并行数由 `concurrency` 控制，默认 1、上限 2。WebUI 默认只做健康扫描，设置 `include_plus_trial=true` 才额外请求 ChatGPT Plus 资格接口。每个账号请求前仍随机等待 3–6 秒，默认复用 6 小时内的结果；出现 429 会暂停下一批，连续两次 403/挑战页或网络异常也会暂停，剩余记录标记为 `unknown`。扫描确认 `banned`、`expired` 或 `invalid` 时默认把源记录移动到 `runtime/assets/quarantine/`；隔离归档在线程中执行，不阻塞 WebUI。`restricted`、`error`、`unknown` 和 `unlock` 不会自动移动。
 
@@ -176,7 +255,7 @@ GET 响应中的 `summary` 是全号池统计，`items` 是逐条结果，`scan.
 
 结果保存在 `runtime/state/asset_pool_scan.json`，只包含账号标识、状态、判定依据、来源文件名和检测时间，不包含密码、refresh token、Cookie、access token、sessionKey 或 SSO。
 
-## 状态与重置
+### 状态与重置
 
 ```bash
 curl http://127.0.0.1:8799/api/assets/summary
@@ -192,7 +271,7 @@ curl -X POST http://127.0.0.1:8799/api/assets/cursors/reset \
 
 领取账本保存在 `runtime/state/asset_api_claims.json`，只包含不可逆的 SHA-256 标识和平台范围，不保存邮箱或凭据。旧版兼容游标仍保存在 `runtime/state/asset_api_cursors.json`。重置不会修改 `emails.txt`、Cookie 或 Token 文件。
 
-## GoPay 本地 API
+### GoPay 本地 API
 
 主 WebUI 在 `/api/gopay/*` 提供 Plus 支付面板内置钱包池所需的本机接口。账号凭据、PIN、短信配置与支付任务状态保存在 `REG_FACTORY_DATA_DIR/runtime/gopay/`，接口响应不会返回 access token、refresh token、PIN 或代理口令。钱包池没有独立支付入口；正常支付应通过 `/api/chatgpt-plus/protocol-batch` 的 `method=gopay`、`operation=pay` 发起。
 
