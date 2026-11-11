@@ -4,6 +4,15 @@ import Link from "next/link";
 import { api, type Task } from "@/lib/api";
 import { useState } from "react";
 import { Empty, StatusBadge, timeAgo } from "@/components/ui";
+import { UPDATE_LABELS } from "@/lib/account-actions";
+
+function credentialMethod(task: Task) {
+  if (task.script !== "asset_ops") return "";
+  try {
+    const args = JSON.parse(task.args_json || "[]");
+    return Array.isArray(args) && args[0] === "refresh" ? UPDATE_LABELS[args.includes("--allow-relogin") ? "authorize" : "refresh"] : "";
+  } catch {return "";}
+}
 
 /** 任务表格：任务中心 / 平台工作台 / 分组页共用，统一列与交互。 */
 export function TaskTable({
@@ -87,6 +96,7 @@ export function TaskTable({
                     {task.title || task.script}
                   </Link>
                 )}
+                {credentialMethod(task) && <span className="mt-1 block text-xs text-muted-foreground">请求方式：{credentialMethod(task)}</span>}
               </td>
               {showScript && (
                 <td className="px-2 py-1.5 font-mono text-[11px] text-muted-foreground">{task.script}</td>

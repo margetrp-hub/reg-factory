@@ -552,8 +552,8 @@ def _credential_operation(fn):
                 if _other_credential_task(root, identity, ref):
                     return {'ref': ref, 'result': 'failed', 'message': '原账号凭据任务尚未结案，本次未执行；请从原任务核对或恢复'}
                 if fn.__name__ == '_refresh_chatgpt' and _retry_needs_authorization(root, identity, ref):
-                    _stage('credential_authorize', '上次刷新未确认完成，本次改用登录授权；不重复使用旧 RT')
-                    return _reauthorize_chatgpt.__wrapped__(ref, email, *args, **kwargs)
+                    return {'ref': ref, 'result': 'relogin_required',
+                            'message': '上次 RT 交换未确认完成，本次未重复使用旧 RT；请在更新凭据中选择登录重新授权'}
                 _stage('credential_rt' if fn.__name__ == '_refresh_chatgpt' else 'credential_authorize',
                        '使用 RT 获取新凭据' if fn.__name__ == '_refresh_chatgpt' else '使用原账号资料重新登录授权')
                 return fn(ref, email, *args, **kwargs)

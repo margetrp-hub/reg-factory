@@ -5,7 +5,7 @@ export const LIBRARY_LABELS: Record<string,string> = {available:"生产可用",p
 export function AccountNavigation({slug, active, accountsHref, checksHref, runHref}: {slug: string; active: "accounts" | "checks" | "run"; accountsHref?: string; checksHref?: string; runHref?: string}) {
   return <nav aria-label="账号工作区" className="sg-account-nav">
     <Link href={accountsHref || `/platform/${slug}/accounts/`} aria-current={active === "accounts" ? "page" : undefined}>账号管理</Link>
-    <Link href={checksHref || `/platform/${slug}/checks/`} aria-current={active === "checks" ? "page" : undefined}>凭据检查</Link>
+    <Link href={checksHref || `/platform/${slug}/checks/`} aria-current={active === "checks" ? "page" : undefined}>处理记录</Link>
     {runHref && <Link href={runHref} aria-current={active === "run" ? "page" : undefined}>本次运行</Link>}
   </nav>;
 }

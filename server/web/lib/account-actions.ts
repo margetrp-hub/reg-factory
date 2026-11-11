@@ -1,6 +1,8 @@
 import { api, ApiError } from "@/lib/api";
 
-export type AccountActionReceipt = { task_id?: string; status?: string; message?: string };
+export type CredentialUpdateMethod = "refresh" | "authorize";
+export const UPDATE_LABELS = {refresh:"RT 刷新", authorize:"登录重新授权"};
+export type AccountActionReceipt = { task_id?: string; status?: string; message?: string; method?: CredentialUpdateMethod };
 
 function requestID() {
   const bytes = crypto.getRandomValues(new Uint8Array(16));
@@ -9,20 +11,20 @@ function requestID() {
   return [hex.slice(0,8), hex.slice(8,12), hex.slice(12,16), hex.slice(16,20), hex.slice(20)].join("-");
 }
 
-const pendingRefresh = new Map<string, string>();
-const pendingConversions = new Map<string, string>();
+type PendingUpdate = {id:string; method?:CredentialUpdateMethod};
+const pendingRefresh = new Map<string, PendingUpdate>();
 
-export async function convertAccountCredentials(refs: string[]) {
-  const key = "sg-account-convert:" + JSON.stringify([...new Set(refs)].sort());
-  let id = pendingConversions.get(key);
-  try { id ||= sessionStorage.getItem(key) || undefined; } catch { /* optional storage */ }
-  id ||= requestID();
-  pendingConversions.set(key, id);
-  try { sessionStorage.setItem(key,id); } catch { /* memory fallback */ }
-  const result = await api.convertAccounts({refs,request_id:id});
-  pendingConversions.delete(key);
-  try { sessionStorage.removeItem(key); } catch { /* optional storage */ }
-  return result;
+export function pendingCredentialUpdate(ref: string): PendingUpdate | null {
+  const key = "sg-account-refresh:" + ref;
+  try {
+    const raw = sessionStorage.getItem(key);
+    if (raw) {
+      if (!raw.startsWith("{")) return {id:raw}; // Resume requests from the previous UI.
+      const saved = JSON.parse(raw);
+      if (typeof saved.id === "string" && ["refresh","authorize"].includes(saved.method)) return saved;
+    }
+  } catch { /* optional browser storage */ }
+  return pendingRefresh.get(key) || null;
 }
 type PendingCheck = {request_id: string; platform: string; refs: string[]; parent_id?: string};
 const pendingChecks = new Map<string, PendingCheck>();
@@ -62,24 +64,26 @@ export async function startCredentialCheck(platform: string, refs: string[], par
 export async function accountAction(ref: string, platform: string, action: "check" | "refresh" | "authorize"): Promise<AccountActionReceipt> {
   if (action === "check") return api.accountLiveness(ref, platform);
   const key = "sg-account-refresh:" + ref;
-  let id = pendingRefresh.get(key);
-  try { id ||= sessionStorage.getItem(key) || undefined; } catch { /* memory still protects this page */ }
-  if (id) {
+  const previous = pendingCredentialUpdate(ref);
+  if (previous) {
     try {
-      const task = await api.task("request-" + id);
+      const task = await api.task("request-" + previous.id);
       pendingRefresh.delete(key);
       try { sessionStorage.removeItem(key); } catch { /* optional storage */ }
-      return {task_id: task.id, status: task.status, message: "已找到原刷新任务"};
+      const args = JSON.parse(task.args_json || "[]");
+      return {task_id: task.id, status: task.status, message: "已找到原更新任务", method:Array.isArray(args) && args.includes("--allow-relogin") ? "authorize" : "refresh"};
     } catch (error) { if (!(error instanceof ApiError) || error.status !== 404) throw error; }
   }
-  id ||= requestID();
-  pendingRefresh.set(key, id);
-  try { sessionStorage.setItem(key, id); } catch { /* optional storage */ }
+  if (previous?.method && previous.method !== action) throw new Error(`原请求为${UPDATE_LABELS[previous.method]}，请先用原方式恢复提交`);
+  const id = previous?.id || requestID();
+  const pending = {id, method:action};
+  pendingRefresh.set(key, pending);
+  try { sessionStorage.setItem(key, JSON.stringify(pending)); } catch { /* optional storage */ }
   try {
     const result = await api.accountRefresh(ref, platform, action === "authorize", id);
     pendingRefresh.delete(key);
     try { sessionStorage.removeItem(key); } catch { /* optional storage */ }
-    return result;
+    return {...result,method:action};
   } catch (error) {
     if (error instanceof ApiError && [400,403,404,422,429].includes(error.status)) {
       pendingRefresh.delete(key);

@@ -5,7 +5,8 @@ import Link from "next/link";
 import { api, type AccountRow, type AccountSummary } from "@/lib/api";
 import { Badge, Card, Empty, timeAgo } from "@/components/ui";
 import { Drawer } from "@/components/drawer";
-import { accountAction, convertAccountCredentials } from "@/lib/account-actions";
+import { pendingCredentialCheck, startCredentialCheck } from "@/lib/account-actions";
+import { CredentialUpdateDialog, type UpdateTarget } from "@/components/credential-update-dialog";
 import { AccountSources } from "@/components/account-sources";
 import { AccountSummaryStrip } from "@/components/account-summary-strip";
 import { LIBRARY_LABELS } from "@/components/account-navigation";
@@ -33,8 +34,8 @@ export default function AccountsPage() {
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
-  const [conversionResults, setConversionResults] = useState<{ref:string;task_id:string;email:string}[]>([]);
-  const [conversionResultsOpen, setConversionResultsOpen] = useState(false);
+  const [updateRequest,setUpdateRequest]=useState<{targets:UpdateTarget[]} | null>(null);
+  const [checkLink,setCheckLink]=useState("");
   const [detail, setDetail] = useState<AccountRow | null>(null);
   const [detailTarget, setDetailTarget] = useState<AccountRow | null>(null);
   const [detailError, setDetailError] = useState("");
@@ -93,13 +94,6 @@ export default function AccountsPage() {
   };
   const closeDetail = () => {detailRequest.current?.abort();setDetailTarget(null);setDetail(null);};
 
-  useEffect(() => {
-    try {
-      const saved=JSON.parse(sessionStorage.getItem("sg-last-conversion") || "[]");
-      if(Array.isArray(saved))setConversionResults(saved.filter(row=>typeof row?.task_id==="string" && typeof row?.ref==="string").slice(0,100));
-    } catch { /* Results remain in the server task history. */ }
-  }, []);
-
   const sync = async () => {
     setBusy("sync");
     try {
@@ -113,32 +107,31 @@ export default function AccountsPage() {
     }
   };
 
-  const act = async (ref: string, plat: string, action: "liveness" | "refresh" | "authorize") => {
+  const check = async (refs: string[], plat: string) => {
     if (busy) return;
-    setBusy(ref + action);
+    setBusy("check");
     setNotice("");
+    setError("");setCheckLink("");
     try {
-      const result = await accountAction(ref, plat, action === "liveness" ? "check" : action);
-      setNotice(result.task_id ? `已受理原任务 ${result.task_id}，请到任务中心查看结果` : result.message || "测试已返回");
-      await load();
-      if (detail?.ref === ref) {
-        const updated=(await api.accountDetail(ref)).account;
-        setDetail(current=>current?.ref===ref ? updated : current);
-      }
+      const pending=pendingCredentialCheck(plat);
+      const result = await startCredentialCheck(plat,pending?.refs || refs,pending?.parent_id);
+      setNotice(pending ? "已找回原检查批次，请查看运行结果。" : "检查已受理，请查看运行结果。");
+      setCheckLink(`/platform/${plat}/runs/?batch=${encodeURIComponent(result.task_id)}`);
     } catch (err) {
-      setError((err as Error).message);
+      setError(`${(err as Error).message}。再次检查会先恢复原批次。`);
     } finally {
       setBusy("");
     }
   };
+  const openUpdate=(targets:UpdateTarget[])=>{closeDetail();setUpdateRequest({targets});};
+  const selectedRows=rows.filter(row=>picked.has(row.ref));
+  const selectedPlatform=selectedRows.length && selectedRows.every(row=>row.platform===selectedRows[0].platform) ? selectedRows[0].platform : "";
 
   const summary=useMemo<AccountSummary | null>(()=>summaries ? summaries.filter(item=>!platform || item.platform===platform).reduce((sum,item)=>({platform,total:sum.total+item.total,available:sum.available+item.available,abnormal:sum.abnormal+item.abnormal,unknown:sum.unknown+item.unknown,used:sum.used+item.used,leased:sum.leased+item.leased,source_count:sum.source_count+item.source_count}),{platform,total:0,available:0,abnormal:0,unknown:0,used:0,leased:0,source_count:0}) : null,[summaries,platform]);
 
   return (
     <div className="space-y-4">
-      <Drawer open={conversionResultsOpen} title="本批修复记录" subtitle="凭据保存成功后自动测试 AT；每个账号保留独立结果和恢复操作。" onClose={()=>setConversionResultsOpen(false)} width={600}>
-        <div className="space-y-2">{conversionResults.map(row=><div key={row.task_id} className="flex items-center justify-between gap-3 rounded-lg border border-border p-3"><span className="min-w-0 truncate text-sm" title={row.email || row.ref}>{row.email || row.ref}</span><Link className="btn-ghost shrink-0" href={`/platform/chatgpt/runs/?mode=refresh&task=${encodeURIComponent(row.task_id)}`}>查看运行</Link></div>)}</div>
-      </Drawer>
+      <CredentialUpdateDialog request={updateRequest} onClose={()=>setUpdateRequest(null)} onAccepted={()=>void load()}/>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-xs text-muted-foreground">账号执行和下载使用最近一次成功保存的凭据，旧任务保留执行记录。</p>
         <Link href="/assets/" className="btn-primary">当前凭据与导出</Link>
@@ -174,31 +167,15 @@ export default function AccountsPage() {
               <option value="unknown">未测</option>
             </select>
             <button className="btn-ghost" onClick={() => setShowImport(true)}>导入账号</button>
-            {conversionResults.length > 0 && <button className="btn-ghost" onClick={()=>setConversionResultsOpen(true)}>本批修复记录 ({conversionResults.length})</button>}
+            <Link className="btn-ghost" href={`/platform/${platform || "chatgpt"}/checks/`}>处理记录</Link>
+            <button className="btn-ghost" disabled={!selectedPlatform || !!busy} title={!selectedPlatform ? "选择同一平台的账号后批量检查" : "只检查当前凭据，不更新凭据"} onClick={()=>check(selectedRows.map(row=>row.ref),selectedPlatform)}>检查可用性</button>
             <button
               className="btn-primary"
               disabled={picked.size === 0 || !!busy}
-              onClick={async () => {
-                setBusy("convert");
-                try {
-                  const data = await convertAccountCredentials(Array.from(picked));
-                  setConversionResults(data.queued);
-                  try { sessionStorage.setItem("sg-last-conversion",JSON.stringify(data.queued)); } catch { /* Optional navigation context. */ }
-                  setConversionResultsOpen(data.queued.length > 0);
-                  setNotice(
-                    `已排队 ${data.queued.length} 个转换任务${data.skipped.length ? `，跳过 ${data.skipped.length} 个（${data.skipped[0].reason}）` : ""}`,
-                  );
-                  setPicked(new Set());
-                  await load();
-                } catch (err) {
-                  setError((err as Error).message);
-                } finally {
-                  setBusy("");
-                }
-              }}
-              title="使用保存的密码/2FA重新授权，保存完整 AT、RT、ID Token；丢响应重试核对原任务"
+              onClick={()=>openUpdate(selectedRows)}
+              title="选择 RT 刷新或登录重新授权"
             >
-              {busy === "convert" ? "提交中…" : `获取 / 修复凭证 ${picked.size > 0 ? `(${picked.size})` : ""}`}
+              更新凭据 {picked.size > 0 ? `(${picked.size})` : ""}
             </button>
             <button
               className="btn-ghost"
@@ -217,7 +194,7 @@ export default function AccountsPage() {
         bodyClass="p-0"
       >
         {error && <div className="px-4 py-2 text-[12px] text-destructive" role="alert">{error}</div>}
-        {notice && <div className="px-4 py-2 text-[12px] text-success">{notice}</div>}
+        {notice && <div className="px-4 py-2 text-[12px]" role="status">{notice}{checkLink && <Link className="ml-2 underline" href={checkLink}>查看运行</Link>}</div>}
         {!summaries ? <p className="p-6 text-sm text-muted-foreground" role="status">{error ? "数据尚未加载，请重试更新列表。" : "正在读取账号…"}</p> : rows.length === 0 ? (
           <div className="p-4">
             <Empty>
@@ -287,17 +264,17 @@ export default function AccountsPage() {
                         <button
                           className="btn-ghost mr-1 px-2 py-0.5 text-[11px]"
                           disabled={!!busy}
-                          onClick={() => act(row.ref, row.platform, "liveness")}
+                          onClick={() => check([row.ref], row.platform)}
                         >
-                          测活
+                          {row.platform==="chatgpt" ? "检查可用性" : "核对报告"}
                         </button>
                         <button
                           className="btn-ghost px-2 py-0.5 text-[11px]"
                           disabled={!!busy || used}
                           title={used ? "已使用账号在主系统原任务中刷新" : undefined}
-                          onClick={() => act(row.ref, row.platform, "refresh")}
+                          onClick={() => openUpdate([row])}
                         >
-                          刷新
+                          更新凭据
                         </button>
                       </td>
                     </tr>
@@ -372,7 +349,7 @@ export default function AccountsPage() {
                     auto_change_password: autoPwd,
                     new_password: autoPwd ? newPwd : "",
                   });
-                  setNotice(`导入 ${data.imported} 个账号${data.tasks.length ? `，已排 ${data.tasks.length} 个改密码任务` : ""}`);
+                  setNotice(`导入 ${data.imported} 个账号${data.tasks.length ? `，已排 ${data.tasks.length} 个改密码任务` : ""}。首次生成凭据：选择账号 → 更新凭据 → 登录重新授权。`);
                   setShowImport(false);
                   setImportText("");
                   await load();
@@ -439,19 +416,18 @@ export default function AccountsPage() {
               <button
                 className="btn-ghost px-2 py-1 text-[11px]"
                 disabled={!!busy}
-                onClick={() => act(detail.ref, detail.platform, "liveness")}
+                onClick={() => {closeDetail();void check([detail.ref], detail.platform);}}
               >
-                测活
+                {detail.platform==="chatgpt" ? "检查可用性" : "核对报告"}
               </button>
               <button
                 className="btn-primary px-3 py-1 text-[11px]"
                 disabled={!!busy || detail.claimed || detail.library_status==="used"}
                 title={detail.claimed || detail.library_status==="used" ? "已使用账号在主系统原任务中刷新" : undefined}
-                onClick={() => act(detail.ref, detail.platform, "refresh")}
+                onClick={() => openUpdate([detail])}
               >
-                RT 刷新
+                更新凭据
               </button>
-              {detail.platform === "chatgpt" && <button className="btn-primary" disabled={!!busy || detail.claimed || detail.library_status==="used"} onClick={() => act(detail.ref,detail.platform,"authorize")}>用密码/2FA修复凭证</button>}
             </>
           ) : null
         }
@@ -490,9 +466,9 @@ export default function AccountsPage() {
       <Card title="治理规则">
         <ul className="space-y-1.5 text-[11.5px] leading-relaxed text-muted-foreground">
           <li>· OAuth 测试只使用 AT，不交换 RT；401 表示需要刷新后复测，不代表账号或订阅失效。</li>
-          <li>· 显式刷新通过任务队列使用 RT 并保存新凭据；已领取账号由主系统原任务完成更新。</li>
+          <li>· 更新凭据时选择 RT 刷新或登录重新授权；首次生成选择重新授权。已领取账号由主系统原任务更新。</li>
           <li>· 凭据任务超时或断连按失败结束并释放占用；可重新发起修复，不重复提交可能已消耗的 RT。</li>
-          <li>· 定时巡检开关与频率在「配置」页：REG_FACTORY_LIVENESS_*。</li>
+          <li>· 周期巡检默认关闭，在「配置 → 运行与资源 → 周期巡检」管理；只检查可用性。</li>
         </ul>
       </Card>
     </div>

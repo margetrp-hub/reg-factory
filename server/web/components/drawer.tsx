@@ -2,6 +2,17 @@
 
 import { ReactNode, useEffect, useId, useRef } from "react";
 
+const scrollOwners = new Set<HTMLDialogElement>();
+let originalOverflow = "";
+function lockScroll(element: HTMLDialogElement) {
+  if (!scrollOwners.size) originalOverflow = document.body.style.overflow;
+  scrollOwners.add(element);
+  document.body.style.overflow = "hidden";
+}
+function releaseScroll(element: HTMLDialogElement) {
+  if (scrollOwners.delete(element) && !scrollOwners.size) document.body.style.overflow = originalOverflow;
+}
+
 /** 右侧抽屉：详情与编辑就地完成，不跳页。 */
 export function Drawer({
   open,
@@ -25,7 +36,6 @@ export function Drawer({
   variant?: "drawer" | "dialog";
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
-  const previousOverflow = useRef<string | null>(null);
   const afterClose = useRef(onClosed);
   afterClose.current = onClosed;
   const titleId = useId();
@@ -34,9 +44,8 @@ export function Drawer({
     const element = dialog.current;
     if (!element) return;
     if (open) {
+      lockScroll(element);
       if (!element.open) {
-        previousOverflow.current = document.body.style.overflow;
-        document.body.style.overflow = "hidden";
         element.showModal();
       }
       return;
@@ -44,18 +53,13 @@ export function Drawer({
     if (!element.open) return;
     const finish = () => {
       element.close();
-      if (previousOverflow.current !== null) {
-        document.body.style.overflow = previousOverflow.current;
-        previousOverflow.current = null;
-      }
+      releaseScroll(element);
       afterClose.current?.();
     };
     const timer = window.setTimeout(finish, window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 160);
     return () => window.clearTimeout(timer);
   }, [open]);
-  useEffect(() => () => {
-    if (previousOverflow.current !== null) document.body.style.overflow = previousOverflow.current;
-  }, []);
+  useEffect(() => {const element=dialog.current;return () => {if(element)releaseScroll(element);};}, []);
 
   return (
     <dialog ref={dialog} className={`sg-drawer${variant === "dialog" ? " sg-dialog" : ""}`} style={{ width }} data-state={open ? "open" : "closed"}

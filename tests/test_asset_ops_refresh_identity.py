@@ -128,7 +128,7 @@ def test_stale_save_and_parallel_alias_cannot_replace_latest(tmp_path, monkeypat
     assert path.read_bytes() == before
 
 
-def test_failed_exchange_retry_reauthorizes_across_alias_without_replaying_rt(tmp_path, monkeypatch):
+def test_failed_exchange_retry_requires_explicit_authorization_without_replaying_rt(tmp_path, monkeypatch):
     import sqlite3
     monkeypatch.setenv('REG_FACTORY_DATA_DIR', str(tmp_path))
     monkeypatch.setenv('REG_FACTORY_RUN_ID', 'new-attempt')
@@ -152,9 +152,14 @@ def test_failed_exchange_retry_reauthorizes_across_alias_without_replaying_rt(tm
              'failed', 1, '2026-11-10T02:00:00Z', '2026-11-10T02:00:00Z')])
     with patch('requests.Session') as exchange, patch.object(asset_ops._reauthorize_chatgpt, '__wrapped__') as authorize:
         authorize.return_value = {'ref': 'current', 'result': 'refreshed'}
-        assert asset_ops._refresh_chatgpt('current', email)['result'] == 'refreshed'
-        authorize.assert_called_once_with('current', email)
+        assert asset_ops._refresh_chatgpt('current', email)['result'] == 'relogin_required'
+        authorize.assert_not_called()
         exchange.assert_not_called()
+    from unittest.mock import AsyncMock
+    with patch('tools.chatgpt_reauthorize.authorize_document', new_callable=AsyncMock) as authorize, patch.object(asset_ops, '_refresh_document_copies', return_value=['one']):
+        authorize.return_value = {'access_token': 'new-at', 'refresh_token': 'new-rt', 'id_token': 'new-id'}
+        assert asset_ops._reauthorize_chatgpt('current', email)['result'] == 'refreshed'
+        authorize.assert_awaited_once()
     with sqlite3.connect(tmp_path / 'regd.db') as db:
         db.execute('INSERT INTO tasks VALUES (?, ?, ?, ?, ?, ?, ?)',
                    ('recovered', 'asset_ops', json.dumps(['refresh', '--ref', 'current', '--allow-relogin']),

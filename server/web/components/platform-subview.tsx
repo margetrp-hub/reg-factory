@@ -7,7 +7,8 @@ import { api, ApiError, type AccountRow, type AccountSummary } from "@/lib/api";
 import { Badge, ErrorNote } from "@/components/ui";
 import { TaskGroupView } from "@/components/task-group-view";
 import { PLATFORM_TASKS } from "@/lib/task-catalog";
-import { accountAction, pendingCredentialCheck, startCredentialCheck } from "@/lib/account-actions";
+import { pendingCredentialCheck, startCredentialCheck } from "@/lib/account-actions";
+import { CredentialUpdateDialog, type UpdateTarget } from "@/components/credential-update-dialog";
 import { AccountNavigation, CHECK_LABELS, LIBRARY_LABELS, checkTone } from "@/components/account-navigation";
 import { AccountSources } from "@/components/account-sources";
 import { AccountSummaryStrip } from "@/components/account-summary-strip";
@@ -28,6 +29,7 @@ function PlatformAccounts({ slug }: { slug: string }) {
   const [page, setPage] = useState<{accounts: AccountRow[]; total: number} | null>(null);
   const [summary,setSummary]=useState<AccountSummary | null>(null);
   const [sourceDetail,setSourceDetail]=useState<AccountRow | null>(null);
+  const [updateRequest,setUpdateRequest]=useState<{targets:UpdateTarget[]} | null>(null);
   const [reload, setReload] = useState(0);
   const [busy, setBusy] = useState("");
   const [loading, setLoading] = useState(false);
@@ -89,15 +91,7 @@ function PlatformAccounts({ slug }: { slug: string }) {
       setPending(!!pendingCredentialCheck(slug));
     } finally {operating.current=false;setBusy("");}
   };
-  const refresh = async (row: AccountRow, action: "refresh" | "authorize" = "refresh") => {
-    if (operating.current) return;
-    operating.current=true;setBusy(row.ref);setActionError("");
-    try {
-      const result=await accountAction(row.ref,row.platform || slug,action);
-      if (result.task_id) openChecks(result.task_id,"refresh");
-    } catch (err) {setActionError(`刷新请求未确认：${err instanceof ApiError ? err.detail || err.message : (err as Error).message}。再次点击会先核对原请求。`);}
-    finally {operating.current=false;setBusy("");}
-  };
+  const update=(targets:UpdateTarget[])=>{setSourceDetail(null);setUpdateRequest({targets});};
   const selectedRefs=page?.accounts.filter(row=>selected.has(row.ref)).map(row=>row.ref) || [];
   return <div className="sg-workspace sg-enter">
     <header className="sg-page-head"><div><p className="sg-eyebrow">{name}</p><h1>账号管理</h1><p className="sg-description">选择账号并发起操作，受理后进入独立运行页查看进度与结果。</p></div>
@@ -115,22 +109,24 @@ function PlatformAccounts({ slug }: { slug: string }) {
       </header>
       <div className="sg-selection-bar">
         <label className="flex items-center gap-2"><input type="checkbox" aria-label="选择本页" disabled={!!busy || !page?.accounts.length} checked={!!page?.accounts.length && selectedRefs.length===page.accounts.length} onChange={event=>setSelected(event.target.checked ? new Set(page?.accounts.map(row=>row.ref)) : new Set())}/><span>本页已选 {selectedRefs.length} 项</span></label>
-        <button className="btn-primary" disabled={!!busy || !selectedRefs.length} onClick={()=>check(selectedRefs)}>{busy === "check" ? "提交中…" : slug === "chatgpt" ? "批量测试 AT" : "批量核对报告"}</button>
+        <button className="btn-ghost" disabled={!!busy || !selectedRefs.length} onClick={()=>check(selectedRefs)}>{busy === "check" ? "提交中…" : slug === "chatgpt" ? "检查可用性" : "核对报告"}</button>
+        <button className="btn-primary" disabled={!!busy || !selectedRefs.length} onClick={()=>update(page?.accounts.filter(row=>selected.has(row.ref)) || [])}>更新凭据</button>
         <span className="sg-description">{slug === "chatgpt" ? "只读测试，不使用 RT" : "读取历史检查报告，不刷新凭据"}</span>
       </div>
       <div className="overflow-auto"><table className="tbl sg-task-table whitespace-nowrap" aria-label="账号列表"><thead><tr><th>账号</th><th>凭据状态</th><th>领取</th><th>最近核验</th><th>来源</th><th>操作</th></tr></thead><tbody>
         {page?.accounts.map(row=><tr key={row.ref}><td><label className="flex items-center gap-3"><input type="checkbox" aria-label={`选择 ${row.identity || row.ref}`} disabled={!!busy} checked={selected.has(row.ref)} onChange={event=>setSelected(previous=>{const next=new Set(previous);if(event.target.checked)next.add(row.ref);else next.delete(row.ref);return next;})}/><span className="block max-w-72 truncate" title={row.identity || row.ref}>{row.identity || row.ref}</span></label></td>
           <td><Badge tone={checkTone(row.status)}>{labels[row.status] || row.status}</Badge>{slug === "chatgpt" && <span className="mt-1 block text-xs text-muted-foreground">{LIBRARY_LABELS[row.library_status || "pending"] || "待准备"}</span>}</td><td>{row.claimed ? "已领取" : "未领取"}</td><td className="text-[13px] text-muted-foreground">{row.health_checked_at ? new Date(row.health_checked_at).toLocaleString() : "尚未核验"}</td>
           <td><button className="btn-ghost tabular-nums" onClick={()=>setSourceDetail(row)} aria-label={`查看 ${row.identity || row.ref} 的来源`}>{row.source_count ?? 1} 份来源</button></td>
-          <td><div className="flex gap-2"><button className="btn-ghost" disabled={!!busy} onClick={()=>check([row.ref])}>{slug === "chatgpt" ? "测试 AT" : "核对报告"}</button><button className="btn-ghost" disabled={row.claimed || !!busy} title={row.claimed ? "已领取账号在主系统原任务中修复" : undefined} onClick={()=>refresh(row)}>{slug === "chatgpt" ? "RT 刷新" : "刷新凭据"}</button>{slug === "chatgpt" && <button className="btn-ghost" disabled={row.claimed || !!busy} title="使用已保存的密码/2FA重新授权，获取完整凭据" onClick={()=>refresh(row,"authorize")}>修复凭证</button>}</div></td></tr>)}
+          <td><div className="flex gap-2"><button className="btn-ghost" disabled={!!busy} onClick={()=>check([row.ref])}>{slug === "chatgpt" ? "检查可用性" : "核对报告"}</button><button className="btn-ghost" disabled={row.claimed || row.library_status==="used" || !!busy} title={row.claimed ? "已领取账号在主系统原任务中修复" : undefined} onClick={()=>update([row])}>更新凭据</button></div></td></tr>)}
       </tbody></table>{!page && <div className="sg-table-skeleton">正在读取账号…</div>}{page?.total===0 && <p className="p-8 text-center text-sm text-muted-foreground">没有匹配账号</p>}</div>
       <footer className="sg-task-footer"><span>{page ? `${page.total ? offset+1 : 0}–${Math.min(offset+25,page.total)} / ${page.total}` : "—"}</span><div className="flex gap-2"><button className="btn-ghost" disabled={!page || offset===0 || !!busy || navigating || loading} onClick={()=>navigateAccounts(status,Math.max(0,offset-25))}>上一页</button><button className="btn-ghost" disabled={!page || offset+25>=page.total || !!busy || navigating || loading} onClick={()=>navigateAccounts(status,offset+25)}>下一页</button></div></footer>
     </section>
     <Drawer open={!!sourceDetail} title={sourceDetail?.identity || "账号来源"} subtitle="原始资料、版本与处理状态" onClose={()=>setSourceDetail(null)} width={600}>
       {sourceDetail && <><dl className="space-y-3 text-sm"><div><dt className="text-xs text-muted-foreground">当前来源</dt><dd className="mt-1 break-all font-mono text-xs">{sourceDetail.ref}</dd></div><div className="flex flex-wrap gap-x-6 gap-y-2"><div><dt className="text-xs text-muted-foreground">凭据状态</dt><dd className="mt-1"><Badge tone={checkTone(sourceDetail.status)}>{labels[sourceDetail.status] || sourceDetail.status}</Badge></dd></div><div><dt className="text-xs text-muted-foreground">业务状态</dt><dd className="mt-1">{LIBRARY_LABELS[sourceDetail.library_status || "pending"]}</dd></div></div></dl>
-        {sourceDetail.claimed || sourceDetail.library_status==="used" ? <p className="mt-4 text-sm text-muted-foreground">已使用来源由主系统的原订单处理凭据修复。</p> : <div className="mt-4 flex flex-wrap gap-2"><button className="btn-ghost" disabled={!!busy} onClick={()=>check([sourceDetail.ref])}>核验此来源</button><button className="btn-ghost" disabled={!!busy} onClick={()=>refresh(sourceDetail)}>刷新此来源</button></div>}
+        {sourceDetail.claimed || sourceDetail.library_status==="used" ? <p className="mt-4 text-sm text-muted-foreground">已使用来源由主系统的原订单处理凭据修复。</p> : <div className="mt-4 flex flex-wrap gap-2"><button className="btn-ghost" disabled={!!busy} onClick={()=>check([sourceDetail.ref])}>{slug==="chatgpt" ? "检查可用性" : "核对报告"}</button><button className="btn-ghost" disabled={!!busy} onClick={()=>update([sourceDetail])}>更新凭据</button></div>}
         <AccountSources key={`${sourceDetail.platform}:${sourceDetail.identity.trim().toLowerCase() || sourceDetail.ref}`} account={sourceDetail} onSelect={setSourceDetail}/></>}
     </Drawer>
-    <p className="sg-description">AT 测试只读，RT 刷新使用原刷新凭据；修复凭证使用已保存的密码/2FA重新授权。已领取账号由主系统原任务负责。</p>
+    <CredentialUpdateDialog request={updateRequest} onClose={()=>setUpdateRequest(null)} onAccepted={()=>setReload(value=>value+1)}/>
+    <p className="sg-description">检查可用性只测试 AT。更新凭据明确选择 RT 刷新或登录重新授权；已领取账号由主系统原任务负责。</p>
   </div>;
 }

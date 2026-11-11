@@ -1389,7 +1389,7 @@ func (s *Server) queueAccountRefresh(req accountOpRequest, actor string) (store.
 	title := "RT 刷新 · "
 	if req.AllowRelogin {
 		argv = append(argv, "--allow-relogin")
-		title = "凭据修复 · "
+		title = "登录重新授权 · "
 	}
 	raw, _ := json.Marshal(argv)
 	task := store.Task{ID: "op-" + strconv.FormatInt(time.Now().UnixNano(), 36), Script: "asset_ops", Title: title + req.Ref, ArgsJSON: string(raw), Actor: actor}
