@@ -3,9 +3,8 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { api, AccountRow } from "@/lib/api";
-import { Badge, Empty, ErrorNote, StatusBadge } from "@/components/ui";
+import { Badge, Empty, EntryArrow, ErrorNote, StatusBadge } from "@/components/ui";
 import { Drawer } from "@/components/drawer";
-import { ConfigEditor } from "@/components/config-editor";
 import { CodeLookup, ImportMailboxes, MailActionConfirm, MailboxEditor, PendingMailSync, PruneMail, SourceEditor, SourceSelect, SYNC_STORAGE_KEY, SyncMail } from "@/components/icmail-forms";
 import { MAIL_STATES, MAIL_TAGS, Mailbox, MailConfig, MailMessage, MailRun, MailSource, mailRequest, mailTime, mailTone, useMailData } from "@/lib/icmail";
 
@@ -190,5 +189,5 @@ function RunsPage({ sources, refresh, onSync }: { sources: MailSource[]; refresh
 
 function MailSettings({ refresh }: { refresh: number }) {
   const { data, error } = useMailData<MailConfig>("/config", refresh, 0);
-  return <><ErrorNote message={error} /><section className="sg-task-surface"><header className="sg-task-toolbar"><h2 className="text-sm font-semibold">当前生效配置</h2><Link className="btn-ghost sg-mail-actions" href="/apps/icmail/sources/">收件来源</Link></header><dl className="sg-mail-settings"><div><dt>邮件保留</dt><dd>{data ? `${data.retentionDays} 天` : "—"}</dd></div><div><dt>公开取码验证</dt><dd><Badge tone={data?.turnstile.siteKey && data.turnstile.secretSet ? "ok" : "warn"}>{data?.turnstile.siteKey && data.turnstile.secretSet ? "已配置" : "未配置"}</Badge></dd></div><div><dt>首次同步范围</dt><dd>{data ? `最近 ${data.bootstrapLimit} 封` : "—"}</dd></div></dl><p className="sg-description px-5 pb-5">下方沿用系统设置中的邮箱配置。进程配置保存后需重启生效；收件来源的编辑、启用和停用会直接应用。</p></section><ConfigEditor scope="system" area="mail" /></>;
+  return <><ErrorNote message={error} /><section className="sg-task-surface"><header className="sg-task-toolbar"><h2 className="text-sm font-semibold">当前生效配置</h2><Link className="btn-ghost sg-mail-actions" href="/apps/icmail/sources/">收件来源</Link></header><dl className="sg-mail-settings"><div><dt>邮件保留</dt><dd>{data ? `${data.retentionDays} 天` : "—"}</dd></div><div><dt>公开取码验证</dt><dd><Badge tone={data?.turnstile.siteKey && data.turnstile.secretSet ? "ok" : "warn"}>{data?.turnstile.siteKey && data.turnstile.secretSet ? "已配置" : "未配置"}</Badge></dd></div><div><dt>首次同步范围</dt><dd>{data ? `最近 ${data.bootstrapLimit} 封` : "—"}</dd></div></dl><p className="sg-description px-5 pb-5">邮箱连接在配置中心统一维护。进程配置保存后需重启生效；收件来源的编辑、启用和停用会直接应用。</p></section><Link className="btn-primary" href="/settings/?category=mail">配置邮箱模式与连接<EntryArrow /></Link></>;
 }

@@ -201,7 +201,7 @@ function ArgControl({ arg, value, onChange }: { arg: ScriptArg; value: unknown; 
   if (arg.type === "choice" && arg.choices?.length) {
     return (
       <Field label={label} hint={arg.help}>
-        <select className="field" value={String(value ?? "")} onChange={(e) => onChange(e.target.value)}>
+        <select className="field" aria-label={label} value={String(value ?? "")} onChange={(e) => onChange(e.target.value)}>
           {arg.choices.map((choice) => (
             <option key={choice} value={choice}>
               {arg.labels?.[choice] || choice || "(空)"}
@@ -217,6 +217,7 @@ function ArgControl({ arg, value, onChange }: { arg: ScriptArg; value: unknown; 
       <Field label={label} hint={arg.help || "多个值用英文逗号分隔"}>
         <input
           className="field"
+          aria-label={label}
           value={text}
           onChange={(e) => onChange(e.target.value.split(",").map((v) => v.trim()).filter(Boolean))}
         />
@@ -228,6 +229,7 @@ function ArgControl({ arg, value, onChange }: { arg: ScriptArg; value: unknown; 
       <Field label={label} hint={arg.help}>
         <input
           className="field"
+          aria-label={label}
           type="number"
           value={String(value ?? "")}
           onChange={(e) => onChange(e.target.value === "" ? "" : Number(e.target.value))}
@@ -237,7 +239,7 @@ function ArgControl({ arg, value, onChange }: { arg: ScriptArg; value: unknown; 
   }
   return (
     <Field label={label} hint={arg.help}>
-      <input className="field" type={/password|token|secret|api-key/i.test(arg.flag) ? "password" : "text"} autoComplete="off" value={String(value ?? "")} onChange={(e) => onChange(e.target.value)} />
+      <input className="field" aria-label={label} type={/password|token|secret|api-key/i.test(arg.flag) ? "password" : "text"} autoComplete="off" value={String(value ?? "")} onChange={(e) => onChange(e.target.value)} />
     </Field>
   );
 }

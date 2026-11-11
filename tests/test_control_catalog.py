@@ -2,7 +2,7 @@ import json
 import unittest
 from pathlib import Path
 
-from schema.scripts import ENV_SCHEMA, EXTERNAL_LINKS, PLATFORMS, SCRIPTS, TASK_GROUPS
+from schema.scripts import CONFIG_MODES, ENV_SCHEMA, EXTERNAL_LINKS, PLATFORMS, SCRIPTS, TASK_GROUPS
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -31,7 +31,8 @@ class ControlCatalogTests(unittest.TestCase):
         self.assertEqual(sum(len(group["items"]) for group in ENV_SCHEMA), len(fields))
         self.assertEqual(len(fields), 186)
         catalog = json.loads((ROOT / "server/web/lib/generated-catalog.json").read_text(encoding="utf-8"))
-        self.assertEqual(catalog, {"groups": TASK_GROUPS, "platforms": PLATFORMS, "tools": EXTERNAL_LINKS})
+        self.assertEqual(catalog, {"groups": TASK_GROUPS, "platforms": PLATFORMS, "tools": EXTERNAL_LINKS,
+                                   "config_modes": CONFIG_MODES})
         for key, area, section in [
             ("OUTLOOK_GRAPH_RECOVERY_TIMEOUT", "mail", "Outlook 与辅助邮箱"),
             ("CHATGPT_EMAIL_PROVIDER", "mail", "来源选择"),
@@ -54,6 +55,16 @@ class ControlCatalogTests(unittest.TestCase):
         self.assertEqual(concurrency["apply"], "restart")
         self.assertEqual(fields["REG_FACTORY_LIVENESS_ENABLED"][1]["default"], "0")
         self.assertEqual(fields["REG_FACTORY_LIVENESS_ENABLED"][1]["apply"], "live")
+
+    def test_modes_use_existing_runtime_selectors_without_dropping_providers(self):
+        fields = {item["key"]: item for group in ENV_SCHEMA for item in group["items"]}
+        for area, spec in CONFIG_MODES.items():
+            for key in spec["selectors"]:
+                self.assertIn(key, fields)
+                self.assertTrue(set(fields[key]["choices"]) <= set(spec["choices"]), key)
+            declared = set(spec["common"]) | {group for choice in spec["choices"].values() for group in choice["groups"]}
+            self.assertTrue({group["group"] for group in ENV_SCHEMA if group["area"] == area} <= declared, area)
+        self.assertEqual(fields["REG_FACTORY_LIVENESS_ENABLED"]["default"], "0")
 
 
 if __name__ == "__main__":

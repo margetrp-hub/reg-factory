@@ -1,10 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { api, type ConfigEntry } from "@/lib/api";
 import { isNodeConfig, NODE_CONFIG_FIELDS } from "@/lib/node-config";
-import { CONFIG_CATEGORIES, configCategory, configSectionLabel } from "@/lib/config-categories";
+import { CONFIG_CATEGORIES, CONFIG_MODES, configCategory, configSectionLabel, modeGroups } from "@/lib/config-categories";
 import { Card, Empty, ErrorNote } from "@/components/ui";
 import { Drawer } from "@/components/drawer";
 
@@ -33,12 +33,21 @@ export function ConfigEditor({ scope, area }: { scope: "system" | "node"; area?:
   const [probe, setProbe] = useState<string>("");
   const [probeOpen, setProbeOpen] = useState(false);
   const [probing, setProbing] = useState(false);
+  const [allModes, setAllModes] = useState(false);
+  const [viewModes, setViewModes] = useState<Record<string, string>>({});
+  const reading = useRef<AbortController | null>(null);
+  const alive = useRef(true);
 
   const load = useCallback(async () => {
+    if (!alive.current) return;
+    reading.current?.abort();
+    const controller = new AbortController();
+    reading.current = controller;
     setLoading(true);
     setError("");
     try {
-      const data = await api.config();
+      const data = await api.config(controller.signal);
+      if (controller.signal.aborted || !alive.current) return;
       setGroups(data.groups);
       setPath(data.path);
       setLoaded(true);
@@ -52,18 +61,22 @@ export function ConfigEditor({ scope, area }: { scope: "system" | "node"; area?:
         Object.entries(previous).filter(([key, value]) => values.get(key) !== value),
       ));
     } catch (err) {
-      setError(`配置读取失败：${(err as Error).message}。可重试读取，未保存的修改会保留。`);
+      if (!controller.signal.aborted && alive.current) setError(`配置读取失败：${(err as Error).message}。可重试读取，未保存的修改会保留。`);
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted && alive.current) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
+    alive.current = true;
     const params = new URLSearchParams(window.location.search);
     setQuery(params.get("q") || "");
     setActiveCategory(params.get("category") || "");
     setActiveGroup(params.get("section") || "");
+    setAllModes(params.get("all_modes") === "1" || !!params.get("section"));
+    if (params.get("category") && params.get("config_mode")) setViewModes({[params.get("category")!]: params.get("config_mode")!});
     load();
+    return () => { alive.current = false; reading.current?.abort(); };
   }, [load]);
 
   useEffect(() => {
@@ -120,19 +133,35 @@ export function ConfigEditor({ scope, area }: { scope: "system" | "node"; area?:
   });
   const activeId = sections.some(section => section.id === activeGroup) ? activeGroup : sections[0]?.id;
   const search = query.trim().toLowerCase();
+  const modeSpec = CONFIG_MODES[categoryId || ""];
+  const viewMode = modeSpec && Object.hasOwn(modeSpec.choices, viewModes[categoryId || ""]) ? viewModes[categoryId || ""] : Object.keys(modeSpec?.choices || {})[0];
+  const selectedGroups = modeGroups(categoryId || "", rows.map(row => row.entry), dirty, viewMode);
+  const conditionalGroups = new Set(Object.values(modeSpec?.choices || {}).flatMap(item => item.groups));
   const entries = rows.filter(row => search
     ? `${row.entry.key} ${row.entry.label || ""} ${row.entry.help || ""} ${row.group} ${CONFIG_CATEGORIES.find(item => item.id === row.category)?.label || ""}`.toLowerCase().includes(search)
-    : (isNode || row.category === categoryId) && row.group === activeId);
+    : (isNode || row.category === categoryId) && (selectedGroups
+      ? allModes || selectedGroups.has(row.group) || !conditionalGroups.has(row.group)
+      : row.group === activeId)).sort((a, b) => {
+        const order = (key: string) => modeSpec?.selectors.includes(key) ? 0 : 1;
+        return order(a.entry.key) - order(b.entry.key);
+      });
   const changedCategories = categories.filter(category => rows.some(row => row.category === category.id && row.entry.key in dirty));
 
   useEffect(() => {
     if (!loaded || isNode) return;
     const url = new URL(window.location.href);
     if (categoryId) url.searchParams.set("category", categoryId);
-    if (activeId) url.searchParams.set("section", activeId);
+    if (modeSpec) {
+      url.searchParams.delete("section");
+      if (allModes) url.searchParams.set("all_modes", "1"); else url.searchParams.delete("all_modes");
+    } else {
+      if (activeId) url.searchParams.set("section", activeId);
+      url.searchParams.delete("all_modes");
+    }
     if (query) url.searchParams.set("q", query); else url.searchParams.delete("q");
+    if (modeSpec && !modeSpec.selectors.length) url.searchParams.set("config_mode", viewMode); else url.searchParams.delete("config_mode");
     window.history.replaceState(window.history.state, "", url);
-  }, [loaded, isNode, categoryId, activeId, query]);
+  }, [loaded, isNode, categoryId, activeId, query, modeSpec, allModes, viewMode]);
 
   const save = async () => {
     if (Object.keys(dirty).length === 0) return;
@@ -212,10 +241,11 @@ export function ConfigEditor({ scope, area }: { scope: "system" | "node"; area?:
     <div className="space-y-4">
       <div className="grid gap-4">
         <Card
-          title={isNode ? "节点配置" : area ? category?.label || "配置" : "系统配置"}
+          title={isNode ? "节点配置" : "配置中心"}
           className="sg-config-workspace min-w-0 [&>.card-head]:flex-wrap [&>.card-head>div]:flex-wrap"
           actions={
             <>
+              {!isNode && <Link className="btn-ghost" href={categoryId === "mail" ? "/apps/icmail/" : "/production/"}>{categoryId === "mail" ? "返回邮箱池" : "返回生产中心"}</Link>}
               <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
                 <input type="checkbox" checked={reveal} onChange={(e) => setReveal(e.target.checked)} /> 显示密钥
               </label>
@@ -238,19 +268,21 @@ export function ConfigEditor({ scope, area }: { scope: "system" | "node"; area?:
           <ErrorNote message={error} />
           {notice && <div className="mb-2 rounded border border-success/30 bg-success/10 px-2 py-1 text-[11px] text-success">{notice}</div>}
           {!loaded ? <Empty>{loading ? "正在读取配置文件…" : "配置尚未读取，请重试读取。"}</Empty> : <div>
-            <div className={`sg-config-selectors ${isNode || area ? "sg-config-selectors-scoped" : ""}`}>
-              {!isNode && !area && <label><span className="label">配置类别</span><select className="field" aria-label="配置类别" value={categoryId || ""} onChange={event => { setActiveCategory(event.target.value); setActiveGroup(""); setQuery(""); }}>
-                {categories.map(item => <option key={item.id} value={item.id}>{item.label}{changedCategories.includes(item) ? " · 未保存" : ""}</option>)}
-              </select></label>}
-              {!isNode && <label><span className="label">配置对象</span><select className="field" aria-label="配置对象" value={activeId || ""} onChange={event => { setActiveGroup(event.target.value); setQuery(""); }}>
+            {!isNode && !area && <nav className="mb-5 grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-5" aria-label="配置能力">
+              {categories.map(item => <button key={item.id} className={`rounded-xl border px-3 py-3 text-left text-sm transition-colors ${categoryId === item.id ? "border-primary/40 bg-accent font-medium text-foreground" : "border-border text-muted-foreground hover:bg-accent/50"}`} aria-pressed={categoryId === item.id} onClick={() => { setActiveCategory(item.id); setActiveGroup(""); setQuery(""); setAllModes(false); }}>{item.label}{changedCategories.includes(item) && <span className="ml-2 text-warning" aria-label="未保存">●</span>}</button>)}
+            </nav>}
+            <div className="sg-config-selectors sg-config-selectors-scoped">
+              {modeSpec && !modeSpec.selectors.length && <label><span className="label">配置方式</span><select className="field" aria-label="配置方式" value={viewMode} onChange={event => { setViewModes(previous => ({...previous,[categoryId!]:event.target.value})); setAllModes(false); setQuery(""); }}>{Object.entries(modeSpec.choices).map(([value, item]) => <option key={value} value={value}>{item.label}</option>)}</select></label>}
+              {!isNode && !modeSpec && <label><span className="label">配置对象</span><select className="field" aria-label="配置对象" value={activeId || ""} onChange={event => { setActiveGroup(event.target.value); setQuery(""); }}>
                 {sections.map(item => <option key={item.id} value={item.id}>{item.label}{item.entries.some(entry => entry.key in dirty) ? " · 未保存" : ""}</option>)}
               </select></label>}
               <label><span className="label">{isNode ? "搜索节点配置" : area ? "搜索本类配置" : "搜索全部配置"}</span><input className="field" aria-label="搜索配置" placeholder="名称、用途或配置键" value={query} onChange={event => setQuery(event.target.value)} /></label>
             </div>
             <div className="sg-config-context">
               <p>{search ? `找到 ${entries.length} 项${isNode ? "节点配置" : area ? "本类配置" : "配置，含所有类别"}` : category?.description || "节点在启动时读取身份和密钥。"}</p>
-              {search ? <button className="btn-ghost" onClick={() => setQuery("")}>返回当前配置</button> : !isNode && <span>切换类别和对象仅改变查看范围</span>}
+              {search ? <button className="btn-ghost" onClick={() => setQuery("")}>返回当前配置</button> : modeSpec ? <button className="btn-ghost" aria-pressed={allModes} onClick={() => setAllModes(value => !value)}>{allModes ? "只看所选模式" : "查看全部模式配置"}</button> : !isNode && <span>切换查看不改变启用方式</span>}
             </div>
+            {modeSpec && !search && <p className="mb-3 text-xs text-muted-foreground">{!modeSpec.selectors.length ? "切换只选择要配置的方式，各项参数独立保留；实际调用沿用任务所选模式和原工具规则。" : <>模式与来源修改后需保存；各模式的参数独立保留。{categoryId === "proxy" ? "平台覆盖与生产出口保持各自作用范围。" : categoryId === "mail" ? "多个用途使用同一来源时，共用该来源配置。" : "切换方式不会清空其他浏览器配置。"}</>}</p>}
             {Object.keys(dirty).length > 0 && <p role="status" className="sg-config-draft">{Object.keys(dirty).length} 项修改尚未保存{changedCategories.length ? ` · ${changedCategories.map(item => item.label).join("、")}` : ""}。切换查看会保留修改，保存将一次提交全部修改。</p>}
             <div key={`${categoryId}:${activeId}:${Boolean(search)}`} className="sg-config-fields sg-enter">
               <table className="tbl sg-config-table">
@@ -274,7 +306,7 @@ export function ConfigEditor({ scope, area }: { scope: "system" | "node"; area?:
                     return (
                       <tr key={entry.key}>
                         <td className="max-w-[240px] text-[11px] text-muted-foreground">
-                          {search && !isNode && <p className="sg-config-breadcrumb">{CONFIG_CATEGORIES.find(item => item.id === entryCategory)?.label} / {configSectionLabel(group)}</p>}
+                          {(search || modeSpec) && !isNode && <p className="sg-config-breadcrumb">{search ? CONFIG_CATEGORIES.find(item => item.id === entryCategory)?.label + " / " : ""}{configSectionLabel(group)}</p>}
                           <div className="mb-1 text-[13px] text-foreground">{entry.label || (isNode ? NODE_CONFIG_FIELDS.find((field) => field.key === entry.key)?.label : "") || entry.key}</div>
                           <div className="truncate font-mono" title={entry.key}>{entry.key}</div>
                           {entry.help && <p className="mt-2 max-w-lg text-[12px] leading-relaxed">{entry.help}</p>}
@@ -285,7 +317,7 @@ export function ConfigEditor({ scope, area }: { scope: "system" | "node"; area?:
                           {choices?.length && !entry.secret ? <select className={`field ${changed ? "border-warning/50" : ""}`} aria-label={entry.label || entry.key} disabled={busy || loading || rawOpen || entry.readonly} value={value} onChange={event=>update(event.target.value)}>
                             <option value="">{placeholder}</option>
                             {value && !choices.includes(value) && <option value={value}>{value}（已保存）</option>}
-                            {choices.map(choice=><option key={choice} value={choice}>{entry.type==="bool" ? choice==="true" ? "开启" : "关闭" : choice}</option>)}
+                            {choices.map(choice=><option key={choice} value={choice}>{entry.type==="bool" ? choice==="true" ? "开启" : "关闭" : CONFIG_MODES[entryCategory]?.selectors.includes(entry.key) ? CONFIG_MODES[entryCategory].choices[choice]?.label || choice : choice}</option>)}
                           </select> : <input
                             className={`field py-1 text-[12px] ${changed ? "border-warning/50" : ""}`}
                             type={entry.secret && !reveal ? "password" : "text"}

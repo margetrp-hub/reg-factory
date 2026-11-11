@@ -55,7 +55,8 @@ def main() -> int:
     out_path.write_text(json.dumps(exported, ensure_ascii=False, indent=2), encoding="utf-8")
     out_path.with_name("config.schema.json").write_text(json.dumps(schema.ENV_SCHEMA, ensure_ascii=False, indent=2), encoding="utf-8")
     # Public navigation metadata contains no runtime values or credentials.
-    catalog = {"groups": schema.TASK_GROUPS, "platforms": schema.PLATFORMS, "tools": schema.EXTERNAL_LINKS}
+    catalog = {"groups": schema.TASK_GROUPS, "platforms": schema.PLATFORMS, "tools": schema.EXTERNAL_LINKS,
+               "config_modes": schema.CONFIG_MODES}
     if len(sys.argv) <= 1:
         (ROOT / "server" / "web" / "lib" / "generated-catalog.json").write_text(json.dumps(catalog, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"导出 {len(exported)} 个任务 -> {out_path}")

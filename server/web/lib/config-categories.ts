@@ -1,7 +1,29 @@
+import catalog from "./generated-catalog.json";
+import type { ConfigEntry } from "./api";
+
+type ConfigMode = { selectors: string[]; common: string[]; choices: Record<string, {label: string; groups: string[]}> };
+export const CONFIG_MODES: Record<string, ConfigMode> = catalog.config_modes;
+
+/** Selectors and their provider settings have one schema owner and one draft. */
+export function modeGroups(category: string, entries: ConfigEntry[], dirty: Record<string, string>, viewMode?: string) {
+  const spec = CONFIG_MODES[category];
+  if (!spec) return null;
+  const selected = new Set(spec.common);
+  if (!spec.selectors.length) spec.choices[viewMode || Object.keys(spec.choices)[0]]?.groups.forEach(group => selected.add(group));
+  for (const key of spec.selectors) {
+    const entry = entries.find(item => item.key === key);
+    const value = dirty[key] ?? entry?.value;
+    for (const mode of String(value || entry?.default || "").split(",")) {
+      spec.choices[mode.trim()]?.groups.forEach(group => selected.add(group));
+    }
+  }
+  return selected;
+}
+
 export const CONFIG_CATEGORIES = [
   { id: "runtime", label: "运行与资源", description: "执行并发、资源保护和接口访问。" },
   { id: "proxy", label: "网络与代理", description: "统一管理注册、生产和凭据修复的出口，以及各平台的覆盖规则。" },
-  { id: "browser", label: "浏览器", description: "选择要配置的浏览器；实际启用类型在通用设置中保存。" },
+  { id: "browser", label: "浏览器", description: "选择执行方式，在同一处填写对应连接与公共参数。" },
   { id: "mail", label: "邮箱与取码", description: "邮箱来源、供应商连接和收码等待统一放在这里。" },
   { id: "sms", label: "短信接码", description: "接码供应商、项目与国家，以及公共重试设置。" },
   { id: "captcha", label: "图形验证", description: "验证码平台、视觉识别和模型投票。" },

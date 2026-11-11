@@ -10,12 +10,12 @@ type NavSection = "workspace" | "production" | "runtime" | "assets" | "supply" |
 
 const NAV: { href: string; label: string; section: NavSection }[] = [
   { href: "/", label: "工作台", section: "workspace" },
-  { href: "/production/", label: "生产", section: "production" },
-  { href: "/tasks/", label: "运行", section: "runtime" },
+  { href: "/production/", label: "生产中心", section: "production" },
+  { href: "/tasks/", label: "运行与日志", section: "runtime" },
   { href: "/accounts/", label: "资产", section: "assets" },
   { href: "/materials/", label: "供给", section: "supply" },
   { href: "/nodes/", label: "节点", section: "nodes" },
-  { href: "/settings/", label: "系统", section: "system" },
+  { href: "/settings/", label: "配置中心", section: "system" },
 ];
 
 const CONTEXT_LINKS: Record<NavSection, { href: string; label: string }[]> = {

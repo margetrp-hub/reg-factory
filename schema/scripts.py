@@ -1232,6 +1232,71 @@ for _group in ENV_SCHEMA:
         _target["items"].append(_item)
 ENV_SCHEMA = list(_config_groups.values())
 
+# Business-mode relationships, exported with the navigation catalogue. These
+# describe existing runtime selectors; switching a view never invents a new
+# enable flag, renames a stored key or removes an inactive provider's settings.
+CONFIG_MODES = {
+    "sms": {
+        "selectors": [],  # The provider is chosen per task, not by a global flag.
+        "common": ["短信 · 通用与重试"],
+        "choices": {
+            "firefox": {"label": "firefox.fun", "groups": ["短信 · firefox.fun"]},
+            "hero": {"label": "Hero SMS", "groups": ["短信 · Hero SMS"]},
+            "smsman": {"label": "SMS-Man", "groups": ["短信 · SMS-Man"]},
+            "custom": {"label": "自定义接码", "groups": []},
+        },
+    },
+    "captcha": {
+        "selectors": [],  # These tools can coexist; viewing one never disables another.
+        "common": [],
+        "choices": {
+            "vision": {"label": "视觉模型与投票", "groups": ["验证 · 视觉模型与投票"]},
+            "claude": {"label": "Claude 识别与验证", "groups": ["验证 · Claude 识别与验证"]},
+            "capsolver": {"label": "CapSolver", "groups": ["验证 · CapSolver"]},
+            "ezcaptcha": {"label": "EZCaptcha", "groups": ["验证 · EZCaptcha"]},
+            "yescaptcha": {"label": "YesCaptcha", "groups": ["验证 · YesCaptcha"]},
+        },
+    },
+    "browser": {
+        "selectors": ["FINGERPRINT_BROWSER"],
+        "common": ["浏览器 · 通用设置"],
+        "choices": {
+            "bitbrowser": {"label": "BitBrowser", "groups": ["浏览器 · BitBrowser 与内核"]},
+            "cloak": {"label": "CloakBrowser", "groups": ["浏览器 · CloakBrowser"]},
+            "roxy": {"label": "RoxyBrowser", "groups": ["浏览器 · RoxyBrowser"]},
+            "bundled": {"label": "内置 Chromium", "groups": []},
+            "custom": {"label": "本机 Chrome", "groups": ["浏览器 · 本机 Chrome"]},
+            "adspower": {"label": "AdsPower", "groups": ["浏览器 · AdsPower"]},
+            "custom_api": {"label": "自定义 API", "groups": ["浏览器 · 自定义 API"]},
+        },
+    },
+    "proxy": {
+        "selectors": ["PROXY_MODE", *[item["slug"].upper() + "_PROXY_MODE" for item in PLATFORMS]],
+        "common": ["网络 · 模式与平台覆盖", "网络 · 生产与凭据修复"],
+        "choices": {
+            "inherit": {"label": "继承全局", "groups": []},
+            "clash_auto": {"label": "Clash 自动轮换", "groups": ["网络 · Clash"]},
+            "clash_fixed": {"label": "Clash 固定节点", "groups": ["网络 · Clash"]},
+            "residential": {"label": "住宅代理池", "groups": ["网络 · 住宅代理"]},
+        },
+    },
+    "mail": {
+        "selectors": ["CHATGPT_EMAIL_PROVIDER", "TEMP_EMAIL_PROVIDER", "OUTLOOK_GRAPH_RECOVERY_PROVIDER"],
+        "common": ["邮箱 · 来源选择", "邮箱 · 收码与等待", "邮箱 · Outlook 与辅助邮箱", "邮箱 · IC 邮箱池"],
+        "choices": {
+            "pool": {"label": "统一邮箱池", "groups": []},
+            "outlook": {"label": "Outlook 邮箱池", "groups": []},
+            "icloud": {"label": "iCloud", "groups": ["邮箱 · iCloud"]},
+            "yyds": {"label": "YYDS", "groups": ["邮箱 · YYDS"]},
+            "gptmail": {"label": "GPTMail", "groups": ["邮箱 · GPTMail"]},
+            "moemail": {"label": "MoeMail", "groups": ["邮箱 · MoeMail"]},
+            "cfmail": {"label": "CFMail", "groups": ["邮箱 · CFMail"]},
+            "remail": {"label": "Remail", "groups": ["邮箱 · Remail"]},
+            "custom": {"label": "自定义邮箱", "groups": ["邮箱 · 自定义邮箱"]},
+        },
+    },
+}
+
 
 # 所有 schema 里出现的 .env key（用于读 .env 时补齐未在模板里的项不丢）
 def env_keys():

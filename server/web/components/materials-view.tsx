@@ -1,10 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import Link from "next/link";
-import { api, type ConfigEntry } from "@/lib/api";
-import { Badge, Card, ErrorNote } from "@/components/ui";
-import { ConfigEditor } from "@/components/config-editor";
+import { useRouter } from "next/navigation";
+import { EntryArrow } from "@/components/ui";
 
 const KINDS = {
   mail: { title: "邮箱池管理", desc: "IC 地址池、收件来源、取码与同步记录；保留 Outlook 和通用邮箱。" },
@@ -16,26 +15,14 @@ type Kind = keyof typeof KINDS;
 export const MATERIAL_KINDS: Kind[] = ["mail", "proxy", "sms", "captcha"];
 
 export function MaterialsView({ kind }: { kind?: Kind }) {
-  const [config, setConfig] = useState<ConfigEntry[]>([]);
-  const [error, setError] = useState("");
-  const [reload, setReload] = useState(0);
+  const router = useRouter();
+  const target = (key: Kind) => key === "mail" ? "/apps/icmail/" : `/settings/?category=${key}`;
   useEffect(() => {
-    if (kind) return;
-    const controller = new AbortController();
-    api.config(controller.signal).then(data => {
-      if (!controller.signal.aborted) { setConfig(Object.values(data.groups).flat()); setError(""); }
-    }).catch(err => { if (!controller.signal.aborted) setError(err.message); });
-    return () => controller.abort();
-  }, [kind, reload]);
+    if (kind) router.replace(target(kind));
+  }, [kind, router]);
 
   return <div className="sg-workspace">
-    <header className="sg-page-head"><div><p className="sg-eyebrow">执行资源</p><h1>{kind ? KINDS[kind].title : "物料中心"}</h1><p className="sg-description">{kind ? KINDS[kind].desc : "按用途管理供给和连接设置，保留每种来源与执行模式。"}</p></div><div className="flex gap-2">{!kind && <button className="btn-ghost" onClick={() => setReload(value => value + 1)}>刷新</button>}{kind && <Link className="btn-ghost" href="/materials/">返回物料中心</Link>}</div></header>
-    <ErrorNote message={error ? "部分数据读取失败，保留上次内容：" + error : ""} />
-    {!kind ? <div className="grid gap-3 sm:grid-cols-2">{MATERIAL_KINDS.map(key => {
-      const entries = config.filter(entry => entry.area === key);
-      const configured = entries.filter(entry => entry.value.trim()).length;
-      return <Link key={key} href={key === "mail" ? "/apps/icmail/" : "/materials/" + key + "/"} className="sg-mode-card"><div className="flex items-center justify-between gap-3"><h2>{KINDS[key].title}</h2><Badge tone="neutral">{configured} 项已设置</Badge></div><p>{KINDS[key].desc}</p><span className="sg-description">{key === "mail" ? "管理地址、来源与收信 →" : entries.length + " 项配置 · 管理与检测 →"}</span></Link>;
-    })}</div> : <ConfigEditor key={kind} scope="system" area={kind} />}
-    {!kind && <Card title="配置与运行数据"><p className="sg-description">物料页与系统设置使用同一份配置。邮箱源、邮件索引和账号池保留各自记录；配置保存不会改写已有账号或正在运行的任务。</p></Card>}
+    <header className="sg-page-head"><div><p className="sg-eyebrow">执行资源</p><h1>供给与连接</h1><p className="sg-description">邮箱统一入池；连接、模式与公共参数在配置中心维护。</p></div><Link className="btn-ghost" href="/production/">返回生产中心</Link></header>
+    {kind ? <Link className="btn-primary" href={target(kind)}>进入{KINDS[kind].title}</Link> : <div className="grid gap-3 sm:grid-cols-2">{MATERIAL_KINDS.map(key => <Link key={key} href={target(key)} className="sg-mode-card"><span className="sg-mode-title">{KINDS[key].title}<EntryArrow /></span><p>{KINDS[key].desc}</p><span className="sg-description">{key === "mail" ? "地址、来源与收信" : "在配置中心管理"}</span></Link>)}</div>}
   </div>;
 }

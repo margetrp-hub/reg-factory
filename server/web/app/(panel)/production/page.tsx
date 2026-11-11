@@ -2,63 +2,60 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { api, type AccountSummary, type TaskPage } from "@/lib/api";
-import { EntryArrow, ErrorNote, StatusBadge } from "@/components/ui";
-import { PLATFORM_TASKS, scriptsForPlatform, TASK_GROUPS } from "@/lib/task-catalog";
+import { api, type AccountSummary, type Script, type TaskPage } from "@/lib/api";
+import { EntryArrow, ErrorNote } from "@/components/ui";
+import { TaskTable } from "@/components/task-table";
+import { PLATFORM_TASKS, TASK_GROUPS, groupOf } from "@/lib/task-catalog";
 
 export default function ProductionIndexPage() {
   const [accounts, setAccounts] = useState<AccountSummary[] | null>(null);
-  const [tasks, setTasks] = useState<Record<string,TaskPage>>({});
+  const [scripts, setScripts] = useState<Script[]>([]);
+  const [page, setPage] = useState<TaskPage | null>(null);
   const [error, setError] = useState("");
+  const [schemaError, setSchemaError] = useState("");
   const [reload, setReload] = useState(0);
   useEffect(() => {
-    let active = true;
+    const controller = new AbortController();
+    api.scripts(controller.signal).then(data => {
+      if (!controller.signal.aborted) { setScripts(data.scripts); setSchemaError(""); }
+    }).catch(err => { if (!controller.signal.aborted) setSchemaError(`模式目录读取失败：${err.message}`); });
+    return () => controller.abort();
+  }, [reload]);
+  useEffect(() => {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
     const load = async () => {
       try {
-        const catalog = await api.scripts(controller.signal);
-        const [summary, ...pages] = await Promise.all([
-          api.accountSummary("",controller.signal),
-          ...Object.keys(PLATFORM_TASKS).map(slug=>{
-            const ids=scriptsForPlatform(catalog.scripts,slug).map(script=>script.id);
-            return ids.length ? api.tasks(1,{scripts:ids},controller.signal) : Promise.resolve({tasks:[],stats:{},count:0,total:0,limit:1,offset:0} as TaskPage);
-          }),
-        ]);
-        if (!active) return;
-        setAccounts(summary.platforms);
-        setTasks(Object.fromEntries(Object.keys(PLATFORM_TASKS).map((slug,index)=>[slug,pages[index]])));
-        setError("");
-      } catch (err) { if (active) setError(`生产概览读取失败，已保留上次结果。${(err as Error).message}`); }
-      finally { if (active) timer = setTimeout(load,document.hidden ? 30000 : 15000); }
+        const [summary, tasks] = await Promise.all([api.accountSummary("", controller.signal), api.tasks(6, {}, controller.signal)]);
+        if (controller.signal.aborted) return;
+        setAccounts(summary.platforms); setPage(tasks); setError("");
+      } catch (err) { if (!controller.signal.aborted) setError(`读取失败，已保留上次结果。${(err as Error).message}`); }
+      finally { if (!controller.signal.aborted) timer = setTimeout(load, document.hidden ? 30000 : 15000); }
     };
     void load();
-    return () => { active=false; controller.abort(); clearTimeout(timer); };
-  },[reload]);
-  const total = accounts?.reduce((sum,item)=>sum+item.total,0);
-  const abnormal = accounts?.reduce((sum,item)=>sum+item.abnormal,0);
+    return () => { controller.abort(); clearTimeout(timer); };
+  }, [reload]);
+  const total = accounts?.reduce((sum, item) => sum + item.total, 0);
+  const available = accounts?.reduce((sum, item) => sum + item.available, 0);
   return <div className="sg-workspace">
-    <header className="sg-page-head"><div><p className="sg-eyebrow">生产工作台</p><h1>按平台执行</h1><p className="sg-description">进入对应平台，选择执行方式、核对任务结果与账号状态。</p></div><div className="flex gap-2"><button className="btn-ghost" onClick={()=>setReload(value=>value+1)}>刷新</button><Link className="btn-ghost" href="/tasks/">全部任务</Link></div></header>
-    <ErrorNote message={error} />
-    <div className="flex flex-wrap items-center gap-x-6 gap-y-2 border-b border-border px-1 pb-4 text-[13px] text-muted-foreground">
-      <span>已索引账号 <strong className="ml-2 font-medium tabular-nums text-foreground">{total ?? "—"}</strong></span>
-      <span>异常账号 <strong className="ml-2 font-medium tabular-nums text-destructive">{abnormal ?? "—"}</strong></span>
-      <Link className="ml-auto underline underline-offset-4" href="/settings/">执行配置</Link>
-      <Link className="underline underline-offset-4" href="/apps/icmail/">邮箱供给</Link>
+    <header className="sg-page-head"><div><p className="sg-eyebrow">生产工作台</p><h1>生产中心</h1><p className="sg-description">先选业务，再选执行模式。连接与供给共用配置。</p></div><div className="flex flex-wrap gap-2"><button className="btn-ghost" onClick={() => setReload(value => value + 1)}>刷新</button><Link className="btn-ghost" href="/settings/">配置中心</Link><Link className="btn-ghost" href="/tasks/">运行与日志</Link></div></header>
+    <ErrorNote message={error || schemaError} />
+    <div className="flex flex-wrap items-center gap-x-6 gap-y-2 border-b border-border px-1 pb-4 text-sm text-muted-foreground">
+      <span>账号 <strong className="ml-2 text-2xl font-medium tabular-nums text-foreground">{total ?? "—"}</strong></span>
+      <span>可用 <strong className="ml-2 text-2xl font-medium tabular-nums text-success">{available ?? "—"}</strong></span>
+      <span>运行中 <strong className="ml-2 text-2xl font-medium tabular-nums text-foreground">{page ? (page.stats.running || 0) + (page.stats.queued || 0) : "—"}</strong></span>
+      <Link className="ml-auto underline underline-offset-4" href="/apps/icmail/">统一邮箱池</Link>
     </div>
-    <div className="grid gap-4 sm:grid-cols-2">
-      {Object.entries(PLATFORM_TASKS).map(([slug,platform])=>{
-        const summary=accounts?.find(item=>item.platform===slug);
-        const page=tasks[slug], last=page?.tasks[0];
-        const running=page ? (page.stats.running || 0)+(page.stats.queued || 0) : null;
-        return <section key={slug} className="sg-task-surface">
-          <header className="sg-task-toolbar"><div className="min-w-0 flex-1"><h2 className="text-lg font-semibold tracking-tight">{platform.name}</h2><p className="sg-description mt-1">注册 · 授权 · 状态核验</p></div><Link aria-label={`进入 ${platform.name} 流程`} className="btn-ghost" href={`/platform/${slug}/`}>查看流程<EntryArrow /></Link></header>
-          <div className="flex flex-wrap items-baseline gap-4 px-5 pb-5"><span className="text-3xl font-semibold tracking-tight tabular-nums">{accounts ? summary?.available || 0 : "—"}</span><span className="sg-description">正常账号</span><span className="sg-description ml-auto">总数 {accounts ? summary?.total || 0 : "—"} · 异常 {accounts ? summary?.abnormal || 0 : "—"}</span></div>
-          <div className="flex flex-wrap items-center gap-3 border-y border-border bg-muted/30 px-5 py-3 text-[13px]"><span className="text-muted-foreground">最近执行</span>{last ? <><StatusBadge status={last.status}/><Link className="min-w-0 flex-1 truncate underline-offset-4 hover:underline" href={`/tasks/?task=${encodeURIComponent(last.id)}`}>{last.title}</Link></> : <span>{page ? "暂无执行" : "读取中…"}</span>}<span className="ml-auto tabular-nums text-muted-foreground">进行中 {running ?? "—"}</span></div>
-          <footer className="flex gap-2 p-4"><Link className="btn-primary" href={`/platform/${slug}/tasks/`}>发起任务</Link><Link className="btn-ghost" href={`/platform/${slug}/accounts/`}>账号记录</Link></footer>
-        </section>;
-      })}
+    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3" aria-label="业务流程">
+      {TASK_GROUPS.filter(group => group.slug !== "other" || scripts.some(script => groupOf(script).slug === "other")).map(group => <Link className="sg-mode-card" key={group.slug} href={`/tasks/group/${group.slug}/`}>
+        <span className="sg-mode-title">{group.title}<EntryArrow /></span><span className="sg-description">{group.desc}</span><span className="text-xs text-muted-foreground">{scripts.filter(script => groupOf(script).slug === group.slug).length || "—"} 种执行模式</span>
+      </Link>)}
+      <Link className="sg-mode-card" href="/accounts/"><span className="sg-mode-title">凭据维护<EntryArrow /></span><span className="sg-description">AT 测试、RT 刷新、登录授权与修复，从原账号发起。</span><span className="text-xs text-muted-foreground">密码＋2FA协议授权 · 浏览器与邮箱授权</span></Link>
     </div>
-    <section className="sg-task-surface"><header className="sg-task-toolbar"><h2 className="text-sm font-semibold">跨平台能力</h2><span className="sg-description">组合流程、授权、导出和支撑服务保留独立入口</span></header><div className="flex flex-wrap gap-2 px-5 pb-5">{TASK_GROUPS.map(group=><Link className="btn-ghost" key={group.slug} href={`/tasks/group/${group.slug}/`}>{group.title}<EntryArrow /></Link>)}</div></section>
+    <section className="sg-task-surface"><header className="sg-task-toolbar"><h2 className="text-sm font-semibold">平台账号</h2><span className="sg-description">按平台查看原账号、流程和处理记录</span></header><div className="grid gap-2 px-5 pb-5 sm:grid-cols-3 xl:grid-cols-6">{Object.entries(PLATFORM_TASKS).map(([slug, platform]) => {
+      const summary = accounts?.find(item => item.platform === slug);
+      return <Link key={slug} className="rounded-xl border border-border px-3 py-3 transition-colors hover:bg-accent" href={`/platform/${slug}/`}><span className="text-sm font-medium">{platform.name}</span><p className="mt-2 text-xs text-muted-foreground">可用 <span className="tabular-nums text-success">{accounts ? summary?.available || 0 : "—"}</span> / {accounts ? summary?.total || 0 : "—"}</p></Link>;
+    })}</div></section>
+    <section className="sg-task-surface"><header className="sg-task-toolbar"><h2 className="text-sm font-semibold">最近运行</h2><Link className="btn-ghost ml-auto" href="/tasks/">全部运行与日志</Link></header><div className="overflow-auto"><TaskTable tasks={page?.tasks || []} /></div></section>
   </div>;
 }
