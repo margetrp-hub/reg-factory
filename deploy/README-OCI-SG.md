@@ -1,7 +1,7 @@
 # OCI / SG 部署补充
 
 当前构建、运行、API 和升级入口统一见 [README-GO.md](README-GO.md)。
-本文件只保留 OCI / SG 的环境差异与历史测量，不再维护另一套面板部署步骤。
+本文件只保留 OCI / SG 的环境差异与资源约束，不再维护另一套面板部署步骤。
 当前仓库使用 `deploy/Dockerfile` 构建一个 `regd + Python worker` 镜像，
 Compose 只有 `panel` 服务，默认监听 `127.0.0.1:8800`，健康端点是 `/api/health`。
 这些是仓库配置事实，不代表某台主机已经完成切换；上线前仍需核对现场容器、镜像与反代。
@@ -45,16 +45,8 @@ SSE 日志路径 `/api/logs/stream` 与 `/api/tasks/<id>/stream` 需要关闭反
 并在容器可访问时检查 Chromium 和 Python 依赖。`sg-maintenance.sh` 的健康与内存查询也
 使用 `/api/health`、`/api/memory`。数据备份仍包含敏感配置与账号资产，应按现有权限保存。
 
-## 历史测量（2026-10-31，非当前生产验收）
+## 资源核对
 
-原始回执位置：`lab/ops/reg-factory-sg-20261031/`。以下仅用于理解当时的资源预算，
-不能据此认定当前主机、镜像、外部站点或浏览器仍有相同表现。
+浏览器容量按当前镜像和实际任务测量，使用 `/api/memory`、容器资源统计及任务日志记录峰值后确定并发。旧单页内存样本和清理数字不作为当前容量承诺，历史回执从Git及私有运维证据追溯。
 
-当时 SG 为 4 vCPU / 24GB ARM64，使用 Xvfb 有头 Chromium。单页测量中，
-Claude 流程浏览器峰值约 1.3–1.45GB，ChatGPT 约 0.99GB，Outlook 约 0.9GB；
-混合任务曾采用并发 3。切换无头没有明显降低内存，浏览器参数优化收益约 4–5%。
-`--single-process` / `--in-process-gpu` 在当时容器环境中造成浏览器启动失败，
-因此不要把这些参数作为内存治理默认值。
-
-当前并发和内存水位由 regd 调度器管理；任务终态、恢复与日志以同一控制面的
-SQLite 和 API 为准。旧 Python 面板的运行指令已移除，历史版本可通过 Git 追溯。
+`--single-process` / `--in-process-gpu` 曾导致容器浏览器启动失败，不作为默认优化参数。任务、日志和恢复仍由同一regd控制面持久管理，不能另启Python面板共用生产数据目录。当前运行及恢复材料见[验收](../docs/acceptance.md)。
