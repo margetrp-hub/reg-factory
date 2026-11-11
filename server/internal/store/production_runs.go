@@ -77,7 +77,7 @@ func (s *Store) ProductionDBPath() (string, error) {
 
 func (s *Store) PendingProductions(stamp int64) ([]string, error) {
 	rows, err := s.db.Query(`SELECT operation_id FROM production_runs WHERE (status IN ('queued','running','unknown') OR (stop_requested=1 AND stop_effect=''))
- AND next_at<=? ORDER BY updated_at LIMIT 20`, stamp)
+ AND status<>'delivered' AND next_at<=? ORDER BY updated_at LIMIT 20`, stamp)
 	if err != nil {
 		return nil, err
 	}
@@ -94,7 +94,7 @@ func (s *Store) PendingProductions(stamp int64) ([]string, error) {
 }
 
 func (s *Store) CompleteProductionRun(id string) error {
-	_, err := s.db.Exec(`UPDATE production_runs SET status='delivered' WHERE operation_id=? AND stop_requested=0`, id)
+	_, err := s.db.Exec(`UPDATE production_runs SET status='delivered' WHERE operation_id=?`, id)
 	return err
 }
 
@@ -181,15 +181,30 @@ func (s *Store) StopProduction(id, scope string, stamp int64) error {
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(`UPDATE production_runs SET stop_requested=1,status='cancelled',error_code='PRODUCTION_ADMIN_STOPPED',next_at=0 WHERE operation_id=?`, id)
+	_, err = tx.Exec(`UPDATE production_runs SET stop_requested=1,
+ status=CASE WHEN status='delivered' THEN status ELSE 'running' END,
+ error_code=CASE WHEN status='delivered' THEN error_code ELSE 'PRODUCTION_STOP_REQUESTED' END,next_at=0 WHERE operation_id=?`, id)
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(`UPDATE production_admissions SET state='cancelled',error_code='PRODUCTION_ADMIN_STOPPED',finished_at=? WHERE operation_id=?`, now(), id)
+	state, code, finished := "running", "PRODUCTION_STOP_REQUESTED", ""
+	var runExists int
+	if err = tx.QueryRow(`SELECT count(*) FROM production_runs WHERE operation_id=?`, id).Scan(&runExists); err != nil {
+		return err
+	}
+	if runExists == 0 {
+		state, code, finished = "cancelled", "PRODUCTION_ADMIN_STOPPED", now()
+	}
+	_, err = tx.Exec(`UPDATE production_admissions SET state=?,error_code=?,finished_at=? WHERE operation_id=? AND state<>'completed'`, state, code, finished, id)
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(`UPDATE tasks SET status='cancelled',error='PRODUCTION_ADMIN_STOPPED',finished_at=? WHERE id=?`, now(), "work-"+id)
+	_, err = tx.Exec(`UPDATE tasks SET status=?,error=?,finished_at=? WHERE id=? AND status<>'completed'`, state, code, finished, "work-"+id)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(`INSERT INTO events(task_id,ts,stream,line) VALUES(?,?,'stage',?)`, "work-"+id, now(),
+		stageLine(StageEvent{Stage: "stop_requested", Status: state, Code: code, Action: "已收到终止请求；等待当前步骤结束，保留产物并核对最终结果"}))
 	if err != nil {
 		return err
 	}
@@ -211,7 +226,7 @@ func (s *Store) DeferProductionRun(id, code string) error {
 		return err
 	}
 	defer tx.Rollback()
-	result, err := tx.Exec(`UPDATE production_runs SET status='unknown',error_code=?,next_at=strftime('%s','now')+30 WHERE operation_id=? AND stop_requested=0 AND status<>'delivered'`, code, id)
+	result, err := tx.Exec(`UPDATE production_runs SET status='unknown',error_code=?,next_at=strftime('%s','now')+30 WHERE operation_id=? AND status<>'delivered'`, code, id)
 	if err != nil {
 		return err
 	}

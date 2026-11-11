@@ -206,17 +206,41 @@ class Run:
     def open(self, value):
         return json.loads(self.box.decrypt(value.encode()))
 
+    def renew_readback(self, material):
+        row = self.row()
+        if not row or not row['stop_requested']:
+            raise Pending('PRODUCTION_STOP_REQUIRED', manual=True)
+        old = self.open(row['material'])
+        if (any(material.get(k) != old.get(k) for k in ('grant_id', 'context', 'context_sha256', 'parameters', 'action', 'node_id'))
+                or material['workspace']['account_id'] != old['workspace']['account_id']
+                or material.get('schema') != 'team.work-production-readback.v1'
+                or material['expires_at'] <= time.time()):
+            raise Pending('PRODUCTION_READBACK_SCOPE_CHANGED', manual=True)
+        prior = old.get('renewal', {})
+        if prior.get('id') == material['renewal']['id']:
+            if old != material:
+                raise Pending('PRODUCTION_READBACK_SCOPE_CHANGED', manual=True)
+            return {'renewed': True}
+        if prior.get('issued_at', 0) > material['renewal']['issued_at']:
+            raise Pending('PRODUCTION_READBACK_SUPERSEDED', manual=True)
+        with self.db:
+            self.db.execute('UPDATE production_runs SET material=?,next_at=0 WHERE operation_id=?',
+                            (self.seal(material), self.operation))
+        self.progress('stop_readback', 'running', 'PRODUCTION_READBACK_RENEWED')
+        return {'renewed': True}
+
     def progress(self, stage, status='running', code='', diagnostic=None, **fields):
         self.db.execute('BEGIN IMMEDIATE')
         with self.db:
-            if self.row()['status'] == 'cancelled':
-                raise Pending('PRODUCTION_CANCELLED', manual=True)
+            if (self.row()['stop_requested'] and stage in {'invite_started', 'oauth_started'}
+                    and fields.get('external_started') == 1):
+                raise Pending('PRODUCTION_STOP_REQUESTED')
             values = {'stage': stage, 'status': status, 'error_code': code, 'updated_at': int(time.time()),
                       'next_at': int(time.time()) + (30 if status == 'unknown' else 0), **fields}
             if stage != self.row()['stage']:
                 values['retry_attempts'] = 0
             self.db.execute('UPDATE production_runs SET ' + ','.join(k + '=?' for k in values) + ' WHERE operation_id=?', (*values.values(), self.operation))
-            finished = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()) if status in ('unknown', 'waiting_user') else ''
+            finished = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()) if status in ('failed', 'cancelled') else ''
             self.db.execute('UPDATE production_admissions SET state=?,error_code=?,finished_at=? WHERE operation_id=?', (status, code, finished, self.operation))
             self.db.execute('UPDATE tasks SET status=?,error=? WHERE id=?', (status, code, 'work-' + self.operation))
             action = '自动重试已用完，管理员可继续或终止本项；其他数量继续执行' if status == 'waiting_user' else '沿原任务自动推进或退避重试；保留原账号和已保存结果'
@@ -311,6 +335,7 @@ class Run:
                 (selected['email'], self.seal(selected), selected['source_ref'], selected['source_sha'], self.operation))
             self.db.execute('UPDATE accounts SET claimed=1 WHERE lower(identity)=?', (selected['email'],))
             self.db.commit()
+            self.progress('account_selected')
         except BaseException:
             self.db.rollback()
             raise
@@ -343,7 +368,7 @@ class Run:
                 self.progress('invited')
             if material['readback_until'] <= time.time():
                 raise Pending('PRODUCTION_AUTHORIZATION_EXPIRED', manual=True)
-            if row['stage'] == 'admitted':
+            if row['stage'] in {'admitted', 'account_selected'}:
                 backend.preflight(candidate, seat)
                 self.progress('invite_started', external_started=1, invite_attempts=row['invite_attempts']+1,
                               invite_observed_at=0)
@@ -362,7 +387,7 @@ class Run:
                     if row['invite_attempts'] >= 3:
                         raise Pending('PRODUCTION_INVITE_RETRIES_EXHAUSTED', manual=True)
                     backend.preflight(candidate, seat)
-                    self.progress('invite_started', invite_attempts=row['invite_attempts']+1, invite_observed_at=0)
+                    self.progress('invite_started', external_started=1, invite_attempts=row['invite_attempts']+1, invite_observed_at=0)
                     backend.invite(candidate['email'], seat)
                     raise Pending('PRODUCTION_INVITE_READBACK_PENDING')
                 self.progress('oauth_started', external_started=1, oauth_attempts=self.row()['oauth_attempts'] + 1)
@@ -372,7 +397,7 @@ class Run:
             return self.output(backend)
         except Pending as exc:
             if self.row()['stop_requested']:
-                return {'status':'cancelled','error_code':'PRODUCTION_ADMIN_STOPPED'}
+                return self.reconcile_stop(backend_factory)
             attempts = self.row()['retry_attempts']+1
             manual = exc.manual or attempts >= 3 and exc.code not in {'PRODUCTION_INVITE_READBACK_PENDING', 'PRODUCTION_MEMBERSHIP_PENDING'}
             self.progress(self.row()['stage'], 'waiting_user' if manual else 'unknown', exc.code,
@@ -380,7 +405,7 @@ class Run:
             return {'status': self.row()['status'], 'error_code': exc.code}
         except Exception as exc:
             if self.row()['stop_requested']:
-                return {'status':'cancelled','error_code':'PRODUCTION_ADMIN_STOPPED'}
+                return self.reconcile_stop(backend_factory)
             stage = self.row()['stage']
             code = 'PRODUCTION_OAUTH_RESULT_UNKNOWN' if stage == 'oauth_started' else 'PRODUCTION_EXECUTION_UNKNOWN'
             attempts = self.row()['retry_attempts']+1
@@ -394,6 +419,19 @@ class Run:
 
     def reconcile_stop(self, backend_factory=Backend):
         row = self.row()
+        if (row['external_started'] or row['output_artifact']) and self.open(row['material'])['readback_until'] <= time.time():
+            self.progress('stop_readback', 'running', 'PRODUCTION_READBACK_EXPIRED', next_at=int(time.time())+30)
+            return {'status': 'running', 'error_code': 'PRODUCTION_READBACK_EXPIRED'}
+        if row['output_artifact']:
+            try:
+                return self.output(backend_factory(self.open(row['material'])))
+            except Pending as exc:
+                if exc.code not in {'PRODUCTION_OUTPUT_IDENTITY_INVALID', 'PRODUCTION_OUTPUT_INCOMPLETE', 'PRODUCTION_OUTPUT_SEAT_INVALID'}:
+                    self.progress('stop_readback', 'running', exc.code, next_at=int(time.time())+30)
+                    return {'status': 'running', 'error_code': exc.code}
+            except Exception:
+                self.progress('stop_readback', 'running', 'PRODUCTION_STOP_READBACK_PENDING', next_at=int(time.time())+30)
+                return {'status': 'running', 'error_code': 'PRODUCTION_STOP_READBACK_PENDING'}
         effect = row['stop_effect']
         if not effect:
             if not row['external_started']:
@@ -414,7 +452,8 @@ class Run:
                             ('work-'+self.operation,time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),
                              canonical({'stage':'stop_readback','status':'unknown','error_code':code,
                                         'next_action':'执行已停止；30秒后只读核对原邀请及席位，保留已产出凭据'})))
-                    return {'status':'cancelled','error_code':code}
+                    self.progress('stop_readback', 'running', code, next_at=int(time.time())+30)
+                    return {'status':'running','error_code':code}
                 if present:
                     effect = 'occupied'
                 elif row['stop_observed_at'] and time.time()-row['stop_observed_at'] >= 30:
@@ -424,11 +463,16 @@ class Run:
                     (effect,int(time.time()),int(time.time())+30,self.operation))
                 if effect == 'none' and not row['external_started']:
                     self.db.execute('UPDATE accounts SET claimed=0 WHERE lower(identity)=?',(row['email'],))
-        return {'status':'cancelled','error_code':'PRODUCTION_ADMIN_STOPPED'}
+        state = 'cancelled' if effect in {'none', 'occupied'} else 'running'
+        code = 'PRODUCTION_ADMIN_STOPPED' if state == 'cancelled' else 'PRODUCTION_STOP_READBACK_PENDING'
+        self.progress('stop_readback', state, code, next_at=int(time.time())+30)
+        return {'status': state, 'error_code': code}
 
     def output(self, backend=None):
         row = self.row()
         doc, material = self.open(row['output_artifact']), self.open(row['material'])
+        if material['readback_until'] <= time.time():
+            raise Pending('PRODUCTION_READBACK_EXPIRED', manual=True)
         backend = backend or Backend(material)
         workspace, seat = material['workspace']['account_id'], material['parameters']['seat_type']
         for kind in ('access_token', 'id_token'):
@@ -465,6 +509,8 @@ def main(request):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return {'status': 'running', 'error_code': ''}
+        if request['action'] == 'renew_readback':
+            return run.renew_readback(request['material'])
         if request['action'] == 'admit':
             db.execute('BEGIN IMMEDIATE')
             if run.row():
@@ -481,7 +527,8 @@ def main(request):
             return run.advance()
         except Pending as exc:
             if run.row()['stop_requested']:
-                return {'status':'cancelled','error_code':'PRODUCTION_STOP_READBACK_PENDING'}
+                run.progress('stop_readback', 'running', 'PRODUCTION_STOP_READBACK_PENDING', next_at=int(time.time())+30)
+                return {'status':'running','error_code':'PRODUCTION_STOP_READBACK_PENDING'}
             run.progress(run.row()['stage'], 'waiting_user' if exc.manual else 'unknown', exc.code)
             return {'status': run.row()['status'], 'error_code': exc.code}
 

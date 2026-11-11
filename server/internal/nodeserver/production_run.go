@@ -62,8 +62,12 @@ func (h *Handler) continueProduction(c *gin.Context) {
 	h.writeAccepted(c, v)
 }
 
-func (h *Handler) openProductionMaterial(envelope map[string]any) (map[string]any, error) {
-	if len(envelope) != 6 || envelope["schema"] != productionMaterialSchema || envelope["node_id"] != h.cfg.NodeID ||
+func (h *Handler) openProductionMaterial(envelope map[string]any, expectedSchema ...string) (map[string]any, error) {
+	schema := productionMaterialSchema
+	if len(expectedSchema) > 0 {
+		schema = expectedSchema[0]
+	}
+	if len(envelope) != 6 || envelope["schema"] != schema || envelope["node_id"] != h.cfg.NodeID ||
 		!uuidLike.MatchString(ls(envelope["grant_id"])) || !hex64Pattern.MatchString(ls(envelope["context_sha256"])) {
 		return nil, perr("PRODUCTION_MATERIAL_SCOPE_INVALID", 422)
 	}
@@ -154,7 +158,12 @@ func (h *Handler) productionDriver(ctx context.Context, input map[string]any) ma
 		return map[string]any{"status": "unknown", "error_code": "PRODUCTION_ARTIFACT_KEY_UNAVAILABLE"}
 	}
 	input["artifact_key"] = base64.URLEncoding.EncodeToString(key)
-	raw, _ := Canonical(input)
+	// This is local driver input, not a signed assignment. Renewal reasons may
+	// contain Unicode; the assignment-only ASCII encoder would silently drop it.
+	raw, err := json.Marshal(input)
+	if err != nil {
+		return map[string]any{"status": "unknown", "error_code": "PRODUCTION_DRIVER_INPUT_INVALID"}
+	}
 	command := exec.CommandContext(ctx, "python", "tools/team_production.py")
 	command.Env, err = settings.WorkerEnvironment(settings.Load().EnvFile)
 	if err != nil {
@@ -166,26 +175,9 @@ func (h *Handler) productionDriver(ctx context.Context, input map[string]any) ma
 	if err = command.Start(); err != nil {
 		return map[string]any{"status": "unknown", "error_code": "PRODUCTION_DRIVER_UNAVAILABLE"}
 	}
-	finished := make(chan struct{})
-	if input["action"] == "advance" && !h.st.ProductionStopped(ls(input["operation_id"])) {
-		go func() {
-			ticker := time.NewTicker(300 * time.Millisecond)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-finished:
-					return
-				case <-ticker.C:
-					if h.st.ProductionStopped(ls(input["operation_id"])) {
-						_ = command.Process.Kill()
-						return
-					}
-				}
-			}
-		}()
-	}
+	// The durable stop flag is checked between external steps. Never kill a
+	// request which may already have invited a member or issued credentials.
 	err = command.Wait()
-	close(finished)
 	out := buffer.Bytes()
 	result := map[string]any{}
 	if err != nil || len(out) > 65536 || json.Unmarshal(out, &result) != nil {
@@ -268,9 +260,6 @@ func (h *Handler) StartProduction(ctx context.Context) {
 							}
 							return
 						}
-						if h.st.ProductionStopped(id) {
-							return
-						}
 						doc, err := h.productionDocument(ls(result["artifact"]))
 						if err != nil {
 							_ = h.st.DeferProductionRun(id, "PRODUCTION_ARTIFACT_UNAVAILABLE")
@@ -337,6 +326,10 @@ func (h *Handler) stopProduction(c *gin.Context) {
 		writeErr(c, perr("PRODUCTION_STOP_CONFLICT", 409))
 		return
 	}
+	if err = h.bindExecutionEvents(v, "work-"+id); err != nil {
+		writeErr(c, err)
+		return
+	}
 	if err = h.st.StopProduction(id, productionScope(v), time.Now().Unix()); err != nil {
 		writeErr(c, perr("PRODUCTION_STOP_CONFLICT", 409))
 		return
@@ -348,6 +341,14 @@ func (h *Handler) stopProduction(c *gin.Context) {
 		select {
 		case <-done:
 		case <-time.After(10 * time.Second):
+			writeErr(c, perr("PRODUCTION_STOP_PENDING", 503))
+			return
+		}
+	}
+	if h.st.HasProductionRun(id) {
+		_, resultErr := h.st.Production(id)
+		effect, _ := h.st.ProductionStopEffect(id)
+		if resultErr != nil && effect == "" {
 			writeErr(c, perr("PRODUCTION_STOP_PENDING", 503))
 			return
 		}

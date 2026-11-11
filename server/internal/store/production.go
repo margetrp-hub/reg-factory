@@ -147,7 +147,12 @@ func (s *Store) AdmitProduction(p Production) error {
 		return err
 	}
 	if stopped != 0 {
-		return errors.New("PRODUCTION_ADMIN_STOPPED")
+		// Stop blocks new execution, not custody of an output already issued by
+		// this exact original run. Arbitrary new/changed artifacts remain denied.
+		var artifact string
+		if err = tx.QueryRow(`SELECT output_artifact FROM production_runs WHERE operation_id=?`, p.OperationID).Scan(&artifact); err != nil || artifact == "" || artifact != p.Artifact {
+			return errors.New("PRODUCTION_ADMIN_STOPPED")
+		}
 	}
 	var old string
 	err = tx.QueryRow(`SELECT request_sha FROM production_results WHERE operation_id=?`, p.OperationID).Scan(&old)

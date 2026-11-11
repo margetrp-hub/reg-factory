@@ -1,5 +1,56 @@
 package store
 
+import "errors"
+
+// The binding is saved from an authenticated assignment before execution. A
+// read request must never establish its own authority to another task's logs.
+func (s *Store) BindWorkEventScope(operationID, taskID, scope string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec(`INSERT INTO work_event_scopes(operation_id,task_id,scope_sha) VALUES(?,?,?) ON CONFLICT DO NOTHING`, operationID, taskID, scope); err != nil {
+		return err
+	}
+	var savedTask, savedScope string
+	if err = tx.QueryRow(`SELECT task_id,scope_sha FROM work_event_scopes WHERE operation_id=?`, operationID).Scan(&savedTask, &savedScope); err != nil {
+		return err
+	}
+	if savedTask != taskID || savedScope != scope {
+		return errors.New("WORK_EVENTS_SCOPE_MISMATCH")
+	}
+	return tx.Commit()
+}
+
+func (s *Store) WorkEventScope(operationID string) (string, string, error) {
+	var task, scope string
+	err := s.db.QueryRow(`SELECT task_id,scope_sha FROM work_event_scopes WHERE operation_id=?`, operationID).Scan(&task, &scope)
+	return task, scope, err
+}
+
+// ConsumeWorkEventRead survives process restarts and stays bounded by the
+// signed request lifetime. Retries use a fresh request ID, never a new task.
+func (s *Store) ConsumeWorkEventRead(issuer, requestID string, expires, now int64) (bool, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec(`DELETE FROM work_event_reads WHERE expires_at<=?`, now); err != nil {
+		return false, err
+	}
+	result, err := tx.Exec(`INSERT INTO work_event_reads(issuer,request_id,expires_at) VALUES(?,?,?) ON CONFLICT DO NOTHING`, issuer, requestID, expires)
+	if err != nil {
+		return false, err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n == 1, tx.Commit()
+}
+
 // WorkEventsPage reads only this persisted task; no runner or remote work starts.
 func (s *Store) WorkEventsPage(taskID string, page, size int) ([]Event, int64, error) {
 	var total int64

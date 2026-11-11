@@ -236,6 +236,10 @@ func (h *Handler) acceptProduction(c *gin.Context, v *Verified) {
 			writeErr(c, perr("PRODUCTION_REQUEST_CHANGED", 409))
 			return
 		}
+		if err := h.bindExecutionEvents(v, "work-"+id); err != nil {
+			writeErr(c, err)
+			return
+		}
 		h.writeAccepted(c, v)
 		return
 	} else if err != sql.ErrNoRows {
@@ -245,6 +249,10 @@ func (h *Handler) acceptProduction(c *gin.Context, v *Verified) {
 	params, _ := Canonical(v.Params)
 	if err := h.st.ReserveProductionAdmission(id, productionScope(v), string(params)); err != nil {
 		writeErr(c, perr("PRODUCTION_ADMISSION_SCOPE_CONFLICT", 409))
+		return
+	}
+	if err := h.bindExecutionEvents(v, "work-"+id); err != nil {
+		writeErr(c, err)
 		return
 	}
 	if admission, err := h.st.ProductionAdmission(id); err != nil || admission.State == "failed" {
@@ -345,7 +353,7 @@ func (h *Handler) productionReceipt(v *Verified, key []byte, now time.Time) (map
 	p, err := h.st.Production(nodeTicket(v))
 	// A retained failed/unknown output remains immutable, while a separate stop
 	// receipt reconciles its external membership and releases Core's seat hold.
-	if err == sql.ErrNoRows || err == nil && p.State != "completed" && h.st.ProductionStopped(p.OperationID) {
+	if err == sql.ErrNoRows || err == nil && (p.State == "failed" || p.State == "unknown") && h.st.ProductionStopped(p.OperationID) {
 		p, err = h.st.ProductionAdmission(nodeTicket(v))
 		if err == nil && p.RequestSHA == productionScope(v) {
 			if p.State == "cancelled" && h.st.ProductionStopped(p.OperationID) {
