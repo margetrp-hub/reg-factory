@@ -121,6 +121,19 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS idx_events_task ON events(task_id, id);
 
+CREATE TABLE IF NOT EXISTS work_event_scopes (
+  operation_id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL,
+  scope_sha TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS work_event_reads (
+  issuer TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  PRIMARY KEY(issuer, request_id)
+);
+CREATE INDEX IF NOT EXISTS idx_work_event_reads_expiry ON work_event_reads(expires_at);
+
 CREATE TABLE IF NOT EXISTS claims (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   kind TEXT NOT NULL,

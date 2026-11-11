@@ -87,6 +87,62 @@ class ProductionTests(unittest.TestCase):
         self.run.advance(self.backend)
         self.assertEqual((self.backend.invites, self.backend.logins), (1, 1))
 
+    def test_expired_stopped_output_renews_only_readback_and_preserves_original(self):
+        output = self.run.advance(self.backend)
+        expired = {**self.material, 'readback_until': int(time.time())-1}
+        self.db.execute("UPDATE production_runs SET stop_requested=1,material=?", (self.run.seal(expired),))
+        self.db.commit()
+        self.assertEqual(self.run.advance(self.backend)['error_code'], 'PRODUCTION_READBACK_EXPIRED')
+        renewed = {**self.material, 'schema': 'team.work-production-readback.v1',
+            'renewal': {'id': 'test-renewal', 'issued_at': int(time.time())}, 'readback_until': int(time.time())+3600}
+        changed = {**renewed, 'workspace': {'account_id': 'different'}}
+        with self.assertRaisesRegex(Pending, 'PRODUCTION_READBACK_SCOPE_CHANGED'):
+            self.run.renew_readback(changed)
+        self.assertTrue(self.run.renew_readback(renewed)['renewed'])
+        self.assertTrue(self.run.renew_readback(renewed)['renewed'])
+        result = self.run.advance(self.backend)
+        self.assertEqual(result['artifact'], output['artifact'])
+        self.assertEqual((self.backend.invites, self.backend.logins), (1, 1))
+
+    def test_stop_during_invite_waits_for_result_without_starting_authorization(self):
+        invite = self.backend.invite
+        def stop_after_invite(backend, email, seat):
+            invite(backend, email, seat)
+            self.db.execute("UPDATE production_runs SET stop_requested=1")
+            self.db.commit()
+        self.backend.invite = stop_after_invite
+        result = self.run.advance(self.backend)
+        self.assertEqual(result['status'], 'cancelled')
+        self.assertEqual((self.backend.invites, self.backend.logins), (1, 0))
+        self.assertEqual(self.run.row()['stop_effect'], 'occupied')
+        self.assertEqual(self.run.row()['status'], 'cancelled')
+
+    def test_stop_during_authorization_retains_valid_output_and_finishes_readback(self):
+        authorize = self.backend.authorize
+        def stop_after_issue(backend, candidate, workspace, persist, progress):
+            self.db.execute("UPDATE production_runs SET stop_requested=1")
+            self.db.commit()
+            return authorize(backend, candidate, workspace, persist, progress)
+        self.backend.authorize = stop_after_issue
+        output = self.run.advance(self.backend)
+        self.assertEqual(output['status'], 'ready')
+        self.assertTrue(self.run.row()['output_artifact'])
+        again = self.run.advance(self.backend)
+        self.assertEqual(again['artifact'], output['artifact'])
+        self.assertEqual((self.backend.invites, self.backend.logins), (1, 1))
+
+    def test_stop_result_readback_failure_remains_running_and_recovers_same_output(self):
+        output = self.run.advance(self.backend)
+        self.db.execute("UPDATE production_runs SET stop_requested=1")
+        self.db.commit()
+        class Unavailable(self.backend):
+            def snapshot(self, email, seat):
+                raise RuntimeError('synthetic offline')
+        pending = self.run.advance(Unavailable)
+        self.assertEqual((pending['status'], self.run.row()['status']), ('running', 'running'))
+        self.assertEqual(self.run.advance(self.backend)['artifact'], output['artifact'])
+        self.assertEqual((self.backend.invites, self.backend.logins), (1, 1))
+
     def test_unhealthy_or_unknown_input_is_not_selected(self):
         for status in ('unknown', 'expired', 'banned', 'error', 'needs_refresh'):
             with self.subTest(status=status):

@@ -77,6 +77,20 @@ SSE使用 `Last-Event-ID` 补读持久事件，任务终态补齐后发送done�
 
 unknown保留原任务、输入及外部证据，先查询/恢复已保存结果；Core决定库存、权益和终态账务。AT检查在节点执行，目录只读不隐式兑换、刷新或领取。
 
+### Work 生产日志与安全停止
+
+Work 节点统一规范由 Aishop Next 的 `docs/contracts/work-node-integration.md` 维护；SG 的 `POST /internal/work/v1/tasks/{task_id}/events` 复用其中 `account-node.events-request.v1 / account-node.events-response.v1`，签名域为 `account-node-work-events-v1\n`。该名称不代表只允许 Account 节点，禁止为 SG 另建不兼容的日志协议。
+
+请求与原任务的 issuer、node_id、operation_id、task_id、attempt_id、fence、command_sha256、node_task_id 全量匹配；每次读使用新 request_id、120 秒内时间窗口和 page/page_size（最多 50）。响应 echo 范围、request_id、分页，返回 items/total/has_more，raw_output_available 固定 false。事件为 `{id,kind,state,code,created_at}`（phase/status）或 `{id,kind,text,stream,created_at}`（log）；id 按 kind 稳定、正数、追加不可变，created_at 带时区。text 在本节点先脱敏，Work 二次脱敏；禁止 token、Cookie、密码、验证码、完整邮箱、材料与原始上游响应进入日志。
+
+`work_event_scopes` 在接单时固定原 scope 与本地任务映射，`work_event_reads` 持久防重放，重启不清除有效 nonce。生产任务本地编号为 `work-{operation_id}`，普通任务为 `work-{task_id}`；查询使用映射，不能假定二者相同。历史生产通过原签名 result/resolve 请求与完整 admission 摘要对照后恢复日志范围；无法证明原范围的历史普通任务返回 `WORK_EVENTS_SCOPE_UNAVAILABLE`，保留本地原记录，不根据日志请求伪造授权。
+
+生产过程在实际边界记录账号选定、预检、邀请开始及返回、授权开始及返回、成品保存、只读核验、交接／投影、终态与耗时。阶段与结果先持久落盘，再回执；不能只写一条“子节点生产与成品回传”。Work 后台有界拉取，不依赖页面打开；重启／断线沿原任务补传，按 `(attempt_id,kind,id)` 去重，终态任务仍可读取，不重启原生产。
+
+生产 stop 先持久记录 stop_requested，阻止开始下一次邀请或授权，等待已开始步骤自然返回并保存产物，不直接杀 Python 进程。停止未收尾时返回 `PRODUCTION_STOP_PENDING`（503），Work 重试原请求；已保存的有效成品仍核验、交接，暂时网络错误保留 running 并只读重试。明确没有副作用或已核清成员占用后才能签停止终态。已结束原销售订单不重新交付；迟到有效成品由 Core 原入库流程回库，SG 不能修改订单、退款或可售账务。
+
+对接验收需覆盖正常阶段、邀请／授权途中停止、迟到输出、网络失败后原结果恢复、日志重复／分页／重启、错误 scope 与日志脱敏；节点事件不是库存／资金结算凭证。中文／emoji 日志遵循主平台文档中的 canonical 签名测试向量，不沿用原任务的 ASCII-only 限制。跨仓互通入口为 [`TestExecutionLogsInteropServer`](../server/internal/nodeserver/execution_events_test.go) 与 Work 的 `TestNodeEventsSGInterop`，使用回环地址和临时库。关闭 Work 派单或页面不停止已有任务补传，日志请求也不续期业务授权。
+
 ## Python 本地接口
 
 以下仅适用于 `start.bat/start.sh` 启动的Python本地面板及其辅助服务，不是SG Go API。保留源工具的接口说明以免现有调用失去维护入口；本次SG部署没有对它们重新验收。
@@ -272,6 +286,16 @@ curl -X POST http://127.0.0.1:8799/api/assets/cursors/reset \
 ```
 
 领取账本保存在 `runtime/state/asset_api_claims.json`，只包含不可逆的 SHA-256 标识和平台范围，不保存邮箱或凭据。旧版兼容游标仍保存在 `runtime/state/asset_api_cursors.json`。重置不会修改 `emails.txt`、Cookie 或 Token 文件。
+
+### Work 生产超期核验
+
+`POST /internal/work/v1/production/readback` 由 Work 以独立域 `work-production-readback-v1\n` 签名，正文 `{payload:{assignment,envelope},signature}`。只接受原 assignment 和 Core 密封的 `team.work-production-readback.v1` 材料；不能用于新任务或继续邀请/OAuth。普通材料接口拒绝该 schema。
+
+密封格式沿生产材料 AES-256-GCM，AAD 为 `schema,node_id,grant_id,context_sha256`；解密内容为原 context/action/parameters/workspace，新增 `renewal:{id,actor_id,reason,issued_at}`。原因支持中文；首次送达15分钟内、核验窗口最多1小时。母号凭据可更新，但 workspace、grant、原任务和原源账号不变。
+
+先写入原停止事实，再在原任务锁内更新核验材料；执行未退场或锁忙返回503 pending，Work重试同一请求。重复授权幂等，较旧授权不能覆盖新授权。返回 `renewed:true` 仅表示已接收授权；实际成功/失败仍使用原签名 stop/resolve、产物交接及Core库存结算。已有输出优先只读验证，过期输出保留；不能另选账号、再次邀请、换取Token或重置调用次数。窗口过期后由Core原任务再次授权。
+
+复用合同与异步日志字段见上文 Work 节点对接说明所指向的 `team-platform-next/docs/contracts/work-node-integration.md`。本地验证不代表远端节点已升级。
 
 ### GoPay 本地 API
 

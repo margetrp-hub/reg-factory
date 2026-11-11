@@ -80,7 +80,7 @@ export function CredentialUpdateDialog({request,onClose,onAccepted}: {request:Re
         {owned && <p className="mt-2 text-xs text-muted-foreground">已使用账号由主系统原任务更新，本次跳过。</p>}
         {result?.error && <p role="alert" className="mt-2 break-words text-xs text-destructive">{result.error}</p>}
         {pending && <p className="mt-2 text-xs text-muted-foreground">先找回原任务{pending.method ? `（${UPDATE_LABELS[pending.method]}）` : ""}，不会重复提交已受理操作。</p>}
-        {result?.task_id && <Link className="btn-ghost mt-2" href={`/platform/${row.platform}/runs/?mode=refresh&task=${encodeURIComponent(result.task_id)}`}>查看运行</Link>}
+        {result?.task_id && <Link className="btn-ghost mt-2" onClick={close} href={`/platform/${row.platform}/runs/?mode=refresh&task=${encodeURIComponent(result.task_id)}`}>查看运行</Link>}
       </div>;
     })}</div>
     <p role="status" className="mt-4 text-xs text-muted-foreground">{accepted ? `已受理 ${accepted} 项，不代表凭据已经更新成功。已受理任务不会随关闭弹窗而取消。` : "只提交你选择的方式；任务和失败原因均保留在处理记录。"}</p>

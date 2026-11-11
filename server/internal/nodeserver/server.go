@@ -3,6 +3,7 @@ package nodeserver
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"log"
@@ -138,6 +139,7 @@ func (h *Handler) Register(r *gin.Engine) {
 	group.POST("/production/resume", h.resumeProduction)
 	group.POST("/production/admit", h.resumeProduction)
 	group.POST("/production/continue", h.continueProduction)
+	group.POST("/production/readback", h.renewProductionReadback)
 	group.POST("/team/materials", h.productionMaterial)
 	group.POST("/stop", h.stopProduction)
 	group.GET("/tasks/:task_id", h.taskStatus)
@@ -179,6 +181,20 @@ func (h *Handler) acceptTask(c *gin.Context) {
 		return
 	}
 	localID := "work-" + verified.TaskID
+	// Legacy non-production rows do not retain a complete assignment. Do not
+	// manufacture its original scope from a later read or duplicate submission.
+	_, existing := h.st.OperationTask(nodeTicket(verified))
+	_, _, bound := h.st.WorkEventScope(nodeTicket(verified))
+	if existing != nil && existing != sql.ErrNoRows || bound != nil && bound != sql.ErrNoRows {
+		writeErr(c, perr("WORK_EVENTS_UNAVAILABLE", 503))
+		return
+	}
+	if existing == sql.ErrNoRows || bound == nil {
+		if err := h.bindExecutionEvents(verified, localID); err != nil {
+			writeErr(c, err)
+			return
+		}
+	}
 	if verified.Action == "account.quota" {
 		operationID, _ := verified.Payload["operation_id"].(string)
 		version, _ := toInt64(verified.Payload["resource_version"])
@@ -393,6 +409,7 @@ func (h *Handler) taskReceipt(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "NOT_FOUND", "task_id": ticket})
 		return
 	}
+	h.restoreProductionEventScope(verified, task)
 	// Pending work is still a signed receipt.  Returning HTTP 202 with an
 	// unsigned marker makes NodeClient classify every poll as a transport
 	// failure and can strand a valid task indefinitely.
@@ -424,6 +441,7 @@ func (h *Handler) resolveTask(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "NOT_FOUND", "task_id": ticket})
 		return
 	}
+	h.restoreProductionEventScope(verified, task)
 	result, err := h.ReceiptFor(verified, ticket, task.Status, task.ExitCode, h.receiptKey(), time.Now())
 	if err != nil {
 		writeErr(c, err)

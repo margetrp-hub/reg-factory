@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -18,6 +19,34 @@ import (
 )
 
 const workEventsDomain = "account-node-work-events-v1\n"
+
+func executionEventScope(p map[string]any) string {
+	scope := map[string]any{}
+	for _, key := range []string{"issuer", "node_id", "operation_id", "task_id", "attempt_id", "fence", "command_sha256"} {
+		scope[key] = p[key]
+	}
+	return productionDigest(scope)
+}
+
+func (h *Handler) bindExecutionEvents(v *Verified, localID string) error {
+	if err := h.st.BindWorkEventScope(nodeTicket(v), localID, executionEventScope(v.Payload)); err != nil {
+		return perr("WORK_EVENTS_SCOPE_MISMATCH", 409)
+	}
+	return nil
+}
+
+// Older production admissions have a full immutable assignment digest. A
+// normal signed result read may restore that binding after comparing it; a
+// short log-read request alone cannot do so.
+func (h *Handler) restoreProductionEventScope(v *Verified, task store.Task) {
+	if v.Action != productionAction {
+		return
+	}
+	prior, err := h.st.ProductionAdmission(nodeTicket(v))
+	if err == nil && prior.RequestSHA == productionScope(v) && task.ID == "work-"+nodeTicket(v) {
+		_ = h.bindExecutionEvents(v, task.ID)
+	}
+}
 
 var logSecrets = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)(?:authorization|cookie|set-cookie)\s*[:=].*`),
@@ -179,20 +208,48 @@ func (h *Handler) executionEvents(c *gin.Context) {
 	size, sizeOK := toInt64(p["page_size"])
 	issued, issuedOK := toInt64(p["issued_at"])
 	expires, expiresOK := toInt64(p["expires_at"])
+	fence, fenceOK := toInt64(p["fence"])
 	if p["schema"] != "account-node.events-request.v1" || p["node_id"] != h.cfg.NodeID || p["node_task_id"] != c.Param("task_id") || p["operation_id"] != p["node_task_id"] || !pageOK || !sizeOK || page < 1 || page > 100000 || size < 1 || size > 50 || !issuedOK || !expiresOK || issued < now-120 || issued > now+30 || expires <= now || expires > issued+120 {
 		writeErr(c, perr("WORK_EVENTS_SCOPE_INVALID", 403))
 		return
 	}
-	task, err := h.taskByTicket(ls(p["node_task_id"]))
-	if err != nil {
-		writeErr(c, perr("WORK_TASK_UNAVAILABLE", 404))
+	if !refPattern.MatchString(ls(p["issuer"])) || !uuidLike.MatchString(ls(p["request_id"])) || !hex64Pattern.MatchString(ls(p["command_sha256"])) || !fenceOK || fence < 1 {
+		writeErr(c, perr("WORK_EVENTS_SCOPE_INVALID", 403))
 		return
 	}
-	if task.ID != "work-"+ls(p["task_id"]) {
+	for _, key := range []string{"operation_id", "task_id", "attempt_id"} {
+		if !uuidLike.MatchString(ls(p[key])) {
+			writeErr(c, perr("WORK_EVENTS_SCOPE_INVALID", 403))
+			return
+		}
+	}
+	taskID, scope, err := h.st.WorkEventScope(ls(p["operation_id"]))
+	if err == sql.ErrNoRows {
+		writeErr(c, perr("WORK_EVENTS_SCOPE_UNAVAILABLE", 404))
+		return
+	}
+	if err != nil {
+		writeErr(c, perr("WORK_EVENTS_UNAVAILABLE", 503))
+		return
+	}
+	if scope != executionEventScope(p) {
 		writeErr(c, perr("WORK_EVENTS_SCOPE_MISMATCH", 403))
 		return
 	}
-	rows, total, err := h.st.WorkEventsPage(task.ID, int(page), int(size))
+	if _, err := h.st.GetTask(taskID); err != nil {
+		writeErr(c, perr("WORK_TASK_UNAVAILABLE", 404))
+		return
+	}
+	fresh, err := h.st.ConsumeWorkEventRead(ls(p["issuer"]), ls(p["request_id"]), expires, now)
+	if err != nil {
+		writeErr(c, perr("WORK_EVENTS_UNAVAILABLE", 503))
+		return
+	}
+	if !fresh {
+		writeErr(c, perr("WORK_EVENTS_REPLAY", 409))
+		return
+	}
+	rows, total, err := h.st.WorkEventsPage(taskID, int(page), int(size))
 	if err != nil {
 		writeErr(c, perr("WORK_EVENTS_UNAVAILABLE", 503))
 		return
