@@ -1468,54 +1468,6 @@ func (s *Server) outlookAuthorize(c *gin.Context) {
 	c.JSON(http.StatusAccepted, gin.H{"ok": true, "task_id": task.ID})
 }
 
-// StartLivenessLoop 按配置周期触发号池巡检（单平台串行）。
-func (s *Server) StartLivenessLoop(ctx context.Context) {
-	if !envBool("REG_FACTORY_LIVENESS_ENABLED", true) {
-		log.Printf("[liveness] 巡检已关闭")
-		return
-	}
-	interval := envDuration("REG_FACTORY_LIVENESS_INTERVAL", 6*time.Hour)
-	platforms := envList("REG_FACTORY_LIVENESS_PLATFORMS", []string{"claude"})
-	accountConcurrency := os.Getenv("REG_FACTORY_LIVENESS_ACCOUNT_CONCURRENCY")
-	if accountConcurrency == "" {
-		accountConcurrency = "1"
-	}
-	log.Printf("[liveness] 巡检开启：每 %s，平台 %v，账号并发 %s", interval, platforms, accountConcurrency)
-	submitScan := func(platform string) {
-		argv := []string{"scan", "--platform", platform, "--account-concurrency", accountConcurrency}
-		raw, _ := json.Marshal(argv)
-		task := store.Task{
-			ID:       "liveness-" + strconv.FormatInt(time.Now().UnixNano(), 36),
-			Script:   "asset_ops",
-			Title:    "巡检 · " + platform,
-			ArgsJSON: string(raw),
-			Actor:    "scheduler",
-		}
-		if err := s.run.Submit(task); err != nil {
-			log.Printf("[liveness] 提交失败 %s: %v", platform, err)
-		}
-	}
-	go func() {
-		// 首扫：账号从未测活过就先跑一轮，避免面板一直是 unknown
-		if accounts, err := s.st.ListAccounts("", "", "unknown", 1); err == nil && len(accounts) > 0 {
-			log.Printf("[liveness] 检测到未测活账号，先执行首轮巡检")
-			submitScan(platforms[0])
-		}
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				for _, platform := range platforms {
-					submitScan(platform)
-				}
-			}
-		}
-	}()
-}
-
 // ---------------------------------------------------------------- 配置
 
 func (s *Server) configGet(c *gin.Context) {
@@ -1560,6 +1512,15 @@ func (s *Server) configPut(c *gin.Context) {
 		if strings.ContainsAny(value, "\r\n") {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_value", "detail": key + " 含换行"})
 			return
+		}
+	}
+	for key := range req.Updates {
+		if strings.HasPrefix(key, "REG_FACTORY_LIVENESS_") {
+			if _, err := s.livenessConfigWith(req.Updates); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_liveness_config", "detail": err.Error()})
+				return
+			}
+			break
 		}
 	}
 	changed, err := s.env.Update(req.Updates)
@@ -1741,49 +1702,6 @@ func toString(value any) string {
 		return text
 	}
 	return ""
-}
-
-func envBool(name string, fallback bool) bool {
-	raw := strings.TrimSpace(os.Getenv(name))
-	if raw == "" {
-		return fallback
-	}
-	switch strings.ToLower(raw) {
-	case "1", "true", "yes", "on":
-		return true
-	case "0", "false", "no", "off":
-		return false
-	}
-	return fallback
-}
-
-func envDuration(name string, fallback time.Duration) time.Duration {
-	raw := strings.TrimSpace(os.Getenv(name))
-	if raw == "" {
-		return fallback
-	}
-	if d, err := time.ParseDuration(raw); err == nil && d >= time.Minute {
-		return d
-	}
-	return fallback
-}
-
-func envList(name string, fallback []string) []string {
-	raw := strings.TrimSpace(os.Getenv(name))
-	if raw == "" {
-		return fallback
-	}
-	parts := strings.Split(raw, ",")
-	out := make([]string, 0, len(parts))
-	for _, item := range parts {
-		if trimmed := strings.TrimSpace(item); trimmed != "" {
-			out = append(out, trimmed)
-		}
-	}
-	if len(out) == 0 {
-		return fallback
-	}
-	return out
 }
 
 func firstNonEmptyStr(values ...string) string {

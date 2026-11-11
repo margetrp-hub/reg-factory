@@ -116,6 +116,7 @@ func configSection(key, fallback string) string {
 		{"对接 · webchat2api", []string{"WEBCHAT2API_"}},
 		{"对接 · K12 控制台", []string{"K12_"}},
 		{"运行 · 并发与资源", []string{"REG_FACTORY_MEMORY_", "REG_FACTORY_MAX_"}},
+		{"运行 · 周期巡检", []string{"REG_FACTORY_LIVENESS_"}},
 		{"运行 · 接口访问", []string{"REGD_", "REG_FACTORY_PANEL_"}},
 		{"运行 · 数据路径", []string{"REG_FACTORY_DATA_", "REG_FACTORY_ENV_"}},
 	} {
@@ -143,7 +144,7 @@ func configArea(key string) string {
 		{"browser", []string{"BROWSER", "BITBROWSER", "BB_CORE_", "ADSPOWER", "CHROMIUM", "CLOAK", "ROXY", "CUSTOM_BROWSER", "REG_FACTORY_BROWSER"}},
 		{"node", []string{"REG_FACTORY_NODE_"}},
 		{"integration", []string{"SUB2API", "CPA_", "CHATGPT2API", "WEBCHAT2API", "K12_", "CODEX_CPA", "CODEX_AUTH_URL_SOURCE"}},
-		{"runtime", []string{"REGD_", "REG_FACTORY_PANEL_", "REG_FACTORY_MEMORY_", "REG_FACTORY_MAX_", "REG_FACTORY_DATA_", "REG_FACTORY_ENV_"}},
+		{"runtime", []string{"REGD_", "REG_FACTORY_PANEL_", "REG_FACTORY_MEMORY_", "REG_FACTORY_MAX_", "REG_FACTORY_DATA_", "REG_FACTORY_ENV_", "REG_FACTORY_LIVENESS_"}},
 	} {
 		for _, prefix := range category.prefixes {
 			if strings.HasPrefix(upper, prefix) {

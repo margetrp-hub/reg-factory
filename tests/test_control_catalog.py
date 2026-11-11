@@ -29,7 +29,7 @@ class ControlCatalogTests(unittest.TestCase):
         self.assertEqual(json.loads((ROOT / "deploy/config.schema.json").read_text(encoding="utf-8")), ENV_SCHEMA)
         fields = {item["key"]: (group, item) for group in ENV_SCHEMA for item in group["items"]}
         self.assertEqual(sum(len(group["items"]) for group in ENV_SCHEMA), len(fields))
-        self.assertEqual(len(fields), 181)
+        self.assertEqual(len(fields), 186)
         catalog = json.loads((ROOT / "server/web/lib/generated-catalog.json").read_text(encoding="utf-8"))
         self.assertEqual(catalog, {"groups": TASK_GROUPS, "platforms": PLATFORMS, "tools": EXTERNAL_LINKS})
         for key, area, section in [
@@ -43,6 +43,7 @@ class ControlCatalogTests(unittest.TestCase):
             ("SUB2API_GROK_PROXY_ID", "integration", "SUB2API"),
             ("REG_FACTORY_PRODUCTION_PROXY", "proxy", "生产与凭据修复"),
             ("CHATGPT_PROXY_MODE", "proxy", "模式与平台覆盖"),
+            ("REG_FACTORY_LIVENESS_ENABLED", "runtime", "周期巡检"),
         ]:
             group, _ = fields[key]
             self.assertEqual(group["area"], area, key)
@@ -51,6 +52,8 @@ class ControlCatalogTests(unittest.TestCase):
         self.assertEqual(group["area"], "runtime")
         self.assertEqual(concurrency["default"], 3)
         self.assertEqual(concurrency["apply"], "restart")
+        self.assertEqual(fields["REG_FACTORY_LIVENESS_ENABLED"][1]["default"], "0")
+        self.assertEqual(fields["REG_FACTORY_LIVENESS_ENABLED"][1]["apply"], "live")
 
 
 if __name__ == "__main__":

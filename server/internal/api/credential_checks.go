@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -171,6 +172,13 @@ func (s *Server) executeCredentialCheck(ctx context.Context, task store.Task, ch
 		return
 	}
 	for _, item := range items {
+		if task.Actor == "scheduler" {
+			cfg, configErr := s.livenessConfig()
+			if configErr != nil || !cfg.enabled || !slices.Contains(cfg.platforms, "chatgpt") {
+				status, message = "stopped", "周期巡检已关闭或配置无效；保留结果，可手动重测"
+				return
+			}
+		}
 		if ctx.Err() != nil {
 			status, message = "interrupted", "服务停止，保留已返回结果；可重测未确认项"
 			return

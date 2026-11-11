@@ -1486,6 +1486,52 @@
     ]
   },
   {
+    "group": "运行 · 周期巡检",
+    "area": "runtime",
+    "items": [
+      {
+        "key": "REG_FACTORY_LIVENESS_ENABLED",
+        "label": "启用周期巡检",
+        "type": "choice",
+        "choices": [
+          "0",
+          "1"
+        ],
+        "default": "0",
+        "apply": "live",
+        "help": "默认关闭。保存后15秒内更新排期；开启后等待一个完整周期，不立即首扫。关闭不影响手动检查和凭据修复后的AT核验。"
+      },
+      {
+        "key": "REG_FACTORY_LIVENESS_INTERVAL",
+        "label": "巡检周期",
+        "default": "6h",
+        "apply": "live",
+        "help": "例如6h、12h、24h，至少1m。修改后重新计时，不补跑停用期间的任务。"
+      },
+      {
+        "key": "REG_FACTORY_LIVENESS_PLATFORMS",
+        "label": "巡检平台",
+        "default": "chatgpt",
+        "apply": "live",
+        "help": "逗号分隔平台：chatgpt、claude、grok、kiro、outlook。ChatGPT从当前账号库去重后测试AT，逐条结果进入检查记录；不自动刷新RT。"
+      },
+      {
+        "key": "REG_FACTORY_LIVENESS_ACCOUNT_CONCURRENCY",
+        "label": "其他平台巡检并发",
+        "type": "int",
+        "default": 1,
+        "apply": "live",
+        "help": "范围1–10，仅作用于其他平台原扫描器。ChatGPT AT检查固定单并发，每项间隔300ms；与凭据修复并发分开。"
+      },
+      {
+        "key": "REG_FACTORY_LIVENESS_TIMEOUT",
+        "label": "旧巡检超时配置",
+        "readonly": true,
+        "help": "保留历史保存值。本字段不控制当前AT检查；AT每项总时限30秒，网络/TLS/5xx最多3次，401/429不重试。"
+      }
+    ]
+  },
+  {
     "group": "网络 · 生产与凭据修复",
     "area": "proxy",
     "items": [

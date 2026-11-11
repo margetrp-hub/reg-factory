@@ -1114,6 +1114,18 @@ for _group in ENV_SCHEMA:
 # Go owns process settings; the worker schema remains the sole definition for
 # worker choices. Missing values are displayed, never silently written as defaults.
 ENV_SCHEMA.extend([
+    {"group": "周期巡检", "items": [
+        {"key": "REG_FACTORY_LIVENESS_ENABLED", "label": "启用周期巡检", "type": "choice", "choices": ["0", "1"], "default": "0", "apply": "live",
+         "help": "默认关闭。保存后15秒内更新排期；开启后等待一个完整周期，不立即首扫。关闭不影响手动检查和凭据修复后的AT核验。"},
+        {"key": "REG_FACTORY_LIVENESS_INTERVAL", "label": "巡检周期", "default": "6h", "apply": "live",
+         "help": "例如6h、12h、24h，至少1m。修改后重新计时，不补跑停用期间的任务。"},
+        {"key": "REG_FACTORY_LIVENESS_PLATFORMS", "label": "巡检平台", "default": "chatgpt", "apply": "live",
+         "help": "逗号分隔平台：chatgpt、claude、grok、kiro、outlook。ChatGPT从当前账号库去重后测试AT，逐条结果进入检查记录；不自动刷新RT。"},
+        {"key": "REG_FACTORY_LIVENESS_ACCOUNT_CONCURRENCY", "label": "其他平台巡检并发", "type": "int", "default": 1, "apply": "live",
+         "help": "范围1–10，仅作用于其他平台原扫描器。ChatGPT AT检查固定单并发，每项间隔300ms；与凭据修复并发分开。"},
+        {"key": "REG_FACTORY_LIVENESS_TIMEOUT", "label": "旧巡检超时配置", "readonly": True,
+         "help": "保留历史保存值。本字段不控制当前AT检查；AT每项总时限30秒，网络/TLS/5xx最多3次，401/429不重试。"},
+    ]},
     {"group": "生产与修复出口", "items": [
         {"key": "REG_FACTORY_PRODUCTION_PROXY", "label": "生产与重新授权出口", "secret": True,
          "help": "账号修复、TEAM 生产与核验使用的出口。留空直连，不继承注册住宅代理。"},
@@ -1143,7 +1155,7 @@ _CONFIG_AREAS = {
     "短信接码": "sms", "Codex add-phone 接码调参": "sms",
     "打码平台(可选)": "captcha", "视觉模型与投票(可选)": "captcha",
     "Outlook 自注册": "mail", "ChatGPT 邮箱": "mail", "临时邮箱(Claude/Grok 注册取码)": "mail",
-    "节点身份与密钥": "node", "控制面运行": "runtime",
+    "节点身份与密钥": "node", "控制面运行": "runtime", "周期巡检": "runtime",
 }
 for _group in ENV_SCHEMA:
     _group["area"] = _CONFIG_AREAS.get(_group["group"], "platform")
@@ -1153,6 +1165,8 @@ def _config_location(key, area, group):
     """One category and one configuration object per key, for every UI entry."""
     if area == "node":
         return area, group
+    if key.startswith("REG_FACTORY_LIVENESS_"):
+        return "runtime", "运行 · 周期巡检"
     if key in {"REG_FACTORY_MAX_CONCURRENCY", "REG_FACTORY_MEMORY_GUARD_PCT", "REGD_LOG_TAIL"}:
         return "runtime", "运行 · 并发与资源"
     if key == "REG_FACTORY_ASSET_API_KEY":

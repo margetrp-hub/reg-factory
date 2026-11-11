@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -38,14 +39,25 @@ func (s *Store) CreateCredentialCheck(task Task, accounts []Account) error {
 		return err
 	}
 	defer tx.Rollback()
+	if err = createCredentialCheck(tx, task, accounts); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func createCredentialCheck(tx *sql.Tx, task Task, accounts []Account) error {
 	var queued int
-	if err = tx.QueryRow(`SELECT COUNT(*) FROM tasks WHERE script=? AND status IN ('queued','running','stopping')`, CredentialCheckScript).Scan(&queued); err != nil {
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM tasks WHERE script=? AND status IN ('queued','running','stopping')`, CredentialCheckScript).Scan(&queued); err != nil {
 		return err
 	}
 	if queued >= 20 {
 		return errors.New("check_queue_full")
 	}
-	_, err = tx.Exec(`INSERT INTO tasks(id,script,title,args_json,status,created_at,actor) VALUES(?,?,?,?,'queued',?,?)`, task.ID, CredentialCheckScript, task.Title, task.ArgsJSON, now(), task.Actor)
+	createdAt := task.CreatedAt
+	if createdAt == "" {
+		createdAt = now()
+	}
+	_, err := tx.Exec(`INSERT INTO tasks(id,script,title,args_json,status,created_at,actor) VALUES(?,?,?,?,'queued',?,?)`, task.ID, CredentialCheckScript, task.Title, task.ArgsJSON, createdAt, task.Actor)
 	if err != nil {
 		return err
 	}
@@ -58,7 +70,7 @@ func (s *Store) CreateCredentialCheck(task Task, accounts []Account) error {
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 // ClaimCredentialCheck is used by the single bounded API worker, never Python.
