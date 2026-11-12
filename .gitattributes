@@ -3,3 +3,5 @@
 *.ps1 text eol=crlf
 # shell 脚本用 LF
 *.sh text eol=lf
+# SDK manifests hash exact bytes; archives and checkouts must preserve LF.
+shared/node-sdk/** text eol=lf

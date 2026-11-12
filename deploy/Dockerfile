@@ -39,9 +39,6 @@ RUN go build -trimpath -ldflags="-s -w" -o /out/regd ./cmd/regd
 # ---------------------------------------------------------------- Python worker 运行时
 FROM ${PYTHON_IMAGE} AS runtime
 
-ARG REVISION=unknown
-LABEL org.opencontainers.image.revision=$REVISION
-
 ARG DEBIAN_FRONTEND=noninteractive
 ARG INSTALL_CLOAK=0
 ARG APT_MIRROR=""
@@ -107,6 +104,9 @@ RUN set -eux; \
     chown -R rf:rf /data /opt/browser-cache
 
 WORKDIR /app
+# Source identity must not invalidate the large browser dependency layers.
+ARG REVISION=unknown
+LABEL org.opencontainers.image.revision=$REVISION
 COPY . /app
 RUN python shared/node-sdk/python/aishop_node/bundle.py shared/node-sdk
 COPY --from=api /out/regd /usr/local/bin/regd
