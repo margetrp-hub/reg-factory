@@ -1,0 +1,17 @@
+{
+  "schema": "aishop.node-assets.repair-observations.v1",
+  "cases": [
+    {"name":"reported-account-ban","result":{"status":"failed","liveness":"banned"},"expected":{"source_status":"unknown","source_liveness":"banned","checked_at":null}},
+    {"name":"reported-workspace-stop","result":{"status":"failed","source_status":"workspace_deactivated"},"expected":{"source_status":"workspace_deactivated","source_liveness":"unknown","checked_at":null}},
+    {"name":"legacy-disabled-ambiguous","result":{"status":"failed","error_code":"ACCOUNT_DISABLED"},"expected":{"source_status":"unknown","source_liveness":"unknown","checked_at":null}},
+    {"name":"account-error","result":{"status":"failed","error_code":"ACCOUNT_DEACTIVATED"},"expected":{"source_status":"banned","source_liveness":"unknown","checked_at":null}},
+    {"name":"explicit-account-ban","result":{"status":"failed","error_code":"ACCOUNT_BANNED"},"expected":{"source_status":"banned","source_liveness":"unknown","checked_at":null}},
+    {"name":"workspace-error","result":{"status":"failed","error_code":"WORKSPACE_DEACTIVATED"},"expected":{"source_status":"workspace_deactivated","source_liveness":"unknown","checked_at":null}},
+    {"name":"upstream-workspace-error","result":{"status":"failed","error_code":"deactivated_workspace"},"expected":{"source_status":"workspace_deactivated","source_liveness":"unknown","checked_at":null}},
+    {"name":"generic-401","result":{"status":"failed","error_code":"CREDENTIALS_INVALID"},"expected":{"source_status":"unknown","source_liveness":"unknown","checked_at":null}},
+    {"name":"rt-rejected","result":{"status":"failed","error_code":"RT_REJECTED"},"expected":{"source_status":"unknown","source_liveness":"unknown","checked_at":null}},
+    {"name":"preserve-reg-status","result":{"status":"failed","source_status":"email_otp_required","liveness":"needs_refresh","error_code":"RT_REJECTED"},"expected":{"source_status":"email_otp_required","source_liveness":"needs_refresh","checked_at":null}},
+    {"name":"observation-time","result":{"status":"completed","liveness":"workspace_deactivated","checked_at":"2026-11-13T09:00:00+00:00"},"expected":{"source_status":"unknown","source_liveness":"workspace_deactivated","checked_at":"2026-11-13T09:00:00+00:00"}},
+    {"name":"unknown-error-text-not-proof","result":{"status":"unknown","error_code":"UPSTREAM_UNAVAILABLE","message":"account banned"},"expected":{"source_status":"unknown","source_liveness":"unknown","checked_at":null}}
+  ]
+}

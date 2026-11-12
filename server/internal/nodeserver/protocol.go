@@ -208,6 +208,14 @@ func Verify(doc Document, key []byte, nodeID string, now time.Time) (*Verified, 
 		return nil, perr("WORK_PARAMETERS_INVALID", 400)
 	}
 	for name := range params {
+		if name == "asset_ref" {
+			binding, ok := params[name].(map[string]any)
+			if !ok || len(binding) != 1 || len(params) != 1 || !refPattern.MatchString(ls(binding["center_id"])) ||
+				(action != "asset.liveness" && action != "account.refresh" && action != "account.authorize") {
+				return nil, perr("WORK_ASSET_BINDING_INVALID", 400)
+			}
+			continue
+		}
 		if !allowed[name] {
 			return nil, perr("WORK_PARAMETERS_INVALID", 400)
 		}

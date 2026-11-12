@@ -649,7 +649,7 @@ def login_with_playwright(
     password = password or ""
 
     try:
-        from playwright.sync_api import sync_playwright
+        from patchright.sync_api import sync_playwright
     except ImportError as exc:
         raise RuntimeError(
             "playwright is required for automated OAuth. "

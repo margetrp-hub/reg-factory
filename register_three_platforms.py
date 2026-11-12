@@ -65,7 +65,38 @@ async def _terminate_child(proc):
             pass
 
 
+# ---- dispatcher 分支（REG_FACTORY_USE_DISPATCHER=1 时启用）----
+def _dispatcher_command(platform, args, account):
+    """开关打开时，把 exec 目标换成 platforms/_cli.py。
+
+    不改变 run_platform 的执行模型（仍是子进程 + 日志 + success 标记），
+    只换被执行的入口。这样开关来回切都不影响稳定性。
+    """
+    email, password, token, client_id = account
+    cmd = [
+        sys.executable, "-u", "platforms/_cli.py", platform,
+        "--step", "register",
+        "--email", email,
+        "--password", password or "",
+        "--node", getattr(args, "node", "auto") or "auto",
+        "--timeout", str(getattr(args, "timeout", 3600)),
+    ]
+    if platform == "claude":
+        cmd += ["--protocol", getattr(args, "claude_protocol", "browser")]
+    if token:
+        cmd += ["--token", token]
+    if client_id:
+        cmd += ["--client-id", client_id]
+    return cmd
+
+
+def _use_dispatcher():
+    return os.environ.get("REG_FACTORY_USE_DISPATCHER", "").strip() in ("1", "true", "yes")
+
+
 def build_command(platform, args, account):
+    if _use_dispatcher():
+        return _dispatcher_command(platform, args, account)
     email, password, token, client_id = account
     timeout = str(args.timeout)
 

@@ -906,7 +906,7 @@ async def one_attempt(
         ws = info.get("ws", "")
         if not ws:
             return None, None, [], None
-        from playwright.async_api import async_playwright as _apw
+        from patchright.async_api import async_playwright as _apw
         async with _apw() as p:
             browser = await p.chromium.connect_over_cdp(ws)
             ctx = browser.contexts[0] if browser.contexts else await browser.new_context()

@@ -1,0 +1,9 @@
+{
+  "schema": "aishop.node-sdk-release.v1",
+  "version": "1.0.0",
+  "contract": 1,
+  "python_minimum": "3.10",
+  "go_minimum": "1.26",
+  "capabilities": ["asset_claim", "durable_result", "scoped_ack", "repair_observation", "runtime_versions"],
+  "ownership": "Main control and SDK; node maintainers integrate business executors."
+}

@@ -670,6 +670,9 @@ ENV_SCHEMA = [
          "help": "ChatGPT 登录页最多导航次数，范围 1 到 4。"},
     ]},
     {"group": "指纹浏览器", "tests": [{"target": "bitbrowser", "label": "测试 指纹浏览器连通"}], "items": [
+        {"key": "BROWSER_ENGINE", "type": "choice", "choices": ["patchright", "camoufox"], "default": "patchright",
+         "help": "Patchright 使用下方浏览器服务；Camoufox 使用镜像内置 Firefox。Ruyipage 保留独立适配入口，不作为现有流程的可互换引擎。"},
+        {"key": "CAMOUFOX_BROWSER_PATH", "help": "默认从安装包与共享缓存自动发现；只在使用自定义内核时填写。"},
         {"key": "FINGERPRINT_BROWSER", "type": "choice", "choices": ["bitbrowser", "cloak", "roxy", "bundled", "custom", "adspower", "custom_api"],
          "default": "bitbrowser", "help": "默认保持 BitBrowser 兼容；选择 CloakBrowser/RoxyBrowser 即使用参考项目的指纹浏览器方案。"},
         {"key": "CLOAK_HEADLESS", "type": "bool", "default": True, "help": "CloakBrowser 无头运行；关闭后显示浏览器窗口。"},
@@ -955,6 +958,8 @@ _ENV_LABELS = {
     "CHATGPT_GOTO_ATTEMPTS": "ChatGPT 页面打开次数",
     # Fingerprint browsers
     "FINGERPRINT_BROWSER": "指纹浏览器类型",
+    "BROWSER_ENGINE": "执行浏览器引擎",
+    "CAMOUFOX_BROWSER_PATH": "Firefox 内核路径",
     "CLOAK_HEADLESS": "CloakBrowser 无头运行",
     "CLOAK_HUMANIZE": "CloakBrowser 人工行为",
     "CLOAK_GEOIP": "CloakBrowser 出口地理匹配",
@@ -1136,6 +1141,10 @@ ENV_SCHEMA.extend([
         {"key": "REGD_LOG_TAIL", "label": "默认日志行数", "type": "int", "default": 2000, "apply": "restart", "help": "控制面读取历史日志的默认上限。"},
     ]},
     {"group": "节点身份与密钥", "items": [
+        {"key": "REG_FACTORY_WORK_ORIGIN", "label": "Work 内网地址", "apply": "restart", "help": "中央资产领取和结果回传统一经过 Work，不连接 Core 数据库。"},
+        {"key": "REG_FACTORY_ASSET_CENTER_ID", "label": "生产中心身份", "apply": "restart", "help": "与 Work 登记的生产中心节点 ID 一致。"},
+        {"key": "REG_FACTORY_ASSET_KEY", "label": "中央资产通信密钥", "secret": True, "apply": "restart", "help": "生产中心为此节点单独配置的 base64url 32 字节密钥。"},
+        {"key": "REG_FACTORY_ASSET_JOURNAL_KEY", "label": "原结果暂存密钥", "secret": True, "apply": "restart", "help": "本机加密回库结果；与通信密钥不同，升级保留。"},
         {"key": "REG_FACTORY_NODE_ID", "label": "节点身份", "apply": "restart", "help": "Core/Work登记的节点身份。修改需同步接入信息。"},
         {"key": "REG_FACTORY_NODE_PLATFORM", "label": "节点平台", "apply": "restart", "help": "签名任务默认平台，与本地可执行模式分开管理。"},
         *[{"key": key, "label": label, "secret": True, "apply": "restart", "help": "节点独立密钥；保存后需重启并核对双方指纹。"}

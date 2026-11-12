@@ -56,13 +56,13 @@ def validate_identity(document: dict, tokens: dict) -> None:
         raise ValueError("OAuth workspace identity mismatch")
 
 
-async def authorize_document(document: dict, *, timeout: int = 600, on_tokens=None, on_progress=None) -> dict:
+async def authorize_document(document: dict, *, timeout: int = 600, on_tokens=None, on_progress=None, mailbox=None) -> dict:
     record = login_record(document)
     if record.get("account_password") and record.get("two_factor"):
         # The supplier already has a complete protocol login implementation.
         # Password/TOTP accounts do not depend on a desktop browser process.
         return await asyncio.to_thread(_authorize_protocol, document, record, timeout, on_tokens, on_progress)
-    from playwright.async_api import async_playwright
+    from patchright.async_api import async_playwright
     from common.browser import open_and_connect, teardown
     from common.oauth_codex import drive_authorize, REDIRECT_URI
     from tools.import_plus_codex import MailCodeProvider
@@ -88,7 +88,18 @@ async def authorize_document(document: dict, *, timeout: int = 600, on_tokens=No
                     "REG_FACTORY_PROXY": os.environ.get("REG_FACTORY_PRODUCTION_PROXY", "").strip(),
                 }),
             )
-            mail = MailCodeProvider(record, context, page, max_wait=min(timeout, 150))
+            if mailbox and mailbox.get('provider') in {'imap', 'qq', 'icloud', 'outlook'}:
+                from aishop_node.mailbox import IMAPMailbox
+                import threading
+                provider = IMAPMailbox(mailbox, stopped=threading.Event())
+                class CentralMail:
+                    async def prepare(self):
+                        await asyncio.to_thread(provider.prime)
+                    async def __call__(self, account_email, received_after):
+                        return await asyncio.to_thread(provider.wait_for_otp, account_email, timeout=min(timeout, 150), issued_after=received_after)
+                mail = CentralMail()
+            else:
+                mail = MailCodeProvider(record, context, page, max_wait=min(timeout, 150))
             await mail.prepare()
             code, callback_state, _ = await asyncio.wait_for(drive_authorize(
                 page, url, timeout=timeout, account_email=record["email"],

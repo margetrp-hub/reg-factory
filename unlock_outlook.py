@@ -38,7 +38,7 @@ if sys.platform == "win32":
             reconfigure(encoding="utf-8")
 
 import requests
-from playwright.async_api import async_playwright
+from patchright.async_api import async_playwright
 
 # 与 Outlook 注册共用完整的 PerimeterX 目标定位和拟人按压实现。
 # 保证脚本被 importlib 从任意路径加载时也能找到 common 包。

@@ -25,7 +25,7 @@ if sys.platform == "win32":
     except Exception:
         pass
 
-from playwright.async_api import async_playwright
+from patchright.async_api import async_playwright
 
 from config import (SUB2API_URL, SUB2API_EMAIL, SUB2API_PASSWORD, SUB2API_GROUP,
                     CPA_URL, CPA_MGMT_KEY)

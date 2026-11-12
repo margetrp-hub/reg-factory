@@ -1,4 +1,7 @@
-playwright
+playwright==1.62.0
+patchright==1.64.4
+camoufox==0.5.9
+ruyiPage==1.2.79
 requests
 Pillow
 aiohttp

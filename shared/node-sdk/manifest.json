@@ -1,0 +1,29 @@
+{
+  "contract": 1,
+  "files": {
+    "contracts/fixtures.v1.json": "dbf1bee756617b68b41572c4c7faa943171e57a62e03ba0877fb6b37fe2dc205",
+    "contracts/relay-fixture.v1.json": "d6319230d4ec13cbc581edb93cafeb38de357756c397f8663d471b67172279bf",
+    "contracts/repair-observations.v1.json": "1824b757925a39c2f117ad1b26cb2f3e7214c6c605fbb45380bf09742136f318",
+    "contracts/result-receipts.v1.json": "922fa358ca2fdec3fa3104f4947ab5c73d5fb763039174b645730afd6cecc579",
+    "contracts/sdk-release.v1.json": "5bcbf20baa9410e4746c224f42cac4c72e0d49a4cc9f671f22018c4aea308ccc",
+    "go/go.mod": "617b3b3cf007e45efa8541ef36b1eb654c46d9b3867169b457ba119c173241f5",
+    "go/nodeassets/client.go": "cdc6a1d44dc92d3ac419a545ef2263d0ed64d376a13d2ad5b71ecf1bd040c649",
+    "go/nodeassets/journal.go": "c0133ed7fc3a13ac406624b38e5db16e8bf738999e12771ec35cd26f42d2fa6f",
+    "go/nodeassets/protocol.go": "cb72df45281514979bf1e876d431aa5122c5605732c85cabb51807c6ebcb2199",
+    "go/nodeassets/receipt.go": "b006ea499cba7b58a1c75154aeb77ddf0e238d9d7da7d2471c22db9cbc02517b",
+    "go/nodeassets/runtime.go": "65267ea09e833b210d03413d7e442019fcda68dab45488be5a2a112edda8041e",
+    "go/nodeassets/state.go": "acb6293fc27a6fb2b47bb0c6de4172bc2071b19c27bd72cc51a81891a8c51a9a",
+    "go/nodeassets/transport.go": "698873c9ee6b27c2025da2c94ea1aaa16a4012dd93ec4b1277115353fddc3364",
+    "python/aishop_node/__init__.py": "b886cad2d0e183acbefe7c900ab762719ddd862c86e58dbdff2b32c64180f2e6",
+    "python/aishop_node/assets.py": "65972fcc16af9babd9115208426a4b9290ea60f0afd6e0226094496694a623b2",
+    "python/aishop_node/bundle.py": "7a1b6f796fe7ea2507bf548af3ee426e32ce76d7a73bcae4d4153829de596dba",
+    "python/aishop_node/execution.py": "a91232ba8c7a522cfd2b63e92a9bf1736c38de4afb497b9d5294df31020f5cdb",
+    "python/aishop_node/journal.py": "585d82a93d46edfa56380bf09fa1bd9b543f6ba90464bc21f2cfa7f50e39bafc",
+    "python/aishop_node/mailbox.py": "adfd0c3c20950cc09a1c3f7e36c424ae56a33a52547cab06bdae5160726b893d",
+    "python/aishop_node/runtime.py": "5c335e6fc1b969334941688417ff3f50808321f903e179b26f7d92ed9e5a3681",
+    "python/aishop_node/transport.py": "bbe91f8af35091401f5dc181240eadea25b04ad998dfb79131ba8cafc80a5f73"
+  },
+  "schema": "aishop.node-sdk-bundle.v1",
+  "sdk_version": "1.0.0",
+  "source_sha256": "74ae6b98eda0e002bb597f265c7bc91d6dc2d8cbd95c62ee2b3a48b0b9c75958"
+}

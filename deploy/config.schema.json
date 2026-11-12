@@ -406,6 +406,22 @@
     "area": "browser",
     "items": [
       {
+        "key": "BROWSER_ENGINE",
+        "type": "choice",
+        "choices": [
+          "patchright",
+          "camoufox"
+        ],
+        "default": "patchright",
+        "help": "Patchright 使用下方浏览器服务；Camoufox 使用镜像内置 Firefox。Ruyipage 保留独立适配入口，不作为现有流程的可互换引擎。",
+        "label": "执行浏览器引擎"
+      },
+      {
+        "key": "CAMOUFOX_BROWSER_PATH",
+        "help": "默认从安装包与共享缓存自动发现；只在使用自定义内核时填写。",
+        "label": "Firefox 内核路径"
+      },
+      {
         "key": "FINGERPRINT_BROWSER",
         "type": "choice",
         "choices": [
@@ -1585,6 +1601,32 @@
     "group": "节点身份与密钥",
     "area": "node",
     "items": [
+      {
+        "key": "REG_FACTORY_WORK_ORIGIN",
+        "label": "Work 内网地址",
+        "apply": "restart",
+        "help": "中央资产领取和结果回传统一经过 Work，不连接 Core 数据库。"
+      },
+      {
+        "key": "REG_FACTORY_ASSET_CENTER_ID",
+        "label": "生产中心身份",
+        "apply": "restart",
+        "help": "与 Work 登记的生产中心节点 ID 一致。"
+      },
+      {
+        "key": "REG_FACTORY_ASSET_KEY",
+        "label": "中央资产通信密钥",
+        "secret": true,
+        "apply": "restart",
+        "help": "生产中心为此节点单独配置的 base64url 32 字节密钥。"
+      },
+      {
+        "key": "REG_FACTORY_ASSET_JOURNAL_KEY",
+        "label": "原结果暂存密钥",
+        "secret": true,
+        "apply": "restart",
+        "help": "本机加密回库结果；与通信密钥不同，升级保留。"
+      },
       {
         "key": "REG_FACTORY_NODE_ID",
         "label": "节点身份",

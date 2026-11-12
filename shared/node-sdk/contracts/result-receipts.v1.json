@@ -1,0 +1,27 @@
+{
+  "schema": "aishop.node-assets.result-receipts.v1",
+  "expectation": {"task_id": "task-1", "account_id": "account-1", "result_id": "result-1", "outcome": "success", "expected_revision": 7, "refresh": true},
+  "receipt": {"task_id": "task-1", "account_id": "account-1", "result_id": "result-1", "state": "completed", "credential_revision": 8},
+  "cases": [
+    {"name": "refresh_committed", "state": "completed"},
+    {"name": "same_document", "receipt": {"credential_revision": 7}, "state": "completed"},
+    {"name": "wrong_task", "receipt": {"task_id": "other"}, "reject": true},
+    {"name": "wrong_account", "receipt": {"account_id": "other"}, "reject": true},
+    {"name": "wrong_result", "receipt": {"result_id": "other"}, "reject": true},
+    {"name": "wrong_outcome", "receipt": {"state": "failed"}, "reject": true},
+    {"name": "stale_revision", "receipt": {"credential_revision": 6}, "reject": true},
+    {"name": "later_task_revision", "receipt": {"credential_revision": 9}, "reject": true},
+    {"name": "boolean_revision", "receipt": {"credential_revision": true}, "reject": true},
+    {"name": "string_revision", "receipt": {"credential_revision": "8"}, "reject": true},
+    {"name": "fractional_revision", "receipt": {"credential_revision": 7.5}, "reject": true},
+    {"name": "check_preserves_revision", "expectation": {"refresh": false}, "receipt": {"credential_revision": 7}, "state": "completed"},
+    {"name": "check_cannot_rotate", "expectation": {"refresh": false}, "reject": true},
+    {"name": "failure_preserves_revision", "expectation": {"outcome": "failed"}, "receipt": {"state": "failed", "credential_revision": 7}, "state": "failed"},
+    {"name": "failure_cannot_rotate", "expectation": {"outcome": "failed"}, "receipt": {"state": "failed"}, "reject": true},
+    {"name": "unknown_is_not_final", "expectation": {"outcome": "unknown"}, "receipt": {"state": "unknown", "last_result_id": "result-1"}, "remove": ["result_id", "credential_revision"], "state": "unknown"},
+    {"name": "closed_original_checkout", "receipt": {"state": "closed", "expected_revision": 7}, "remove": ["result_id", "credential_revision"], "state": "closed"},
+    {"name": "closed_wrong_revision", "receipt": {"state": "closed", "expected_revision": 6}, "reject": true},
+    {"name": "closed_wrong_account", "receipt": {"state": "closed", "expected_revision": 7, "account_id": "other"}, "reject": true},
+    {"name": "absent_is_not_confirmation", "receipt": {"state": "absent"}, "reject": true}
+  ]
+}

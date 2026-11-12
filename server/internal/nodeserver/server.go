@@ -87,12 +87,14 @@ func (h *Handler) Register(r *gin.Engine) {
 			"execution_ready":  enabled,
 			"action_readiness": gin.H{productionAction: gin.H{"ready": enabled && productionError == "", "error_code": productionError, "processing_owner": "node_admin"}},
 			"runtime": gin.H{
+				"central_assets":    h.centralReadiness(),
 				"supported_actions": actions,
 				"protocol_capabilities": []string{
 					"account-node.work.v1",
 					"account-node.receipt.v1",
 					"work.inventory-relay.v1",
 					"account-node.accounts.v1",
+					"aishop.node-assets.v1",
 					productionResumeProtocol,
 					productionAdmitProtocol,
 					productionMaterialSchema,
@@ -181,6 +183,9 @@ func (h *Handler) acceptTask(c *gin.Context) {
 		return
 	}
 	localID := "work-" + verified.TaskID
+	if centralBinding(verified) {
+		localID = "work-" + nodeTicket(verified)
+	}
 	// Legacy non-production rows do not retain a complete assignment. Do not
 	// manufacture its original scope from a later read or duplicate submission.
 	_, existing := h.st.OperationTask(nodeTicket(verified))
@@ -213,6 +218,10 @@ func (h *Handler) acceptTask(c *gin.Context) {
 			return
 		}
 		if !fresh {
+			if centralBinding(verified) {
+				h.acceptCentral(c, verified, localID)
+				return
+			}
 			// A retry after a lost response must be indistinguishable from the
 			// original acceptance to Work.  The duplicate marker is deliberately
 			// omitted: Submit validates the compact ACK contract exactly.
@@ -221,6 +230,10 @@ func (h *Handler) acceptTask(c *gin.Context) {
 		}
 	}
 
+	if centralBinding(verified) {
+		h.acceptCentral(c, verified, localID)
+		return
+	}
 	switch verified.Action {
 	case "account.register":
 		script, args := h.registerTask(verified.Subject)

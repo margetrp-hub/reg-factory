@@ -29,7 +29,7 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
 
 from aiohttp import web
-from playwright.async_api import async_playwright
+from patchright.async_api import async_playwright
 
 from bitbrowser import BitBrowser
 from common.browser import inject_stealth, create_browser_with_retry

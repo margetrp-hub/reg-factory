@@ -9,7 +9,7 @@ import os
 import sys
 import time
 
-from playwright.async_api import async_playwright
+from patchright.async_api import async_playwright
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _ROOT not in sys.path:

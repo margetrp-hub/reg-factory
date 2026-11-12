@@ -60,6 +60,8 @@ func (h *Handler) inventoryRelay(c *gin.Context) {
 	}
 	var response map[string]any
 	switch action {
+	case "asset_replay":
+		response, err = h.replayCentral(data)
 	case "production_sources":
 		response, err = h.productionSources(payload, data)
 	case "offer":

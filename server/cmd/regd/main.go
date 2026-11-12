@@ -21,7 +21,7 @@ import (
 
 	"github.com/tiantianGPU/reg-factory/server"
 	"github.com/tiantianGPU/reg-factory/server/internal/api"
-	"github.com/tiantianGPU/reg-factory/server/internal/apps/icmail"
+	"github.com/tiantianGPU/reg-factory/server/internal/apps/mail"
 	"github.com/tiantianGPU/reg-factory/server/internal/assetstore"
 	"github.com/tiantianGPU/reg-factory/server/internal/auth"
 	"github.com/tiantianGPU/reg-factory/server/internal/nodeserver"
@@ -46,6 +46,8 @@ func main() {
 		log.Fatalf("[regd] 数据目录不可用: %v", err)
 	}
 
+	// 打印生效的 DSN（脱敏），便于确认 PG/SQLite 分流是否正确
+	log.Printf("[regd] 数据库后端: %s", store.DialectOf(cfg.DBPath))
 	st, err := store.Open(cfg.DBPath)
 	if err != nil {
 		log.Fatalf("[regd] 打开数据库失败: %v", err)
@@ -86,15 +88,15 @@ func main() {
 	assetSyncLoop(cfg.DataDir)
 
 	version := readVersion(cfg)
-	// IC 邮箱 app（同仓同进程）：/api/apps/icmail/* 与 /apps/icmail 页面
-	icApp, err := icmail.New(icmail.NewConfigFromEnv(cfg.DataDir))
+	// IC 邮箱 app（同仓同进程）：/api/apps/mail/* 与 /apps/mail 页面
+	icApp, err := mail.New(mail.NewConfigFromEnv(cfg.DataDir))
 	if err != nil {
 		log.Printf("[regd] IC 邮箱初始化失败（跳过该模块）: %v", err)
 	} else {
 		defer icApp.Close()
 		icApp.Start(context.Background())
 		defer icApp.Stop()
-		log.Printf("[regd] IC 邮箱已挂载: /api/apps/icmail（db=%s）", icApp.DB.Path())
+		log.Printf("[regd] IC 邮箱已挂载: /api/apps/mail")
 	}
 
 	apiServer := api.New(cfg, env, st, manager, authenticator, version, icApp)
@@ -255,4 +257,27 @@ func assetSyncLoop(dataDir string) {
 			}
 		}
 	}()
+}
+
+// maskDSN 脱敏 DSN 里的密码。
+func maskDSN(dsn string) string {
+	if i := strings.Index(dsn, "://"); i > 0 {
+		rest := dsn[i+3:]
+		if at := strings.Index(rest, "@"); at > 0 {
+			if colon := strings.Index(rest[:at], ":"); colon > 0 {
+				return dsn[:i+3] + rest[:colon+1] + "***" + rest[at:]
+			}
+		}
+	}
+	if strings.Contains(dsn, "password=") {
+		parts := strings.Split(dsn, "password=")
+		if len(parts) == 2 {
+			end := strings.IndexAny(parts[1], " 	")
+			if end < 0 {
+				return parts[0] + "password=***"
+			}
+			return parts[0] + "password=***" + parts[1][end:]
+		}
+	}
+	return dsn
 }

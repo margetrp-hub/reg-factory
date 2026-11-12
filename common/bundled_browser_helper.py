@@ -11,7 +11,7 @@ import sys
 import urllib.request
 from pathlib import Path
 
-from playwright.async_api import async_playwright
+from patchright.async_api import async_playwright
 
 # The helper is launched by absolute path, so Python's import root is
 # ``common/`` instead of the project directory.

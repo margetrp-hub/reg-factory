@@ -23,7 +23,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/tiantianGPU/reg-factory/server/internal/apps/icmail"
+	"github.com/tiantianGPU/reg-factory/server/internal/apps/mail"
 	"github.com/tiantianGPU/reg-factory/server/internal/assets"
 	"github.com/tiantianGPU/reg-factory/server/internal/assetstore"
 	"github.com/tiantianGPU/reg-factory/server/internal/auth"
@@ -53,12 +53,12 @@ type Server struct {
 	// 协议注册（Go 原生）并发槽，避免一次点 10 个把出口打死
 	webRegisterSlot chan struct{}
 	// IC 邮箱 app（同进程），协议注册可直接从这里取 magic link
-	icApp *icmail.App
+	icApp *mail.App
 }
 
 // New 构造 API。
-func New(cfg *settings.Settings, env *settings.Env, st *store.Store, run *runner.Manager, a *auth.Manager, version string, icApp *icmail.App) *Server {
-	return &Server{
+func New(cfg *settings.Settings, env *settings.Env, st *store.Store, run *runner.Manager, a *auth.Manager, version string, icApp *mail.App) *Server {
+	s := &Server{
 		cfg:             cfg,
 		env:             env,
 		st:              st,
@@ -68,17 +68,29 @@ func New(cfg *settings.Settings, env *settings.Env, st *store.Store, run *runner
 		assets:          assetstore.New(cfg.DataDir),
 		version:         version,
 		webRegisterSlot: make(chan struct{}, 3),
-		icApp:           icApp,
+		// 2026-11-13 修：原来这里漏了 icApp，
+		// 导致 s.icApp 永远为 nil，/api/apps/mail 路由从来没注册过。
+		icApp: icApp,
 	}
+
+	// 建 ip_pool 表 + 给 accounts 加 pool_* 字段（幂等）。
+	// 之前 ip_pool.go / pool.go 写完但零调用，表和字段都没建。
+	s.initPoolSchema()
+
+	return s
 }
 
 // Register 注册全部路由。
 func (s *Server) Register(r *gin.Engine) {
 	r.Use(s.auth.Middleware())
 	if s.icApp != nil {
-		group := r.Group("/api/apps/icmail", func(c *gin.Context) { c.Set("icmailAuthenticated", true); c.Next() })
-		s.icApp.Register(group)
-		s.icApp.RegisterPublic(r.Group("/api/apps/icmail/public"))
+		// Existing pages and Python workers retain their signed/local endpoint.
+		// Both paths use the same app and database, never a second mailbox pool.
+		for _, base := range []string{"/api/apps/mail", "/api/apps/icmail"} {
+			group := r.Group(base, func(c *gin.Context) { c.Set("mailAuthenticated", true); c.Next() })
+			s.icApp.Register(group)
+			s.icApp.RegisterPublic(r.Group(base + "/public"))
+		}
 	}
 
 	r.GET("/api/health", func(c *gin.Context) {
@@ -112,6 +124,25 @@ func (s *Server) Register(r *gin.Engine) {
 	r.GET("/api/assets/:kind", s.assetList)
 	r.POST("/api/assets/:kind/claim", s.assetClaim)
 	r.POST("/api/assets/claims/reset", s.claimReset)
+
+	r.GET("/api/plus/stages", s.plusStagesGet)
+	r.PUT("/api/plus/stages", s.plusStagesPut)
+	r.POST("/api/plus/stages/check", s.plusStagesCheck)
+
+	// ---- Plus 池能力（2026-11-13 接线 ip_pool.go / pool.go / warmup.go）----
+	// 这三个文件之前写完但零调用：IP 预选池 / 账号池 / 预热机制。
+	r.GET("/api/plus/ip-pool", s.plusIPPoolList)
+	r.POST("/api/plus/ip-pool/screen", s.plusIPPoolScreen)
+	r.POST("/api/plus/ip-pool/take", s.plusIPPoolTake)
+	r.POST("/api/plus/ip-pool/release", s.plusIPPoolRelease)
+	r.GET("/api/plus/pool", s.plusPoolList)
+	r.POST("/api/plus/pool/take", s.plusPoolTake)
+	r.POST("/api/plus/pool/release", s.plusPoolRelease)
+	r.POST("/api/plus/warmup", s.plusWarmup)
+
+	r.GET("/api/plus/regions", s.plusRegions)
+	r.GET("/api/plus/regions/check", s.plusRegionCheck)
+	r.POST("/api/plus/regions/reload", s.plusRegionsReload)
 
 	r.GET("/api/config", s.configGet)
 	r.PUT("/api/config", s.configPut)
@@ -754,7 +785,7 @@ func (s *Server) exportAccounts(c *gin.Context) {
 
 // icMailbox 让协议注册直接从 IC 的 SQLite 取信（同进程，零网络、零鉴权）。
 type icMailbox struct {
-	app   *icmail.App
+	app   *mail.App
 	email string
 }
 

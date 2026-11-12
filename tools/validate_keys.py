@@ -16,7 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
 
-from playwright.async_api import async_playwright
+from patchright.async_api import async_playwright
 from bitbrowser import BitBrowser
 
 INPUT_FILE = sys.argv[1] if len(sys.argv) > 1 else "cookies/accounts-3.24.txt"

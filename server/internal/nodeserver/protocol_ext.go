@@ -128,6 +128,9 @@ func (h *Handler) refreshFailureCode(taskID string) string {
 
 // ReceiptFor 生成 account-node.receipt.v1。
 func (h *Handler) ReceiptFor(verified *Verified, nodeTaskID, nodeStatus string, exitCode int, key []byte, now time.Time) (map[string]any, error) {
+	if centralBinding(verified) {
+		return h.centralReceipt(verified, key)
+	}
 	if verified.Action == productionAction {
 		return h.productionReceipt(verified, key, now)
 	}

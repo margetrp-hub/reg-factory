@@ -1,12 +1,12 @@
 # reg-factory Go 控制面部署
 
-SG现役控制面为Go regd + 内嵌Next.js页面 + Python worker，默认宿主回环8800。Python本地8799面板仍保留为工具入口，不属于本部署。实际提交、镜像与恢复位置只在[当前验收](../docs/acceptance.md)登记；本页提供操作流程，不保留版本切换流水和旧性能样本。
+SG控制面为Go regd + 内嵌Next.js页面 + Python worker，默认宿主回环8800。旧Python 8799面板已退役。实际提交、镜像与恢复位置只在[当前验收](../docs/acceptance.md)登记；本页提供操作流程。
 
 | 目录 | 责任 |
 | --- | --- |
 | `server/cmd/regd`、`server/internal/api` | 进程装配与面板接口 |
 | `server/internal/auth`、`settings` | 面板认证与配置 |
-| `server/internal/store`、`runner` | 独立SQLite任务/日志/领取事实及受控Python进程 |
+| `server/internal/store`、`runner` | 本机PostgreSQL任务/日志/领取事实及受控Python进程 |
 | `server/internal/nodeserver` | Work签名接单、原结果与恢复 |
 | `server/web`、`server/webdist` | Next.js源码及构建时嵌入的静态产物 |
 | `schema/scripts.py`、`server/tools/export_schema.py` | 唯一任务/配置目录及生成工具 |
@@ -53,8 +53,12 @@ curl -fsS http://127.0.0.1:8800/api/health
 ```
 
 默认只运行一个 `panel` 服务、一个 `reg-factory` 容器。Go 负责界面、状态和调度，
-按需启动镜像内的 Python worker；共用 `/data` 与 `/data/.env`，SQLite 使用 `/data/regd.db`。
+按需启动镜像内的 Python worker；共用 `/data` 与 `/data/.env`。SG的 `REGD_DB`、`MAIL_DB` 使用所在主机的PostgreSQL DSN，沿用现役数据库和账号，不跨机写库。首次启动幂等建表，不依赖容器外手写兼容函数；测试工具仍可使用隔离SQLite。
 启动入口仍负责数据目录初始化、资产 Key 首次生成、Xvfb 和降权，不改变业务或节点密钥协议。
+
+镜像同时固定Patchright、Playwright、Camoufox和Ruyipage Python包。构建时安装Chromium及Firefox，Firefox缓存位于 `/opt/browser-cache`，可由非root运行用户访问。`BROWSER_ENGINE=patchright` 保留原浏览器供应商选择；`camoufox` 使用独立Firefox上下文。Ruyipage是不同API的工具入口，不能直接替换现有Playwright任务。自动巡检保持显式配置的关闭状态。
+
+升级前保存现役容器、实际二进制摘要、Compose、配置摘要、PostgreSQL一致性备份与文件卷备份。当前SG曾在容器层替换程序，原镜像标签不能单独代表恢复程序；保留原容器供恢复。回退仅恢复兼容程序，不覆盖升级后的业务数据。切换前确认无执行中任务，切换后核对认证、账号/任务数量、旧任务SSE、邮箱池、新增字段及浏览器启动。
 
 默认 bridge 网络中，容器监听 `0.0.0.0:8800`，宿主发布 `127.0.0.1:8800`。
 `RF_PUBLISH` 只填宿主地址和端口（例如 `127.0.0.1:8800` 或 `0.0.0.0:8800`），

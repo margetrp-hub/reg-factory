@@ -15,7 +15,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from playwright.async_api import async_playwright
+from patchright.async_api import async_playwright
 
 from common import oauth_codex as ox
 from common import proxy_switch

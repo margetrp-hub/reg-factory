@@ -29,7 +29,7 @@ if sys.platform == "win32":
         sys.stdin.reconfigure(encoding="utf-8")
 
 import requests
-from playwright.async_api import async_playwright
+from patchright.async_api import async_playwright
 try:
     from playwright_stealth import Stealth as _StealthCls
     _HAS_STEALTH = True
@@ -55,6 +55,7 @@ except Exception:
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from common import outlook_press as _outlook_press
 from common.browser import react_fill
+from common.human_mouse import human_move_to
 from common.traffic_saver import install as install_traffic_saver
 
 # BitBrowser local API
@@ -183,6 +184,118 @@ def outlook_registration_terminal_state(url, text=""):
     )):
         return "confirmed", "post_signup_text"
     return "pending", "unrecognized_page"
+
+
+# ── 拟人化辅助（2026-11-13 加）────────────────────────────────────
+# 起因：注册表单全用 .fill()，0 毫秒写入，Microsoft 行为分析直接判定
+# 「unusual activity / account creation has been blocked」。
+# ── 拟人化工具（2026-11-13 参考 LainsNL/OutlookRegister 加的）──────────
+# 关键：用 page.mouse.move(x, y, steps=N) + page.mouse.click(x, y)，
+# 而不是 locator.click()。后者是「无障碍点击」，直接派发到元素中心，
+# 没有鼠标移动过程；前者才是真实鼠标轨迹。
+_BOT_WAIT = float(os.environ.get("OUTLOOK_BOT_PROTECTION_WAIT", "30"))
+
+
+async def _smooth_move_to(page, tx, ty, steps=None):
+    """分步移动鼠标。"""
+    if steps is None:
+        steps = random.randint(6, 14)
+    try:
+        await page.mouse.move(tx, ty, steps=steps)
+    except Exception:
+        pass
+
+
+async def _smooth_click(page, locator, offset=5, pause_ms=(60, 160)):
+    """按真实坐标点击：先滑过去，停一下，再点。"""
+    try:
+        box = await locator.bounding_box()
+        if not box:
+            await locator.click()
+            return False
+        tx = box["x"] + box["width"] / 2 + random.uniform(-offset, offset)
+        ty = box["y"] + box["height"] / 2 + random.uniform(-offset, offset)
+        # 起点随机（避免每次都从同一点出发）
+        await page.mouse.move(random.uniform(150, 450), random.uniform(100, 350))
+        await _smooth_move_to(page, tx, ty)
+        await page.wait_for_timeout(random.randint(*pause_ms))
+        await page.mouse.click(tx, ty)
+        return True
+    except Exception:
+        try:
+            await locator.click()
+        except Exception:
+            pass
+        return False
+
+
+async def _smooth_type(page, locator, text, click_first=True):
+    """逐字符输入，每字符 40-110ms。"""
+    if click_first:
+        await _smooth_click(page, locator)
+    for ch in text:
+        try:
+            await locator.type(ch, delay=random.randint(40, 110))
+        except Exception:
+            break
+
+
+async def _wait_bot_budget(page, start_time, total=None):
+    """把「从开始到现在」补到至少 total 秒。
+
+    LainsNL 的实现：点最后一次 Next 之前，确保整体耗时不少于
+    bot_protection_wait。真人不可能是 5 秒填完整个表单。
+    """
+    total = _BOT_WAIT if total is None else total
+    elapsed = time.time() - start_time
+    remain = total - elapsed
+    if remain > 0:
+        print(f"  等待机器人检测窗口：再等 {remain:.1f}s（已用 {elapsed:.1f}s / 目标 {total:.0f}s）")
+        await page.wait_for_timeout(int(remain * 1000))
+
+
+async def _human_pause(lo=0.8, hi=2.5):
+    """随机停顿，模拟真人思考。"""
+    await asyncio.sleep(random.uniform(lo, hi))
+
+
+async def _human_type(page, locator, value, tag="", label="", delay=None):
+    """拟人化填表：先 hover 再逐字符输入。
+
+    与 react_fill 的区别：这个直接接受 locator 对象，适用于动态生成的
+    选择器（注册表单的字段 id 每次都变，没法用固定 selector 字符串）。
+    """
+    if delay is None:
+        delay = random.randint(45, 110)
+    try:
+        if await locator.count() == 0:
+            return False
+        await locator.hover(timeout=5000)
+        await _human_pause(0.15, 0.5)
+        await locator.click()
+        await _human_pause(0.2, 0.6)
+        # 清空
+        try:
+            await locator.press("Control+a")
+            await locator.press("Backspace")
+        except Exception:
+            pass
+        # 逐字符
+        await locator.type(value, delay=delay)
+        await _human_pause(0.3, 0.9)
+        # 回读校验
+        got = await locator.input_value()
+        if got != value:
+            if tag:
+                print(f"  {tag} {label} 回读不一致: 期望 {value!r} 实际 {got!r}")
+            return False
+        if tag:
+            print(f"  {tag} {label}: {value}")
+        return True
+    except Exception as e:
+        if tag:
+            print(f"  {tag} {label} 失败: {type(e).__name__}: {str(e)[:80]}")
+        return False
 
 
 async def _microsoft_page_terminal_error(page):
@@ -420,11 +533,58 @@ def generate_name():
     return random.choice(first_names), random.choice(last_names)
 
 
+def _humanish_prefix():
+    """生成拟人的 Outlook 邮箱前缀。
+
+    真人注册的形状：
+        john.smith / mike_thomas2024 / sarah.lee91 / davidbrown
+
+    不是：zsj9u4jlm2tg（1 字母 + 11 随机）
+    """
+    first = [
+        "james", "john", "robert", "michael", "david", "william", "richard",
+        "joseph", "thomas", "charles", "daniel", "matthew", "anthony", "mark",
+        "steven", "andrew", "brian", "kevin", "jason", "eric", "peter", "paul",
+        "mary", "patricia", "jennifer", "linda", "barbara", "elizabeth",
+        "susan", "jessica", "sarah", "karen", "emily", "emma", "olivia",
+        "nancy", "lisa", "betty", "margaret", "sandra", "ashley",
+    ]
+    last = [
+        "smith", "johnson", "williams", "brown", "jones", "garcia", "miller",
+        "davis", "rodriguez", "martinez", "anderson", "taylor", "thomas",
+        "moore", "jackson", "martin", "lee", "thompson", "white", "harris",
+        "clark", "lewis", "walker", "hall", "allen", "young", "king",
+        "wright", "scott", "green", "baker", "adams", "nelson", "hill",
+    ]
+    cands = []
+    for _ in range(10):
+        fn = random.choice(first)
+        ln = random.choice(last)
+        style = random.randint(0, 4)
+        if style == 0:
+            name = f"{fn}.{ln}"                                    # john.smith
+        elif style == 1:
+            name = f"{fn}{ln}{random.randint(10, 99)}"             # johnsmith88
+        elif style == 2:
+            name = f"{fn}_{ln}{random.randint(1980, 2005)}"        # john_smith1990
+        elif style == 3:
+            name = f"{fn}.{ln[0]}{random.randint(10, 99)}"         # john.s88
+        else:
+            name = f"{fn}{random.randint(10, 999)}"                 # john88
+        name = "".join(c for c in name if c.isalnum() or c in "._-")[:64]
+        if 6 <= len(name):
+            cands.append(name)
+    if not cands:
+        return "user" + str(random.randint(10000, 99999))
+    cands.sort(key=len)
+    return cands[0]
+
+
 def generate_email_password(domain=None):
     """Generate random Outlook email and password."""
-    prefix = random.choice(string.ascii_lowercase) + "".join(
-        random.choices(string.ascii_lowercase + string.digits, k=11)
-    )
+    # 2026-11-13：原先生成「1 字母 + 11 随机」= zsj9u4jlm2tg，
+    # 真人不会注册这种地址，Microsoft 据此判定 unusual activity。
+    prefix = _humanish_prefix()
     domain = domain or _preferred_outlook_domain()
     email = f"{prefix}@{domain}"
     password = "Aa1!" + "".join(random.choices(string.ascii_letters + string.digits, k=12))
@@ -2086,6 +2246,7 @@ async def register_outlook(page, context, idx=0, captcha_early_abort=False):
 
     try:
         print(f"  {tag} navigating to signup page...")
+        _flow_start = time.time()
         signup_url = _microsoft_url_with_locale("https://signup.live.com/signup?lic=1")
         await _navigate_to_signup(page, signup_url, tag)
         await asyncio.sleep(3)
@@ -2450,8 +2611,7 @@ async def register_outlook(page, context, idx=0, captcha_early_abort=False):
                         year_input = inp
                         break
             if await year_input.count() > 0:
-                await year_input.fill(str(year))
-                print(f"  {tag} year: {year}")
+                await _human_type(page, year_input, str(year), tag, "year")
 
         await asyncio.sleep(0.5)
         clicked = await _click_microsoft_action(
@@ -2470,8 +2630,7 @@ async def register_outlook(page, context, idx=0, captcha_early_abort=False):
         ).first
         if await username_input.count() > 0:
             username = prefix[:8] + str(random.randint(100, 999))
-            await username_input.fill(username)
-            print(f"  {tag} username: {username}")
+            await _human_type(page, username_input, username, tag, "username")
             await asyncio.sleep(0.5)
             await _click_microsoft_action(
                 page, preferred_ids=("iSignupAction", "iNext", "idSIButton9"),
@@ -2516,16 +2675,16 @@ async def register_outlook(page, context, idx=0, captcha_early_abort=False):
 
         if await fname_input.count() > 0:
             if await lname_input.count() > 0:
-                await lname_input.fill(last_name)
-            await fname_input.fill(first_name)
-            print(f"  {tag} name: {first_name} {last_name}")
+                await _human_type(page, lname_input, last_name, tag, "last_name")
+                await _human_pause(0.4, 1.2)
+            await _human_type(page, fname_input, first_name, tag, "first_name")
         else:
             all_text_inputs = page.locator('input[type="text"]')
             count = await all_text_inputs.count()
             if count >= 2:
-                await all_text_inputs.nth(0).fill(last_name)
-                await all_text_inputs.nth(1).fill(first_name)
-                print(f"  {tag} name (generic): {first_name} {last_name}")
+                await _human_type(page, all_text_inputs.nth(0), last_name, tag, "last(generic)")
+                await _human_pause(0.4, 1.2)
+                await _human_type(page, all_text_inputs.nth(1), first_name, tag, "first(generic)")
 
         checkbox = page.locator('input[type="checkbox"], [role="checkbox"]').first
         if await checkbox.count() > 0:
@@ -2534,13 +2693,39 @@ async def register_outlook(page, context, idx=0, captcha_early_abort=False):
             except Exception:
                 checked = False
             if not checked:
-                await checkbox.click(force=True)
+                # 不传 force=True —— 那会跳过可操作性检查，是纯自动化特征
+                try:
+                    await checkbox.hover(timeout=4000)
+                    await _human_pause(0.2, 0.5)
+                    await checkbox.click()
+                except Exception:
+                    await checkbox.click(force=True)
                 print(f"  {tag} checkbox checked")
 
         await asyncio.sleep(0.5)
-        clicked = await _click_microsoft_action(
-            page, preferred_ids=("iSignupAction", "iNext", "idSIButton9"),
-        )
+
+        # 关键：把整体耗时补到 bot_protection_wait 秒再点最后一次 Next。
+        # Microsoft 的行为分析会看「填完整个表单用了多久」，
+        # 真人不可能是 5 秒。
+        try:
+            await _wait_bot_budget(page, _flow_start)
+        except Exception as e:
+            print(f"  {tag} bot budget wait skipped: {e}")
+
+        # 用真实坐标点击，不用 locator.click()
+        clicked = False
+        try:
+            btn = page.locator("#iSignupAction, #iNext, #idSIButton9").first
+            if await btn.count() > 0:
+                clicked = await _smooth_click(page, btn)
+                if clicked:
+                    clicked = "mouse"
+        except Exception:
+            pass
+        if not clicked:
+            clicked = await _click_microsoft_action(
+                page, preferred_ids=("iSignupAction", "iNext", "idSIButton9"),
+            )
         if clicked:
             print(f"  {tag} clicked next (name): {clicked}")
         await asyncio.sleep(3)

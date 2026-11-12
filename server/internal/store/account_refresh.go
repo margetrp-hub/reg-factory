@@ -51,7 +51,10 @@ func (s *Store) QueueAccountRefresh(task Task, ref string) (string, bool, error)
 	}
 	defer tx.Rollback()
 	var old, args, actor string
-	err = tx.QueryRow(`SELECT task_id,args_json,actor FROM account_refresh_requests WHERE request_id=?`, task.ID).Scan(&old, &args, &actor)
+	if err = s.ex.LockKey(tx, "refresh-request:"+task.ID); err != nil {
+		return "", false, err
+	}
+	err = s.ex.QueryRowTx(tx, `SELECT task_id,args_json,actor FROM account_refresh_requests WHERE request_id=?`, task.ID).Scan(&old, &args, &actor)
 	if err == nil {
 		if args != task.ArgsJSON || actor != task.Actor {
 			return "", false, errors.New("task_request_conflict")
@@ -63,17 +66,20 @@ func (s *Store) QueueAccountRefresh(task Task, ref string) (string, bool, error)
 	}
 	var claimed bool
 	var platform, identity string
-	if err = tx.QueryRow(`SELECT claimed,platform,`+accountIdentitySQL+` FROM accounts WHERE ref=?`, ref).Scan(&claimed, &platform, &identity); err != nil {
+	if err = s.ex.QueryRowTx(tx, `SELECT claimed,platform,`+accountIdentitySQL+` FROM accounts WHERE ref=?`, ref).Scan(&claimed, &platform, &identity); err != nil {
 		return "", false, err
 	}
-	if err = tx.QueryRow(`SELECT MAX(claimed) FROM accounts WHERE platform=? AND (`+accountIdentitySQL+`)=?`, platform, identity).Scan(&claimed); err != nil {
+	if err = s.ex.LockKey(tx, "refresh-account:"+platform+":"+identity); err != nil {
+		return "", false, err
+	}
+	if err = s.ex.QueryRowTx(tx, `SELECT MAX(claimed) FROM accounts WHERE platform=? AND (`+accountIdentitySQL+`)=?`, platform, identity).Scan(&claimed); err != nil {
 		return "", false, err
 	}
 	if claimed {
 		return "", false, ErrAccountOwned
 	}
-	err = tx.QueryRow(`SELECT id FROM tasks WHERE script='asset_ops' AND json_valid(args_json)
- AND json_extract(args_json,'$[0]')='refresh' AND json_extract(args_json,'$[2]') IN
+	err = s.ex.QueryRowTx(tx, `SELECT id FROM tasks WHERE script='asset_ops'
+ AND `+s.ex.JSONText("args_json", "0")+`='refresh' AND `+s.ex.JSONText("args_json", "2")+` IN
  (SELECT ref FROM accounts WHERE platform=? AND (`+accountIdentitySQL+`)=?)
  AND status IN ('queued','running','stopping')
  ORDER BY created_at,id LIMIT 1`, platform, identity).Scan(&old)
@@ -86,20 +92,20 @@ func (s *Store) QueueAccountRefresh(task Task, ref string) (string, bool, error)
 	}
 	if created {
 		old = task.ID
-		if _, err = tx.Exec(`INSERT INTO tasks(id,script,title,args_json,status,created_at,actor) VALUES(?,?,?,?,'queued',?,?)`, task.ID, task.Script, task.Title, task.ArgsJSON, now(), task.Actor); err != nil {
+		if _, err = s.ex.ExecTxArgs(tx, `INSERT INTO tasks(id,script,title,args_json,status,created_at,actor) VALUES(?,?,?,?,'queued',?,?)`, task.ID, task.Script, task.Title, task.ArgsJSON, now(), task.Actor); err != nil {
 			return "", false, err
 		}
-		if _, err = tx.Exec(`UPDATE accounts SET refresh_state='queued',refresh_at=?,version=version+1 WHERE ref=?`, now(), ref); err != nil {
+		if _, err = s.ex.ExecTxArgs(tx, `UPDATE accounts SET refresh_state='queued',refresh_at=?,version=version+1 WHERE ref=?`, now(), ref); err != nil {
 			return "", false, err
 		}
 	}
 	if created {
-		if _, err = tx.Exec(`INSERT OR IGNORE INTO account_refreshes(task_id,ref) VALUES(?,?)`, old, ref); err != nil {
+		if _, err = s.ex.ExecTxArgs(tx, UpsertIgnore(s.dialect, `INSERT INTO account_refreshes(task_id,ref) VALUES(?,?)`), old, ref); err != nil {
 			return "", false, err
 		}
 	}
 	// Persist coalesced request IDs too, including after the original finishes.
-	if _, err = tx.Exec(`INSERT INTO account_refresh_requests(request_id,task_id,args_json,actor) VALUES(?,?,?,?)`, task.ID, old, task.ArgsJSON, task.Actor); err != nil {
+	if _, err = s.ex.ExecTxArgs(tx, `INSERT INTO account_refresh_requests(request_id,task_id,args_json,actor) VALUES(?,?,?,?)`, task.ID, old, task.ArgsJSON, task.Actor); err != nil {
 		return "", false, err
 	}
 	return old, created, tx.Commit()
@@ -114,7 +120,7 @@ func (s *Store) BeginAccountRefresh(taskID, ref, sha string) error {
 	defer tx.Rollback()
 	var status string
 	var claimed bool
-	if err = tx.QueryRow(`SELECT t.status,a.claimed FROM tasks t JOIN accounts a ON a.ref=? WHERE t.id=?`, ref, taskID).Scan(&status, &claimed); err != nil {
+	if err = s.ex.QueryRowTx(tx, `SELECT t.status,a.claimed FROM tasks t JOIN accounts a ON a.ref=? WHERE t.id=?`, ref, taskID).Scan(&status, &claimed); err != nil {
 		return err
 	}
 	if status != "queued" {
@@ -123,13 +129,13 @@ func (s *Store) BeginAccountRefresh(taskID, ref, sha string) error {
 	if claimed {
 		return ErrAccountOwned
 	}
-	if _, err = tx.Exec(`INSERT INTO account_refreshes(task_id,ref,source_sha) VALUES(?,?,?) ON CONFLICT(task_id) DO UPDATE SET source_sha=excluded.source_sha`, taskID, ref, sha); err != nil {
+	if _, err = s.ex.ExecTxArgs(tx, `INSERT INTO account_refreshes(task_id,ref,source_sha) VALUES(?,?,?) ON CONFLICT(task_id) DO UPDATE SET source_sha=excluded.source_sha`, taskID, ref, sha); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(`UPDATE tasks SET status='running',started_at=? WHERE id=?`, now(), taskID); err != nil {
+	if _, err = s.ex.ExecTxArgs(tx, `UPDATE tasks SET status='running',started_at=? WHERE id=?`, now(), taskID); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(`UPDATE accounts SET refresh_state='running',refresh_at=? WHERE ref=?`, now(), ref); err != nil {
+	if _, err = s.ex.ExecTxArgs(tx, `UPDATE accounts SET refresh_state='running',refresh_at=? WHERE ref=?`, now(), ref); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -137,7 +143,7 @@ func (s *Store) BeginAccountRefresh(taskID, ref, sha string) error {
 
 func (s *Store) RefreshEvidence(taskID string) (RefreshEvidence, error) {
 	var evidence RefreshEvidence
-	err := s.db.QueryRow(`SELECT ref,source_sha,result_sha,resolution FROM account_refreshes WHERE task_id=?`, taskID).Scan(&evidence.Ref, &evidence.SourceSHA, &evidence.ResultSHA, &evidence.Resolution)
+	err := s.ex.QueryRow(`SELECT ref,source_sha,result_sha,resolution FROM account_refreshes WHERE task_id=?`, taskID).Scan(&evidence.Ref, &evidence.SourceSHA, &evidence.ResultSHA, &evidence.Resolution)
 	if errors.Is(err, sql.ErrNoRows) {
 		task, readErr := s.GetTask(taskID)
 		if readErr != nil {
@@ -158,7 +164,7 @@ func (s *Store) FinishAccountRefresh(taskID, ref, status string, code int, messa
 		return err
 	}
 	defer tx.Rollback()
-	result, err := tx.Exec(`UPDATE tasks SET status=?,exit_code=?,error=?,finished_at=?,pid=0 WHERE id=? AND status IN ('queued','running','stopping')`, status, code, RedactLog(message), now(), taskID)
+	result, err := s.ex.ExecTxArgs(tx, `UPDATE tasks SET status=?,exit_code=?,error=?,finished_at=?,pid=0 WHERE id=? AND status IN ('queued','running','stopping')`, status, code, RedactLog(message), now(), taskID)
 	if err != nil {
 		return err
 	}
@@ -168,19 +174,19 @@ func (s *Store) FinishAccountRefresh(taskID, ref, status string, code int, messa
 	}
 	if n != 1 {
 		var existing, digest string
-		if err := tx.QueryRow(`SELECT t.status,COALESCE(r.result_sha,'') FROM tasks t LEFT JOIN account_refreshes r ON r.task_id=t.id WHERE t.id=?`, taskID).Scan(&existing, &digest); err == nil && existing == status && digest == resultSHA {
+		if err := s.ex.QueryRowTx(tx, `SELECT t.status,COALESCE(r.result_sha,'') FROM tasks t LEFT JOIN account_refreshes r ON r.task_id=t.id WHERE t.id=?`, taskID).Scan(&existing, &digest); err == nil && existing == status && digest == resultSHA {
 			return nil
 		}
 		return errors.New("refresh_already_finished")
 	}
-	if _, err = tx.Exec(`INSERT INTO account_refreshes(task_id,ref,result_sha) VALUES(?,?,?) ON CONFLICT(task_id) DO UPDATE SET result_sha=excluded.result_sha`, taskID, ref, resultSHA); err != nil {
+	if _, err = s.ex.ExecTxArgs(tx, `INSERT INTO account_refreshes(task_id,ref,result_sha) VALUES(?,?,?) ON CONFLICT(task_id) DO UPDATE SET result_sha=excluded.result_sha`, taskID, ref, resultSHA); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(`UPDATE accounts SET refresh_state=?,refresh_at=?,updated_at=? WHERE ref=?`, status, now(), now(), ref); err != nil {
+	if _, err = s.ex.ExecTxArgs(tx, `UPDATE accounts SET refresh_state=?,refresh_at=?,updated_at=? WHERE ref=?`, status, now(), now(), ref); err != nil {
 		return err
 	}
 	if status == "succeeded" && resultSHA != "" {
-		if err = prepareRefreshedAccount(tx, taskID, ref); err != nil {
+		if err = prepareRefreshedAccount(s, tx, taskID, ref); err != nil {
 			return err
 		}
 	}
@@ -190,7 +196,7 @@ func (s *Store) FinishAccountRefresh(taskID, ref, status string, code int, messa
 // UnfinishedCredentials is consumed before generic restart recovery or queue
 // dispatch. It never reruns a worker or rewrites an already ended task.
 func (s *Store) UnfinishedCredentials() ([]Task, error) {
-	rows, err := s.db.Query(`SELECT id FROM tasks WHERE script='asset_ops' AND status IN ('queued','running','stopping') AND json_valid(args_json) AND json_extract(args_json,'$[0]')='refresh' ORDER BY created_at,id`)
+	rows, err := s.ex.Query(`SELECT id FROM tasks WHERE script='asset_ops' AND status IN ('queued','running','stopping') AND ` + s.ex.JSONText("args_json", "0") + `='refresh' ORDER BY created_at,id`)
 	if err != nil {
 		return nil, err
 	}
@@ -242,7 +248,7 @@ func (s *Store) ResolveAccountRefresh(taskID, actor, reason, outcome, resultSHA 
 	defer tx.Rollback()
 	var status, resolution string
 	var claimed bool
-	if err = tx.QueryRow(`SELECT t.status,a.claimed,COALESCE(r.resolution,'') FROM tasks t JOIN accounts a ON a.ref=? LEFT JOIN account_refreshes r ON r.task_id=t.id WHERE t.id=?`, ref, taskID).Scan(&status, &claimed, &resolution); err != nil {
+	if err = s.ex.QueryRowTx(tx, `SELECT t.status,a.claimed,COALESCE(r.resolution,'') FROM tasks t JOIN accounts a ON a.ref=? LEFT JOIN account_refreshes r ON r.task_id=t.id WHERE t.id=?`, ref, taskID).Scan(&status, &claimed, &resolution); err != nil {
 		return err
 	}
 	if claimed {
@@ -262,24 +268,24 @@ func (s *Store) ResolveAccountRefresh(taskID, actor, reason, outcome, resultSHA 
 		code = 0
 		message = ""
 	}
-	if _, err = tx.Exec(`UPDATE tasks SET status=?,exit_code=?,error=?,finished_at=?,pid=0 WHERE id=?`, outcome, code, message, now(), taskID); err != nil {
+	if _, err = s.ex.ExecTxArgs(tx, `UPDATE tasks SET status=?,exit_code=?,error=?,finished_at=?,pid=0 WHERE id=?`, outcome, code, message, now(), taskID); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(`INSERT INTO account_refreshes(task_id,ref,result_sha,resolution) VALUES(?,?,?,?) ON CONFLICT(task_id) DO UPDATE SET result_sha=excluded.result_sha,resolution=excluded.resolution`, taskID, ref, resultSHA, resolution); err != nil {
+	if _, err = s.ex.ExecTxArgs(tx, `INSERT INTO account_refreshes(task_id,ref,result_sha,resolution) VALUES(?,?,?,?) ON CONFLICT(task_id) DO UPDATE SET result_sha=excluded.result_sha,resolution=excluded.resolution`, taskID, ref, resultSHA, resolution); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(`UPDATE accounts SET refresh_state=?,refresh_at=?,updated_at=? WHERE ref=?`, outcome, now(), now(), ref); err != nil {
+	if _, err = s.ex.ExecTxArgs(tx, `UPDATE accounts SET refresh_state=?,refresh_at=?,updated_at=? WHERE ref=?`, outcome, now(), now(), ref); err != nil {
 		return err
 	}
 	if outcome == "succeeded" && resultSHA != "" {
-		if err = prepareRefreshedAccount(tx, taskID, ref); err != nil {
+		if err = prepareRefreshedAccount(s, tx, taskID, ref); err != nil {
 			return err
 		}
 	}
-	if _, err = tx.Exec(`INSERT INTO events(task_id,ts,stream,line) VALUES(?,?,'system',?)`, taskID, now(), RedactLog(actor+" · "+resolution)); err != nil {
+	if _, err = s.ex.ExecTxArgs(tx, `INSERT INTO events(task_id,ts,stream,line) VALUES(?,?,'system',?)`, taskID, now(), RedactLog(actor+" · "+resolution)); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(`INSERT INTO audit(ts,actor,action,detail) VALUES(?,?,'account.refresh.resolve',?)`, now(), actor, RedactLog(taskID+" · "+resolution)); err != nil {
+	if _, err = s.ex.ExecTxArgs(tx, `INSERT INTO audit(ts,actor,action,detail) VALUES(?,?,'account.refresh.resolve',?)`, now(), actor, RedactLog(taskID+" · "+resolution)); err != nil {
 		return err
 	}
 	return tx.Commit()

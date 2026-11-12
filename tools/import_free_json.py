@@ -109,7 +109,7 @@ async def wait_cloudflare(page, timeout=75) -> bool:
 
 
 async def convert(args) -> dict:
-    from playwright.async_api import async_playwright
+    from patchright.async_api import async_playwright
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(

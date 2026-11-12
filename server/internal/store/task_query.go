@@ -33,9 +33,9 @@ func (s *Store) QueryTasks(q TaskQuery) (TaskPage, error) {
 	where, args := " WHERE 1=1", []any{}
 	if q.CredentialPlatform != "" {
 		if q.CredentialAction == "refresh" {
-			where += ` AND script='asset_ops' AND json_valid(args_json) AND json_extract(args_json,'$[0]')='refresh' AND json_extract(args_json,'$[4]')=?`
+			where += ` AND script='asset_ops' AND ` + s.ex.JSONText("args_json", "0") + `='refresh' AND ` + s.ex.JSONText("args_json", "4") + `=?`
 		} else {
-			where += ` AND script='credential.check' AND json_valid(args_json) AND json_extract(args_json,'$.platform')=?`
+			where += ` AND script='credential.check' AND ` + s.ex.JSONText("args_json", "platform") + `=?`
 		}
 		args = append(args, q.CredentialPlatform)
 	}
@@ -55,7 +55,7 @@ func (s *Store) QueryTasks(q TaskQuery) (TaskPage, error) {
 		return page, err
 	}
 	defer tx.Rollback()
-	counts, err := tx.Query("SELECT status, COUNT(*) FROM tasks"+where+" GROUP BY status", args...)
+	counts, err := s.ex.QueryTx(tx, "SELECT status, COUNT(*) FROM tasks"+where+" GROUP BY status", args...)
 	if err != nil {
 		return page, err
 	}
@@ -81,8 +81,8 @@ func (s *Store) QueryTasks(q TaskQuery) (TaskPage, error) {
 		args = append(args, q.Status)
 	}
 	args = append(args, q.Limit, q.Offset)
-	rows, err := tx.Query(`SELECT id, script, title, args_json, status, pid, created_at, started_at,
-		finished_at, exit_code, error, actor FROM tasks`+where+` ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`, args...)
+	rows, err := s.ex.QueryTx(tx, `SELECT id, script, title, args_json, status, pid, created_at, started_at,
+		finished_at, exit_code, error, actor FROM tasks`+where+` ORDER BY created_at DESC, id DESC LIMIT CAST(? AS BIGINT) OFFSET CAST(? AS BIGINT)`, args...)
 	if err != nil {
 		return page, err
 	}

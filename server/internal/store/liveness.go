@@ -14,11 +14,14 @@ func (s *Store) ScheduleLivenessCheck(at time.Time, interval time.Duration) (str
 		return "", err
 	}
 	defer tx.Rollback()
+	if err = s.ex.LockKey(tx, "liveness:chatgpt"); err != nil {
+		return "", err
+	}
 	var active int
 	var latest string
-	err = tx.QueryRow(`SELECT COALESCE(MAX(created_at),''),COALESCE(SUM(status IN ('queued','running','stopping')),0)
- FROM tasks WHERE actor='scheduler' AND script=? AND json_valid(args_json)
- AND json_extract(args_json,'$.platform')='chatgpt'`, CredentialCheckScript).Scan(&latest, &active)
+	err = s.ex.QueryRowTx(tx, `SELECT COALESCE(MAX(created_at),''),COALESCE(SUM(CASE WHEN status IN ('queued','running','stopping') THEN 1 ELSE 0 END),0)
+ FROM tasks WHERE actor='scheduler' AND script=?
+ AND `+s.ex.JSONText("args_json", "platform")+`='chatgpt'`, CredentialCheckScript).Scan(&latest, &active)
 	if err != nil {
 		return "", err
 	}
@@ -34,7 +37,7 @@ func (s *Store) ScheduleLivenessCheck(at time.Time, interval time.Duration) (str
 			return "", nil
 		}
 	}
-	rows, err := tx.Query(accountProjectionSQL + `SELECT ref,identity,platform FROM account_projection p
+	rows, err := s.ex.QueryTx(tx, accountProjectionSQL+`SELECT ref,identity,platform FROM account_projection p
  WHERE platform='chatgpt' AND identity_leased=0
  AND NOT EXISTS (SELECT 1 FROM account_refreshes r JOIN tasks t ON t.id=r.task_id
  JOIN accounts a ON a.ref=r.ref WHERE t.status IN ('queued','running','stopping')
@@ -69,7 +72,7 @@ func (s *Store) ScheduleLivenessCheck(at time.Time, interval time.Duration) (str
 	task := Task{ID: fmt.Sprintf("liveness-chatgpt-%d", at.UnixNano()), Script: CredentialCheckScript,
 		Title: fmt.Sprintf("周期 AT 巡检 · %d 个账号", len(accounts)), ArgsJSON: string(args),
 		Actor: "scheduler", CreatedAt: at.UTC().Format(time.RFC3339)}
-	if err = createCredentialCheck(tx, task, accounts); err != nil {
+	if err = createCredentialCheck(s, tx, task, accounts); err != nil {
 		return "", err
 	}
 	return task.ID, tx.Commit()
@@ -78,8 +81,8 @@ func (s *Store) ScheduleLivenessCheck(at time.Time, interval time.Duration) (str
 // Other platforms keep their scanner, without overlapping an accepted scan.
 func (s *Store) HasActiveLivenessScan(platform string) (bool, error) {
 	var count int
-	err := s.read.QueryRow(`SELECT COUNT(*) FROM tasks WHERE actor='scheduler' AND script='asset_ops'
- AND status IN ('queued','running','stopping') AND json_valid(args_json)
- AND json_extract(args_json,'$[0]')='scan' AND json_extract(args_json,'$[2]')=?`, platform).Scan(&count)
+	err := s.exRO.QueryRow(`SELECT COUNT(*) FROM tasks WHERE actor='scheduler' AND script='asset_ops'
+ AND status IN ('queued','running','stopping')
+ AND `+s.ex.JSONText("args_json", "0")+`='scan' AND `+s.ex.JSONText("args_json", "2")+`=?`, platform).Scan(&count)
 	return count > 0, err
 }

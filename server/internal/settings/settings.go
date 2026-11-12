@@ -107,7 +107,11 @@ func LoadEnvFile(path string) int {
 		if key == "" {
 			continue
 		}
-		if _, exists := os.LookupEnv(key); exists {
+		// 默认「进程环境优先」：Dockerfile / compose 设的值不被 .env 覆盖。
+		// 但少数 key 是「部署配置」而不是「镜像默认值」，必须允许 .env 覆盖，
+		// 否则面板改不动 —— 比如 REGD_DB 在 Dockerfile 里是 /data/regd.db，
+		// 想切 PostgreSQL 就只能改镜像。
+		if _, exists := os.LookupEnv(key); exists && !envFileOverrides[key] {
 			continue
 		}
 		os.Setenv(key, strings.Trim(strings.TrimSpace(value), "\"'"))
@@ -117,6 +121,20 @@ func LoadEnvFile(path string) int {
 		count++
 	}
 	return count
+}
+
+// envFileOverrides 是允许 /data/.env 覆盖进程环境的 key。
+//
+// 这些 key 在 Dockerfile 里被设成固定值（如 REGD_DB=/data/regd.db），
+// 但它们本质是部署配置，必须能在面板改：
+//
+//	· REGD_DB    主库位置，切 SQLite ↔ PostgreSQL
+//	· MAIL_DB    邮件库位置
+//	· REGD_ADDR  监听地址
+var envFileOverrides = map[string]bool{
+	"REGD_DB":   true,
+	"MAIL_DB":   true,
+	"REGD_ADDR": true,
 }
 
 var fileEnvironment = struct {

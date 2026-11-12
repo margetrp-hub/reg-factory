@@ -90,24 +90,25 @@ def _authorize_browser(item: tuple[str, str], index: int, proxy: str = "") -> di
     email, password = item
 
     async def _run() -> dict | None:
+        # 2026-11-13：改用 open_and_connect（原来硬编码 CloakBrowser，
+        # 那个需要 license，容器里跑不了）。
         import register_outlook_standalone as standalone
-        from common.cloak_browser import CloakBrowserHandle
+        from patchright.async_api import async_playwright
+        from common.browser import open_and_connect, teardown
 
         name = f"graph_authorize_{index}"
-        handle = CloakBrowserHandle(None, profile_id="", name=name)
-        try:
-            handle, _profile_id, context = await handle.launch(
-                name,
-                {"proxy_str": proxy} if proxy else {},
-            )
-            await standalone.install_traffic_saver(context)
-            page = await context.new_page()
-            return await standalone.extract_graph_token(
-                page, context, email, password, index
-            )
-        finally:
-            if handle and getattr(handle, "context", None):
-                await handle.close_browser_async()
+        async with async_playwright() as p:
+            bb = pid = None
+            try:
+                options = {"proxy": proxy} if proxy else None
+                bb, pid, _browser, context, page = await open_and_connect(
+                    name=name, p=p, browser_options=options)
+                return await standalone.extract_graph_token(
+                    page, context, email, password, index
+                )
+            finally:
+                if bb is not None and pid:
+                    await teardown(bb, pid, delete=True)
 
     try:
         return asyncio.run(_run())

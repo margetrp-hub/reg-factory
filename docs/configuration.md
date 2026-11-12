@@ -8,7 +8,7 @@
 
 | 能力 | 模式及参数归属 |
 | --- | --- |
-| 浏览器 | `FINGERPRINT_BROWSER` 选择实际方式；通用参数与该方式的连接配置一起显示 |
+| 浏览器 | `BROWSER_ENGINE` 选择Patchright或Camoufox；Patchright下继续由 `FINGERPRINT_BROWSER` 选择原服务。Firefox默认自动发现内核路径 |
 | 网络出口 | `PROXY_MODE` 与六个平台覆盖决定展示的Clash/住宅配置；生产与凭据修复出口保持独立作用范围 |
 | 邮箱来源 | ChatGPT、临时邮箱及Outlook辅助邮箱按原选择字段配置；同一供应商被多处使用时只显示一份连接，收码等待与邮箱池共用 |
 | 短信接码 | 选择要配置的供应商，公共等待/重试在同一视图中保留；实际供应商在发起任务时选择，不新增全局启用开关 |

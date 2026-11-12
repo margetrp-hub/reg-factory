@@ -201,7 +201,7 @@ async def run(args) -> int:
              reason="need_old_password", detail="只有邮箱、没有旧密码，无法改密码")
         return 2
 
-    from playwright.async_api import async_playwright
+    from patchright.async_api import async_playwright
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(

@@ -41,10 +41,10 @@ func (s *Store) AccountSources(ref string) ([]Account, error) {
 	}
 	defer tx.Rollback()
 	var platform, identity string
-	if err := tx.QueryRow("SELECT platform,"+accountIdentitySQL+" FROM accounts WHERE ref=?", ref).Scan(&platform, &identity); err != nil {
+	if err := s.ex.QueryRowTx(tx, "SELECT platform,"+accountIdentitySQL+" FROM accounts WHERE ref=?", ref).Scan(&platform, &identity); err != nil {
 		return nil, err
 	}
-	rows, err := tx.Query(`SELECT ref,platform,kind,identity,secret_ref,status,health_checked_at,
+	rows, err := s.ex.QueryTx(tx, `SELECT ref,platform,kind,identity,secret_ref,status,health_checked_at,
 	 health_message,claimed,claimed_at,refresh_state,refresh_at,note,version,
 	 oauth_status,join_status,liveness_status,liveness_checked_at,updated_at,`+accountLibraryStatusSQL+`
 	 FROM accounts WHERE platform=? AND (`+accountIdentitySQL+`)=? ORDER BY updated_at DESC,ref`, platform, identity)
@@ -73,7 +73,7 @@ func (s *Store) AccountSources(ref string) ([]Account, error) {
 // must not use the display projection or its page limit: old deliveries keep
 // referring to their exact source even when the page groups newer copies.
 func (s *Store) AccountSourceRefs() ([]string, error) {
-	rows, err := s.db.Query("SELECT ref FROM accounts ORDER BY ref")
+	rows, err := s.ex.Query("SELECT ref FROM accounts ORDER BY ref")
 	if err != nil {
 		return nil, err
 	}

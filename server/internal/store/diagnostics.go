@@ -43,10 +43,10 @@ func (s *Store) Stage(taskID string, event StageEvent) error {
 // Keep the latest occurrence of each credential stage, even after a long
 // browser log or settlement retry sequence has filled the visible log tail.
 func (s *Store) CredentialStages(taskID string) ([]StageEvent, error) {
-	rows, err := s.read.Query(`SELECT line FROM events WHERE id IN (
+	rows, err := s.exRO.Query(`SELECT line FROM events WHERE id IN (
 		SELECT MAX(id) FROM events WHERE task_id=? AND stream='stage'
-		AND json_valid(line) AND json_extract(line,'$.stage') GLOB 'credential_*'
-		GROUP BY json_extract(line,'$.stage')) ORDER BY id`, taskID)
+		AND `+s.ex.JSONText("line", "stage")+` LIKE 'credential\_%' ESCAPE '\'
+		GROUP BY `+s.ex.JSONText("line", "stage")+`) ORDER BY id`, taskID)
 	if err != nil {
 		return nil, err
 	}

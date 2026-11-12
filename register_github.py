@@ -41,7 +41,7 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
 
 sys.path.insert(0, ".")
-from playwright.async_api import async_playwright
+from patchright.async_api import async_playwright
 import requests
 
 from common.browser import open_and_connect, teardown, human_type, react_fill

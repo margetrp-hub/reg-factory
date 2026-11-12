@@ -17,7 +17,7 @@ import time
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
 
-from playwright.async_api import async_playwright
+from patchright.async_api import async_playwright
 
 import os
 import sys as _sys
@@ -27,6 +27,11 @@ from common.fingerprint import browser_fingerprint
 from common.playwright_runtime import install_shutdown_guard
 from common.task_context import active_worker
 from common.traffic_saver import install as install_traffic_saver
+from common.browser_engines import (
+    current_engine,
+    launch_camoufox,
+    _headless_default,
+)
 
 # 与 register.py 完全一致的反检测脚本
 STEALTH_JS = r"""
@@ -155,22 +160,27 @@ NATIVE_STEALTH_JS = r"""
 
 
 async def inject_stealth(context, page):
-    """Hide automation markers without replacing the native fingerprint."""
+    """Hide automation markers without replacing the native fingerprint.
+
+    2026-11-13：去掉 CDP 会话。
+
+    原先用 context.new_cdp_session(page) + Page.addScriptToEvaluateOnNewDocument
+    注入，这条通道会留下痕迹：Playwright 打开 CDP 会话时会启用 Runtime domain，
+    页面 JS 可以通过 console.debug 探测到，反过来暴露「有人在用 CDP」。
+
+    只用 context.add_init_script —— 它在文档创建时由浏览器自身执行，
+    不经过 CDP 会话。当前页再补一次 page.evaluate 兜底。
+    """
     install_shutdown_guard()
     try:
-        cdp = await context.new_cdp_session(page)
-        await cdp.send("Page.addScriptToEvaluateOnNewDocument", {"source": NATIVE_STEALTH_JS})
+        await context.add_init_script(NATIVE_STEALTH_JS)
     except Exception as e:
-        print(f"  stealth CDP inject failed: {e}")
+        print(f"  stealth add_init_script failed: {e}")
     try:
         await page.evaluate(NATIVE_STEALTH_JS)
     except Exception:
         pass
-    try:
-        await context.add_init_script(NATIVE_STEALTH_JS)
-    except Exception:
-        pass
-    print("  native fingerprint preserved; automation markers hidden")
+    print("  native fingerprint preserved; automation markers hidden (no CDP)")
 
 
 def _prepare_browser_options(browser_options=None):
@@ -212,35 +222,35 @@ async def open_and_connect(name, p=None, browser_options=None):
     """创建并打开 BitBrowser 窗口，连接 Playwright 并注入 stealth。
     返回 (bb, profile_id, browser, context, page)。
     注意：调用方需自行管理 async_playwright 生命周期，或传入 p。"""
+
+    # 2026-11-13：按 BROWSER_ENGINE 分流。
+    #
+    # patchright  默认，走原来的 bundled 路径（BundledBrowser → helper → patchright）
+    # camoufox    直接 camoufox，Playwright 兼容，这里补一个 pid 占位以保持五元组约定
+    # ruyipage    不走这里（API 完全不同），用 browser_engines.open_ruyipage()
+    _engine = current_engine()
+    if _engine == "ruyipage":
+        raise ValueError("此流程需要 Playwright API；请选择 patchright 或 camoufox。Ruyipage 使用独立适配入口。")
+    if _engine == "camoufox":
+        _opts = dict(browser_options or {})
+        _proxy = _opts.get("proxy") or ""
+        print(f"  [engine] camoufox   proxy={'yes' if _proxy else 'no'}")
+        _handle, _browser, _ctx, _page = await launch_camoufox(
+            name,
+            proxy=_proxy,
+            headless=_headless_default(),
+            browser_path=_opts.get("executable_path", "") or os.environ.get(
+                "CAMOUFOX_BROWSER_PATH", ""),
+            user_data_dir=_opts.get("user_data_dir", ""),
+        )
+        try:
+            await context_set_language(_ctx)
+        except Exception:
+            pass
+        return _handle, _handle.name, _browser, _ctx, _page
+
     browser_options = _prepare_browser_options(browser_options)
     provider = selected_browser_provider()
-    if provider in {"cloak", "cloakbrowser"}:
-        from common.cloak_browser import CloakBrowserHandle
-
-        handle = CloakBrowserHandle(None, profile_id="", name=name)
-        try:
-            handle, pid, context = await handle.launch(name, browser_options)
-            await install_traffic_saver(context)
-            startup_pages = list(context.pages)
-            page = await asyncio.wait_for(context.new_page(), timeout=20)
-            for startup_page in startup_pages:
-                try:
-                    await asyncio.wait_for(startup_page.close(), timeout=5)
-                except Exception:
-                    pass
-            try:
-                await context.set_extra_http_headers({"Accept-Language": "en-US,en;q=0.9"})
-            except Exception:
-                pass
-            await inject_stealth(context, page)
-            return handle, pid, handle.browser, context, page
-        except BaseException:
-            try:
-                if handle and getattr(handle, "context", None):
-                    await handle.close_browser_async()
-            except Exception:
-                pass
-            raise
     bb = BitBrowser()
     pid = create_browser_with_retry(bb, name, **(browser_options or {}))
     if not pid:
@@ -306,8 +316,19 @@ async def open_and_connect(name, p=None, browser_options=None):
         raise
 
 
+async def context_set_language(context):
+    """强制 Accept-Language: en-US（代理地区会把 UI 本地化，按钮文本匹配会失效）。"""
+    try:
+        await context.set_extra_http_headers({"Accept-Language": "en-US,en;q=0.9"})
+    except Exception:
+        pass
+
 async def teardown(bb, profile_id, delete=True):
-    """关闭并（可选）删除窗口"""
+    """关闭并（可选）删除窗口。
+
+    2026-11-13：camoufox 的 handle 也走这里 —— 它提供 close_browser_async()
+    和 delete_browser()（no-op），所以接口统一。
+    """
     try:
         if hasattr(bb, "close_browser_async"):
             try:

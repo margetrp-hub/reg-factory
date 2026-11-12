@@ -1,0 +1,19 @@
+{
+  "receipt_key": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+  "document": {
+    "payload": {
+      "schema": "aishop.node-assets-relay.v1",
+      "node_id": "sg",
+      "center_id": "center",
+      "request_id": "702d8180-ec17-4a06-80f1-84449c69633e",
+      "issued_at": 1794441600,
+      "expires_at": 1794441720,
+      "envelope": {
+        "schema": "aishop.node-assets.v1",
+        "node_id": "sg",
+        "sealed": "QA0PRQTE_WbRIaUyKZK82bd4USOobiV_W2y-ZIl6dIw2DSor0ZbnXETRId3pxKdDYZqJ4XI8TajnlqiE0NE4qbn9w0PD9cr5mhQCRiCVetLcFnf3-TuquN26wPsaYB__3thoglRvmN4BVYT2t284LPFsGvvC_Nuh4qcnImy49LcCxnDeT7OprAspDLgjfChIRbcDpW4VBagUX960cLFxIwrx4gl-rpbvecw7GEVIHM21wVOaaeGyibfFt2OlCHjuHBLa9OuxrJ_l8fb5XDfv7Rzww82tie4k4r4M76EFImNLC2gdLtV2CriurLVfs4L-fh71S4Tc6lDGNKRsNIn9LRTKz0c="
+      }
+    },
+    "signature": "2e3b03121e0d79157016532a3d0e637d7580a64347ab072466e8ee62b8a52b5e"
+  }
+}

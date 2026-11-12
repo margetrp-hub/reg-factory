@@ -1,0 +1,134 @@
+{
+  "schema": "aishop.node-assets.fixtures.v1",
+  "synthetic_key": "c3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3M=",
+  "now": 1794441600,
+  "node_id": "sg",
+  "request_id": "fixture-python",
+  "python_request": {
+    "schema": "aishop.node-assets.v1",
+    "node_id": "sg",
+    "sealed": "QA0PRQTE_WbRIaUyKZK82bd4USOobiV_W2y-ZIl6dIw2DSor0ZbnXETRId3pxKdDYZqJ4XI8TajnlqiE0NE4qbn9w0PD9cr5mhQCRiCVetLcFnf3-TuquN26wPsaYB__3thoglRvmN4BVYT2t284LPFsGvvC_Nuh4qcnImy49LcCxnDeT7OprAspDLgjfChIRbcDpW4VBagUX960cLFxIwrx4gl-rpbvecw7GEVIHM21wVOaaeGyibfFt2OlCHjuHBLa9OuxrJ_l8fb5XDfv7Rzww82tie4k4r4M76EFImNLC2gdLtV2CriurLVfs4L-fh71S4Tc6lDGNKRsNIn9LRTKz0c="
+  },
+  "states": [
+    {
+      "status": "active",
+      "liveness": "active",
+      "checked_at": "2026-11-12T00:00:00+00:00",
+      "expected": {
+        "source_status": "active",
+        "source_liveness": "active",
+        "account": "unknown",
+        "workspace": "unknown",
+        "credential": "unknown",
+        "health": "unknown",
+        "checked_at": "2026-11-12T00:00:00+00:00",
+        "automatic_refresh_allowed": true
+      }
+    },
+    {
+      "status": "alive",
+      "liveness": "alive",
+      "checked_at": null,
+      "expected": {
+        "source_status": "alive",
+        "source_liveness": "alive",
+        "account": "unknown",
+        "workspace": "unknown",
+        "credential": "unknown",
+        "health": "unknown",
+        "checked_at": null,
+        "automatic_refresh_allowed": true
+      }
+    },
+    {
+      "status": "alive",
+      "liveness": "alive",
+      "checked_at": "2026-11-12T00:00:00+00:00",
+      "expected": {
+        "source_status": "alive",
+        "source_liveness": "alive",
+        "account": "unknown",
+        "workspace": "unknown",
+        "credential": "unknown",
+        "health": "alive",
+        "checked_at": "2026-11-12T00:00:00+00:00",
+        "automatic_refresh_allowed": true
+      }
+    },
+    {
+      "status": "workspace_deactivated",
+      "liveness": "workspace_deactivated",
+      "checked_at": "2026-11-12T00:00:00+00:00",
+      "expected": {
+        "source_status": "workspace_deactivated",
+        "source_liveness": "workspace_deactivated",
+        "account": "unknown",
+        "workspace": "deactivated",
+        "credential": "unknown",
+        "health": "unavailable",
+        "checked_at": "2026-11-12T00:00:00+00:00",
+        "automatic_refresh_allowed": false
+      }
+    },
+    {
+      "status": "banned",
+      "liveness": "banned",
+      "checked_at": "2026-11-12T00:00:00+00:00",
+      "expected": {
+        "source_status": "banned",
+        "source_liveness": "banned",
+        "account": "banned",
+        "workspace": "unknown",
+        "credential": "unknown",
+        "health": "unavailable",
+        "checked_at": "2026-11-12T00:00:00+00:00",
+        "automatic_refresh_allowed": false
+      }
+    },
+    {
+      "status": "email_otp_required",
+      "liveness": "unknown",
+      "checked_at": "2026-11-12T00:00:00+00:00",
+      "expected": {
+        "source_status": "email_otp_required",
+        "source_liveness": "unknown",
+        "account": "unknown",
+        "workspace": "unknown",
+        "credential": "email_otp_required",
+        "health": "needs_attention",
+        "checked_at": "2026-11-12T00:00:00+00:00",
+        "automatic_refresh_allowed": false
+      }
+    },
+    {
+      "status": "needs_refresh",
+      "liveness": "needs_refresh",
+      "checked_at": "2026-11-12T00:00:00+00:00",
+      "expected": {
+        "source_status": "needs_refresh",
+        "source_liveness": "needs_refresh",
+        "account": "unknown",
+        "workspace": "unknown",
+        "credential": "needs_refresh",
+        "health": "needs_attention",
+        "checked_at": "2026-11-12T00:00:00+00:00",
+        "automatic_refresh_allowed": true
+      }
+    },
+    {
+      "status": "future_state",
+      "liveness": "unknown",
+      "checked_at": null,
+      "expected": {
+        "source_status": "future_state",
+        "source_liveness": "unknown",
+        "account": "unknown",
+        "workspace": "unknown",
+        "credential": "unknown",
+        "health": "unknown",
+        "checked_at": null,
+        "automatic_refresh_allowed": true
+      }
+    }
+  ]
+}

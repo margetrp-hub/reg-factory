@@ -30,6 +30,7 @@ FROM ${GO_IMAGE} AS api
 WORKDIR /src
 ENV CGO_ENABLED=0 GOPROXY=https://goproxy.cn,direct
 COPY server/go.mod server/go.sum ./
+COPY shared/node-sdk/go /shared/node-sdk/go
 RUN go mod download
 COPY server/ ./
 COPY --from=web /web/out ./webdist
@@ -48,10 +49,12 @@ ARG PIP_INDEX_URL_ARG=""
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/app/shared/node-sdk/python \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     PLAYWRIGHT_SKIP_BROWSER_GC=1 \
+    XDG_CACHE_HOME=/opt/browser-cache \
     TZ=Asia/Singapore \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
@@ -72,7 +75,7 @@ RUN set -eux; \
         libasound2 libatk-bridge2.0-0 libatk1.0-0 libatspi2.0-0 libcairo2 \
         libcups2 libdbus-1-3 libdrm2 libgbm1 libglib2.0-0 libnspr4 libnss3 \
         libpango-1.0-0 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 \
-        libxfixes3 libxkbcommon0 libxrandr2; \
+        libxfixes3 libxkbcommon0 libxrandr2 libgtk-3-0 libdbus-glib-1-2; \
     rm -rf /var/lib/apt/lists/*
 
 # ---------------------------------------------------------------- Python 依赖
@@ -87,8 +90,10 @@ RUN set -eux; \
 
 # Playwright 浏览器 + 系统库（--with-deps 会自动补齐发行版依赖）
 RUN set -eux; \
-    python -m playwright install --with-deps chromium; \
-    CHROME="$(python -c 'from playwright.sync_api import sync_playwright as s; p=s().start(); print(p.chromium.executable_path); p.stop()')"; \
+    python -m patchright install --with-deps chromium; \
+    python -m playwright install chromium; \
+    python -m camoufox fetch; \
+    CHROME="$(python -c 'from patchright.sync_api import sync_playwright as s; p=s().start(); print(p.chromium.executable_path); p.stop()')"; \
     test -x "${CHROME}"; \
     ln -sf "${CHROME}" /usr/local/bin/chromium; \
     chmod -R a+rX /ms-playwright; \
@@ -99,10 +104,11 @@ RUN set -eux; \
     groupadd -g 10001 rf; \
     useradd -m -d /home/rf -u 10001 -g 10001 -s /bin/bash rf; \
     mkdir -p /data /app; \
-    chown -R rf:rf /data
+    chown -R rf:rf /data /opt/browser-cache
 
 WORKDIR /app
 COPY . /app
+RUN python shared/node-sdk/python/aishop_node/bundle.py shared/node-sdk
 COPY --from=api /out/regd /usr/local/bin/regd
 
 RUN set -eux; \

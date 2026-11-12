@@ -6,7 +6,7 @@ import asyncio
 import os
 import sys
 
-from playwright.async_api import async_playwright
+from patchright.async_api import async_playwright
 
 # 把仓库根加进 sys.path，从任意目录都能跑
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

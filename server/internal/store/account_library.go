@@ -26,7 +26,7 @@ var ErrCheckStale = errors.New("credential_changed_during_check")
 
 // recordATHealth writes only evidence for the tested version. An in-flight or
 // uncertain RT exchange retains its lock even when the previous AT still works.
-func recordATHealth(tx *sql.Tx, ref, status, message, checkedAt string, version int) (bool, error) {
+func (s *Store) recordATHealth(tx *sql.Tx, ref, status, message, checkedAt string, version int) (bool, error) {
 	liveness := "unknown"
 	switch status {
 	case "ok":
@@ -36,7 +36,7 @@ func recordATHealth(tx *sql.Tx, ref, status, message, checkedAt string, version 
 	case "banned", "invalid":
 		liveness = "dead"
 	}
-	result, err := tx.Exec(`UPDATE accounts SET status=?,health_checked_at=?,health_message=?,updated_at=?,
+	result, err := s.ex.ExecTxArgs(tx, `UPDATE accounts SET status=?,health_checked_at=?,health_message=?,updated_at=?,
  oauth_status=CASE WHEN ?='ok' AND kind='oauth' THEN 'completed' ELSE oauth_status END,
  join_status=CASE WHEN join_status='' AND kind='oauth' THEN 'none' ELSE join_status END,
  liveness_status=?,liveness_checked_at=?
@@ -55,7 +55,7 @@ func (s *Store) MarkATHealth(ref, status, message string, version int) error {
 		return err
 	}
 	defer tx.Rollback()
-	written, err := recordATHealth(tx, ref, status, message, now(), version)
+	written, err := s.recordATHealth(tx, ref, status, message, now(), version)
 	if err != nil {
 		return err
 	}
@@ -69,8 +69,8 @@ func RefreshVerificationID(taskID string) string { return "check-" + taskID }
 
 // The next read-only action is committed with the new credential projection;
 // closing the browser or restarting the service cannot lose it.
-func prepareRefreshedAccount(tx *sql.Tx, taskID, ref string) error {
-	result, err := tx.Exec(`UPDATE accounts SET kind='oauth',oauth_status='completed',
+func prepareRefreshedAccount(s *Store, tx *sql.Tx, taskID, ref string) error {
+	result, err := s.ex.ExecTxArgs(tx, `UPDATE accounts SET kind='oauth',oauth_status='completed',
  status='unknown',health_checked_at='',health_message='凭据已更新，自动测试 AT 已排队',
  liveness_status='unchecked',liveness_checked_at='',
  join_status=CASE WHEN join_status='' THEN 'none' ELSE join_status END,version=version+1
@@ -87,14 +87,14 @@ func prepareRefreshedAccount(tx *sql.Tx, taskID, ref string) error {
 	if err != nil {
 		return err
 	}
-	if _, err = tx.Exec(`INSERT INTO tasks(id,script,title,args_json,status,created_at,actor)
+	if _, err = s.ex.ExecTxArgs(tx, `INSERT INTO tasks(id,script,title,args_json,status,created_at,actor)
  VALUES(?,?,'凭据更新后 AT 测试',?,'queued',?,'system')`, id, CredentialCheckScript, string(args), now()); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(`INSERT INTO credential_check_items(task_id,ordinal,ref,identity,mode)
+	if _, err = s.ex.ExecTxArgs(tx, `INSERT INTO credential_check_items(task_id,ordinal,ref,identity,mode)
  SELECT ?,0,ref,identity,'at' FROM accounts WHERE ref=?`, id, ref); err != nil {
 		return err
 	}
-	_, err = tx.Exec(`INSERT INTO events(task_id,ts,stream,line) VALUES(?,?,'system',?)`, taskID, now(), "凭据已保存；自动 AT 测试排队："+id)
+	_, err = s.ex.ExecTxArgs(tx, `INSERT INTO events(task_id,ts,stream,line) VALUES(?,?,'system',?)`, taskID, now(), "凭据已保存；自动 AT 测试排队："+id)
 	return err
 }

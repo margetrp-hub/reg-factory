@@ -60,7 +60,46 @@ type Audit struct {
 type Store struct {
 	db   *sql.DB
 	read *sql.DB // WAL readers never occupy the single task-state writer connection.
+
+	// 后端方言。SQLite 保持原行为，PG 需要 rebind 占位符。
+	dialect Dialect
+	// ex 是按方言自动 rebind 的执行器。新代码应优先走它。
+	ex *Execer
+	// exRO 是只读执行器，走 read 连接。
+	exRO *Execer
+	// readIsShared 为 true 时 read 和 db 是同一个连接（PG 只读连接失败时退化）。
+	readIsShared bool
 }
+
+// Execer 返回按方言处理的执行器。
+func (s *Store) Execer() *Execer { return s.ex }
+
+// DB 暴露底层 *sql.DB。
+//
+// 大部分代码应该走 Execer()（自动 rebind）或 ReadExecer()。
+// 但少数模块（plus 的 ip_pool / pool）的签名要求 *sql.DB，
+// 这里给它一个受控入口，避免再开第二条连接。
+func (s *Store) DB() *sql.DB { return s.db }
+
+// DialectName 返回 "sqlite" 或 "postgres"。
+//
+// plus 包里的 ip_pool / pool 用 ? 占位符，PG 需要 $N，
+// 靠这个值决定要不要 rebind。
+func (s *Store) DialectName() string {
+	if s.dialect == DialectPG {
+		return "postgres"
+	}
+	return "sqlite"
+}
+
+// Dialect 返回后端类型。
+func (s *Store) Dialect() Dialect { return s.dialect }
+
+// ReadDB 返回只读连接。
+func (s *Store) ReadDB() *sql.DB { return s.read }
+
+// WriteDB 返回读写连接。
+func (s *Store) WriteDB() *sql.DB { return s.db }
 
 const schema = `
 CREATE TABLE IF NOT EXISTS tasks (
@@ -82,6 +121,15 @@ CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_history ON tasks(created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_tasks_status_history ON tasks(status, created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_tasks_script_history ON tasks(script, created_at DESC, id DESC);
+CREATE TABLE IF NOT EXISTS central_asset_receipts (
+  task_id TEXT PRIMARY KEY REFERENCES tasks(id),
+  receipt_json TEXT NOT NULL,
+  settled INTEGER NOT NULL DEFAULT 0,
+  acknowledged INTEGER NOT NULL DEFAULT 0,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_attempt INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_central_asset_delivery ON central_asset_receipts(acknowledged,next_attempt);
 
 CREATE TABLE IF NOT EXISTS credential_check_items (
   task_id TEXT NOT NULL REFERENCES tasks(id),
@@ -208,7 +256,57 @@ CREATE TABLE IF NOT EXISTS audit (
 `
 
 // Open 打开/初始化数据库。
+//
+// 参数可以是文件路径（SQLite）或 PG DSN：
+//
+//	/data/regd.db
+//	host=127.0.0.1 port=5433 dbname=regfactory user=postgres password=xxx
+//	postgres://user:pass@host:5433/regfactory
+//
+// 两种后端返回同一个 *Store，业务代码不用区分。
 func Open(path string) (*Store, error) {
+	if DialectOf(path) == DialectPG {
+		return openPGStore(path)
+	}
+	return openSQLiteStore(path)
+}
+
+// openPGStore 打开 PG 后端。
+//
+// 关键差异：
+//   - 不执行 schema（表由 pg_schema.sql 建好，PG 语法和 SQLite 不同）
+//   - 不建只读副本（PG 用 default_transaction_read_only 实现）
+//   - ensureColumns 的 ALTER 语法两边通用，保留
+func openPGStore(dsn string) (*Store, error) {
+	db, d, err := OpenDSN(dsn)
+	if err != nil {
+		return nil, err
+	}
+	st := &Store{db: db, dialect: d, ex: NewExecer(db, d)}
+	if _, err = st.ex.Exec(SchemaDDL(schema, d)); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("initialize PostgreSQL tables: %w", err)
+	}
+
+	// 只读连接：同一个库，加 default_transaction_read_only
+	ro, _, rerr := OpenDSNReadOnly(dsn)
+	if rerr != nil {
+		db.Close()
+		return nil, rerr
+	}
+	st.read = ro
+	st.exRO = NewExecer(st.read, d)
+
+	if err := st.postOpenInit(); err != nil {
+		ro.Close()
+		db.Close()
+		return nil, err
+	}
+	return st, nil
+}
+
+// openSQLiteStore 是原来的 SQLite 路径，逻辑保持不动。
+func openSQLiteStore(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
@@ -222,27 +320,10 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("初始化表结构失败: %w", err)
 	}
-	st := &Store{db: db}
-	// Existing SG databases predate the operation result columns. Migrate them
-	// in place so a retry after a lost receipt cannot advance an account twice.
-	st.ensureColumns("work_operations", map[string]string{
-		"input_resource_version":  "INTEGER NOT NULL DEFAULT 0",
-		"result_resource_version": "INTEGER NOT NULL DEFAULT 0",
-		"completed_at":            "TEXT NOT NULL DEFAULT ''",
-	})
-	// File scans must know which records are owned by production/custody even
-	// before the Work routes are registered.
-	if err := st.EnsureInventoryRelay(); err != nil {
+	st := &Store{db: db, dialect: DialectSQLite, ex: NewExecer(db, DialectSQLite)}
+	if err := st.postOpenInit(); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("initialize inventory storage: %w", err)
-	}
-	if err := st.EnsureProduction(); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("initialize production storage: %w", err)
-	}
-	if err := st.RecoverLegacyQuota(); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("recover read-only quota records: %w", err)
+		return nil, err
 	}
 	st.read, err = sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=busy_timeout(2000)&_pragma=query_only(1)")
 	if err != nil {
@@ -256,7 +337,37 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	st.exRO = NewExecer(st.read, DialectSQLite)
 	return st, nil
+}
+
+// postOpenInit 是两种后端共用的初始化。
+//
+// 这些都是「补字段 + 保证附属表存在」，ALTER TABLE ADD COLUMN 和
+// CREATE TABLE IF NOT EXISTS 在 SQLite 与 PG 上语法一致，可以共用。
+func (s *Store) postOpenInit() error {
+	if _, err := s.ex.Exec(centralAssetSchema); err != nil {
+		return fmt.Errorf("initialize central asset receipts: %w", err)
+	}
+	// Existing SG databases predate the operation result columns. Migrate them
+	// in place so a retry after a lost receipt cannot advance an account twice.
+	s.ensureColumns("work_operations", map[string]string{
+		"input_resource_version":  "INTEGER NOT NULL DEFAULT 0",
+		"result_resource_version": "INTEGER NOT NULL DEFAULT 0",
+		"completed_at":            "TEXT NOT NULL DEFAULT ''",
+	})
+	// File scans must know which records are owned by production/custody even
+	// before the Work routes are registered.
+	if err := s.EnsureInventoryRelay(); err != nil {
+		return fmt.Errorf("initialize inventory storage: %w", err)
+	}
+	if err := s.EnsureProduction(); err != nil {
+		return fmt.Errorf("initialize production storage: %w", err)
+	}
+	if err := s.RecoverLegacyQuota(); err != nil {
+		return fmt.Errorf("recover read-only quota records: %w", err)
+	}
+	return nil
 }
 
 // Close 关闭数据库。
@@ -271,7 +382,7 @@ func (s *Store) CreateTask(t Task) error {
 	if t.CreatedAt == "" {
 		t.CreatedAt = now()
 	}
-	_, err := s.db.Exec(
+	_, err := s.ex.Exec(
 		`INSERT INTO tasks(id, script, title, args_json, status, pid, created_at, actor)
 		 VALUES(?,?,?,?,?,?,?,?)`,
 		t.ID, t.Script, t.Title, t.ArgsJSON, "queued", 0, t.CreatedAt, t.Actor,
@@ -281,7 +392,7 @@ func (s *Store) CreateTask(t Task) error {
 
 // MarkRunning 记录启动成功。
 func (s *Store) MarkRunning(id string, pid int) error {
-	_, err := s.db.Exec(
+	_, err := s.ex.Exec(
 		`UPDATE tasks SET status='running', pid=?, started_at=? WHERE id=?`,
 		pid, now(), id,
 	)
@@ -290,7 +401,7 @@ func (s *Store) MarkRunning(id string, pid int) error {
 
 // Finish 记录结束状态。
 func (s *Store) Finish(id, status string, exitCode int, errMsg string) error {
-	_, err := s.db.Exec(
+	_, err := s.ex.Exec(
 		`UPDATE tasks SET status=?, exit_code=?, finished_at=?, error=?, pid=0 WHERE id=?`,
 		status, exitCode, now(), errMsg, id,
 	)
@@ -300,7 +411,7 @@ func (s *Store) Finish(id, status string, exitCode int, errMsg string) error {
 // GetTask 取单条。
 func (s *Store) GetTask(id string) (Task, error) {
 	var t Task
-	err := s.read.QueryRow(
+	err := s.exRO.QueryRow(
 		`SELECT id, script, title, args_json, status, pid, created_at, started_at,
 		        finished_at, exit_code, error, actor FROM tasks WHERE id=?`, id,
 	).Scan(&t.ID, &t.Script, &t.Title, &t.ArgsJSON, &t.Status, &t.PID, &t.CreatedAt,
@@ -320,9 +431,9 @@ func (s *Store) ListTasks(status string, limit int) ([]Task, error) {
 	q := `SELECT id, script, title, args_json, status, pid, created_at, started_at,
 	             finished_at, exit_code, error, actor FROM tasks`
 	if strings.TrimSpace(status) != "" {
-		rows, err = s.read.Query(q+` WHERE status=? ORDER BY created_at DESC LIMIT ?`, status, limit)
+		rows, err = s.exRO.Query(q+` WHERE status=? ORDER BY created_at DESC LIMIT CAST(? AS BIGINT)`, status, limit)
 	} else {
-		rows, err = s.read.Query(q+` ORDER BY created_at DESC LIMIT ?`, limit)
+		rows, err = s.exRO.Query(q+` ORDER BY created_at DESC LIMIT CAST(? AS BIGINT)`, limit)
 	}
 	if err != nil {
 		return nil, err
@@ -343,7 +454,7 @@ func (s *Store) ListTasks(status string, limit int) ([]Task, error) {
 // RecoverInterrupted 把上次进程崩溃遗留的 running 标记为 interrupted。
 func (s *Store) NextScriptTask() (*Task, error) {
 	var id string
-	err := s.db.QueryRow(`SELECT id FROM tasks WHERE status='queued' AND script NOT IN ('production.team_json','credential.check') ORDER BY created_at,id LIMIT 1`).Scan(&id)
+	err := s.ex.QueryRow(`SELECT id FROM tasks WHERE status='queued' AND script NOT IN ('production.team_json','credential.check') ORDER BY created_at,id LIMIT 1`).Scan(&id)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -360,10 +471,10 @@ func (s *Store) StopQueuedScripts() error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.Exec(`UPDATE accounts SET refresh_state='stopped',refresh_at=? WHERE ref IN (SELECT r.ref FROM account_refreshes r JOIN tasks t ON t.id=r.task_id WHERE t.status='queued')`, now()); err != nil {
+	if _, err = s.ex.ExecTxArgs(tx, `UPDATE accounts SET refresh_state='stopped',refresh_at=? WHERE ref IN (SELECT r.ref FROM account_refreshes r JOIN tasks t ON t.id=r.task_id WHERE t.status='queued')`, now()); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(`UPDATE tasks SET status='stopped',finished_at=?,exit_code=-1,error='stop-all' WHERE status='queued' AND script <> 'production.team_json'`, now()); err != nil {
+	if _, err = s.ex.ExecTxArgs(tx, `UPDATE tasks SET status='stopped',finished_at=?,exit_code=-1,error='stop-all' WHERE status='queued' AND script <> 'production.team_json'`, now()); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -375,13 +486,13 @@ func (s *Store) RecoverInterrupted() (int64, error) {
 		return 0, err
 	}
 	defer tx.Rollback()
-	if _, err = tx.Exec(`UPDATE credential_check_items SET status='unknown',message='服务重启，原检查未确认；可重新测试 AT' WHERE status='running'`); err != nil {
+	if _, err = s.ex.ExecTx(tx, `UPDATE credential_check_items SET status='unknown',message='服务重启，原检查未确认；可重新测试 AT' WHERE status='running'`); err != nil {
 		return 0, err
 	}
-	if _, err = tx.Exec(`UPDATE accounts SET refresh_state='interrupted',refresh_at=? WHERE ref IN (SELECT r.ref FROM account_refreshes r JOIN tasks t ON t.id=r.task_id WHERE t.status IN ('queued','running','stopping'))`, now()); err != nil {
+	if _, err = s.ex.ExecTxArgs(tx, `UPDATE accounts SET refresh_state='interrupted',refresh_at=? WHERE ref IN (SELECT r.ref FROM account_refreshes r JOIN tasks t ON t.id=r.task_id WHERE t.status IN ('queued','running','stopping'))`, now()); err != nil {
 		return 0, err
 	}
-	res, err := tx.Exec(
+	res, err := s.ex.ExecTxArgs(tx,
 		`UPDATE tasks SET status='interrupted', error='regd restarted', finished_at=?, pid=0
 		 WHERE status IN ('running','queued','stopping') AND script <> 'production.team_json'
 		 AND NOT (script='credential.check' AND status='queued')`, now(),
@@ -395,18 +506,18 @@ func (s *Store) RecoverInterrupted() (int64, error) {
 	}
 	// A credential worker which ended without a confirmed result is failed.
 	// Keep the previous state in its events, but never hold an account forever.
-	credentialEnded := `script='asset_ops' AND json_valid(args_json) AND json_extract(args_json,'$[0]')='refresh'
+	credentialEnded := `script='asset_ops' AND ` + s.ex.JSONText("args_json", "0") + `='refresh'
  AND (status IN ('unknown','interrupted') OR (status='stopped' AND started_at<>''))`
-	if _, err = tx.Exec(`INSERT INTO events(task_id,ts,stream,line)
+	if _, err = s.ex.ExecTxArgs(tx, `INSERT INTO events(task_id,ts,stream,line)
  SELECT id,?,'system','凭据任务未确认完成，按失败结案；原状态='||status||'，原反馈='||error FROM tasks WHERE `+credentialEnded, now()); err != nil {
 		return 0, err
 	}
-	if _, err = tx.Exec(`UPDATE accounts SET refresh_state='failed',refresh_at=?
+	if _, err = s.ex.ExecTxArgs(tx, `UPDATE accounts SET refresh_state='failed',refresh_at=?
  WHERE refresh_state IN ('unknown','interrupted','stopped') AND ref IN
  (SELECT r.ref FROM account_refreshes r JOIN tasks t ON t.id=r.task_id WHERE t.`+credentialEnded+`)`, now()); err != nil {
 		return 0, err
 	}
-	if _, err = tx.Exec(`UPDATE tasks SET status='failed',exit_code=CASE WHEN started_at<>'' THEN 75 ELSE 1 END,
+	if _, err = s.ex.ExecTxArgs(tx, `UPDATE tasks SET status='failed',exit_code=CASE WHEN started_at<>'' THEN 75 ELSE 1 END,
  error='未取得可确认的成功结果，本次失败；可重新发起授权修复',pid=0,
  finished_at=CASE WHEN finished_at='' THEN ? ELSE finished_at END WHERE `+credentialEnded, now()); err != nil {
 		return 0, err
@@ -418,7 +529,7 @@ func (s *Store) RecoverInterrupted() (int64, error) {
 
 // AppendEvent 写一行日志。
 func (s *Store) AppendEvent(taskID, stream, line string) error {
-	_, err := s.db.Exec(
+	_, err := s.ex.Exec(
 		`INSERT INTO events(task_id, ts, stream, line) VALUES(?,?,?,?)`,
 		taskID, now(), stream, RedactLog(line),
 	)
@@ -436,7 +547,7 @@ func (s *Store) TailEvents(taskID string, limit int) ([]Event, error) {
 		query += ` WHERE task_id=?`
 		args = append(args, taskID)
 	}
-	rows, err := s.read.Query(query+` ORDER BY id DESC LIMIT ?`, append(args, limit)...)
+	rows, err := s.exRO.Query(query+` ORDER BY id DESC LIMIT CAST(? AS BIGINT)`, append(args, limit)...)
 	if err != nil {
 		return nil, err
 	}
@@ -469,7 +580,7 @@ func (s *Store) EventsAfter(taskID string, after int64, limit int) ([]Event, err
 		query += ` AND task_id=?`
 		args = append(args, taskID)
 	}
-	rows, err := s.read.Query(query+` ORDER BY id LIMIT ?`, append(args, limit)...)
+	rows, err := s.exRO.Query(query+` ORDER BY id LIMIT CAST(? AS BIGINT)`, append(args, limit)...)
 	if err != nil {
 		return nil, err
 	}
@@ -491,20 +602,20 @@ func (s *Store) EventsAfter(taskID string, after int64, limit int) ([]Event, err
 // ClaimAsset 记录领取；返回是否首次（同一 kind+ref 不重复）。
 func (s *Store) ClaimAsset(kind, ref, note string) (bool, error) {
 	var exists int
-	err := s.db.QueryRow(`SELECT COUNT(1) FROM claims WHERE kind=? AND ref=?`, kind, ref).Scan(&exists)
+	err := s.ex.QueryRow(`SELECT COUNT(1) FROM claims WHERE kind=? AND ref=?`, kind, ref).Scan(&exists)
 	if err != nil {
 		return false, err
 	}
 	if exists > 0 {
 		return false, nil
 	}
-	_, err = s.db.Exec(`INSERT INTO claims(kind, ref, ts, note) VALUES(?,?,?,?)`, kind, ref, now(), note)
+	_, err = s.ex.Exec(`INSERT INTO claims(kind, ref, ts, note) VALUES(?,?,?,?)`, kind, ref, now(), note)
 	return err == nil, err
 }
 
 // ClaimedRefs 返回某类已领取的引用集合。
 func (s *Store) ClaimedRefs(kind string) (map[string]bool, error) {
-	rows, err := s.db.Query(`SELECT ref FROM claims WHERE kind=?`, kind)
+	rows, err := s.ex.Query(`SELECT ref FROM claims WHERE kind=?`, kind)
 	if err != nil {
 		return nil, err
 	}
@@ -525,9 +636,9 @@ func (s *Store) ResetClaims(kind string) (int64, error) {
 	var res sql.Result
 	var err error
 	if kind == "" {
-		res, err = s.db.Exec(`DELETE FROM claims`)
+		res, err = s.ex.Exec(`DELETE FROM claims`)
 	} else {
-		res, err = s.db.Exec(`DELETE FROM claims WHERE kind=?`, kind)
+		res, err = s.ex.Exec(`DELETE FROM claims WHERE kind=?`, kind)
 	}
 	if err != nil {
 		return 0, err
@@ -539,7 +650,7 @@ func (s *Store) ResetClaims(kind string) (int64, error) {
 
 // Audit 追加一条操作记录。
 func (s *Store) Audit(actor, action, detail, ip string) {
-	_, _ = s.db.Exec(
+	_, _ = s.ex.Exec(
 		`INSERT INTO audit(ts, actor, action, detail, ip) VALUES(?,?,?,?,?)`,
 		now(), actor, action, detail, ip,
 	)
@@ -550,8 +661,8 @@ func (s *Store) ListAudit(limit int) ([]Audit, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 200
 	}
-	rows, err := s.db.Query(
-		`SELECT id, ts, actor, action, detail, ip FROM audit ORDER BY id DESC LIMIT ?`, limit,
+	rows, err := s.ex.Query(
+		`SELECT id, ts, actor, action, detail, ip FROM audit ORDER BY id DESC LIMIT CAST(? AS BIGINT)`, limit,
 	)
 	if err != nil {
 		return nil, err
@@ -571,7 +682,7 @@ func (s *Store) ListAudit(limit int) ([]Audit, error) {
 // Stats 返回概览计数。
 func (s *Store) Stats() (map[string]int, error) {
 	out := map[string]int{}
-	rows, err := s.read.Query(`SELECT status, COUNT(1) FROM tasks GROUP BY status`)
+	rows, err := s.exRO.Query(`SELECT status, COUNT(1) FROM tasks GROUP BY status`)
 	if err != nil {
 		return nil, err
 	}
@@ -595,20 +706,20 @@ func (s *Store) ReserveOperation(operationID, taskID, action string, inputVersio
 		version = inputVersion[0]
 	}
 	var existing string
-	err := s.db.QueryRow(`SELECT task_id FROM work_operations WHERE operation_id=?`, operationID).Scan(&existing)
+	err := s.ex.QueryRow(`SELECT task_id FROM work_operations WHERE operation_id=?`, operationID).Scan(&existing)
 	if err == nil {
 		return existing, false, nil
 	}
 	if err != sql.ErrNoRows {
 		return "", false, err
 	}
-	_, err = s.db.Exec(
+	_, err = s.ex.Exec(
 		`INSERT INTO work_operations(operation_id, task_id, action, input_resource_version, created_at) VALUES(?,?,?,?,?)`,
 		operationID, taskID, action, version, now(),
 	)
 	if err != nil {
 		// 并发下可能已被别的请求插入
-		if again := s.db.QueryRow(`SELECT task_id FROM work_operations WHERE operation_id=?`, operationID).Scan(&existing); again == nil {
+		if again := s.ex.QueryRow(`SELECT task_id FROM work_operations WHERE operation_id=?`, operationID).Scan(&existing); again == nil {
 			return existing, false, nil
 		}
 		return "", false, err
@@ -631,7 +742,7 @@ func (s *Store) CommitOperationResult(operationID, action, accountRef string, ex
 	defer tx.Rollback()
 
 	var saved, input int
-	err = tx.QueryRow(`SELECT result_resource_version, input_resource_version FROM work_operations WHERE operation_id=?`, operationID).Scan(&saved, &input)
+	err = s.ex.QueryRowTx(tx, `SELECT result_resource_version, input_resource_version FROM work_operations WHERE operation_id=?`, operationID).Scan(&saved, &input)
 	if err != nil && err != sql.ErrNoRows {
 		return 0, err
 	}
@@ -643,7 +754,7 @@ func (s *Store) CommitOperationResult(operationID, action, accountRef string, ex
 		expectedVersion = input
 	}
 	var current int
-	if err = tx.QueryRow(`SELECT version FROM accounts WHERE ref=?`, accountRef).Scan(&current); err != nil {
+	if err = s.ex.QueryRowTx(tx, `SELECT version FROM accounts WHERE ref=?`, accountRef).Scan(&current); err != nil {
 		return 0, err
 	}
 	if current < 1 {
@@ -655,7 +766,7 @@ func (s *Store) CommitOperationResult(operationID, action, accountRef string, ex
 	resultVersion := current
 	if current == expectedVersion || expectedVersion <= 0 {
 		resultVersion = current + 1
-		updated, updateErr := tx.Exec(`UPDATE accounts SET version=?,updated_at=? WHERE ref=? AND version=?`, resultVersion, now(), accountRef, current)
+		updated, updateErr := s.ex.ExecTxArgs(tx, `UPDATE accounts SET version=?,updated_at=? WHERE ref=? AND version=?`, resultVersion, now(), accountRef, current)
 		if updateErr != nil {
 			return 0, updateErr
 		}
@@ -664,10 +775,10 @@ func (s *Store) CommitOperationResult(operationID, action, accountRef string, ex
 		}
 	}
 	if operationFound {
-		if _, err = tx.Exec(`UPDATE work_operations SET result_resource_version=?,completed_at=? WHERE operation_id=?`, resultVersion, now(), operationID); err != nil {
+		if _, err = s.ex.ExecTxArgs(tx, `UPDATE work_operations SET result_resource_version=?,completed_at=? WHERE operation_id=?`, resultVersion, now(), operationID); err != nil {
 			return 0, err
 		}
-	} else if _, err = tx.Exec(`INSERT INTO work_operations(operation_id,task_id,action,input_resource_version,result_resource_version,created_at,completed_at) VALUES(?,?,?,?,?,?,?)`,
+	} else if _, err = s.ex.ExecTxArgs(tx, `INSERT INTO work_operations(operation_id,task_id,action,input_resource_version,result_resource_version,created_at,completed_at) VALUES(?,?,?,?,?,?,?)`,
 		operationID, "", action, expectedVersion, resultVersion, now(), now()); err != nil {
 		return 0, err
 	}
@@ -727,7 +838,7 @@ func (s *Store) SyncAccounts(seeds []AccountSeed) (int, error) {
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.Prepare(`INSERT INTO accounts(ref, platform, kind, identity, secret_ref, status, created_at, updated_at)
+	stmt, err := s.ex.PrepareTx(tx, `INSERT INTO accounts(ref, platform, kind, identity, secret_ref, status, created_at, updated_at)
 		VALUES(?,?,?,?,?,'unknown',?,?)
 		ON CONFLICT(ref) DO UPDATE SET
 		  platform=excluded.platform, kind=excluded.kind, identity=excluded.identity,
@@ -750,7 +861,7 @@ func (s *Store) SyncAccounts(seeds []AccountSeed) (int, error) {
 	}
 	// A missing file is not authority to remove a production result, a claimed
 	// account or a durable custody/reference binding. Their owners retire them.
-	if _, err := tx.Exec(`DELETE FROM accounts WHERE updated_at < ? AND kind NOT IN ('imported','creds')
+	if _, err := s.ex.ExecTxArgs(tx, `DELETE FROM accounts WHERE updated_at < ? AND kind NOT IN ('imported','creds')
  AND claimed=0
  AND NOT EXISTS (SELECT 1 FROM production_results p WHERE p.account_ref=accounts.ref)
  AND NOT EXISTS (SELECT 1 FROM inventory_relay_bindings b WHERE b.account_ref=accounts.ref)
@@ -762,25 +873,10 @@ func (s *Store) SyncAccounts(seeds []AccountSeed) (int, error) {
 
 // ensureColumns 按需补列（SQLite 没有 ADD COLUMN IF NOT EXISTS）。
 func (s *Store) ensureColumns(table string, cols map[string]string) {
-	rows, err := s.db.Query("PRAGMA table_info(" + table + ")")
-	if err != nil {
-		return
-	}
-	have := map[string]bool{}
-	for rows.Next() {
-		var cid, notnull, pk int
-		var name, ctype string
-		var dflt any
-		if scanErr := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); scanErr == nil {
-			have[name] = true
-		}
-	}
-	rows.Close()
+	// 方言差异交给 Execer.EnsureColumn：SQLite 用 PRAGMA table_info，
+	// PG 用 information_schema.columns，两边都不重复加列。
 	for name, def := range cols {
-		if have[name] {
-			continue
-		}
-		_, _ = s.db.Exec("ALTER TABLE " + table + " ADD COLUMN " + name + " " + def)
+		_ = s.ex.EnsureColumn(table, name, def)
 	}
 }
 
@@ -821,14 +917,14 @@ func (s *Store) ListAccountsPage(kind, platform, status string, limit, offset in
 	}
 	defer tx.Rollback()
 	var total int
-	if err := tx.QueryRow(projection+"SELECT COUNT(*)"+where, args...).Scan(&total); err != nil {
+	if err := s.ex.QueryRowTx(tx, projection+"SELECT COUNT(*)"+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	q := projection + `SELECT ref, platform, kind, identity, secret_ref, status, health_checked_at, health_message,
 	             identity_claimed, claimed_at, refresh_state, refresh_at, note, updated_at, projected_library_status, source_count,
-	             version,oauth_status,join_status,liveness_status,liveness_checked_at` + where + " ORDER BY updated_at DESC, ref DESC LIMIT ? OFFSET ?"
+	             version,oauth_status,join_status,liveness_status,liveness_checked_at` + where + " ORDER BY updated_at DESC, ref DESC LIMIT CAST(? AS BIGINT) OFFSET CAST(? AS BIGINT)"
 	args = append(args, limit, offset)
-	rows, err := tx.Query(q, args...)
+	rows, err := s.ex.QueryTx(tx, q, args...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -857,7 +953,7 @@ func (s *Store) GetAccount(ref string) (Account, error) {
 	// 账号引用证明需要 oauth/join/liveness 与 version：这些是 Team 判定源号
 	// 是否可派单的唯一依据，漏查会让 reference 里的 liveness 恒为空，
 	// Team 只能把每个候选号判成 pending，生产单永远起不来。
-	err := s.read.QueryRow(`SELECT ref, platform, kind, identity, secret_ref, status, health_checked_at,
+	err := s.exRO.QueryRow(`SELECT ref, platform, kind, identity, secret_ref, status, health_checked_at,
 		health_message, claimed, claimed_at, refresh_state, refresh_at, note, version,
 		oauth_status, join_status, liveness_status, liveness_checked_at, updated_at, `+accountLibraryStatusSQL+`
 		FROM accounts WHERE ref=?`, ref).Scan(&a.Ref, &a.Platform, &a.Kind, &a.Identity, &a.SecretRef,
@@ -874,14 +970,14 @@ func (s *Store) MarkHealth(ref, status, message string) error {
 
 // MarkRefresh 写入刷新/修复结果。
 func (s *Store) MarkRefresh(ref, state, message string) error {
-	_, err := s.db.Exec(`UPDATE accounts SET refresh_state=?, refresh_at=?, health_message=?, updated_at=? WHERE ref=?`,
+	_, err := s.ex.Exec(`UPDATE accounts SET refresh_state=?, refresh_at=?, health_message=?, updated_at=? WHERE ref=?`,
 		state, now(), message, now(), ref)
 	return err
 }
 
 // MarkClaimed 标记账号已被下游领取（领取后禁止自动修复）。
 func (s *Store) MarkClaimed(ref string) error {
-	_, err := s.db.Exec(`UPDATE accounts SET claimed=1, claimed_at=?, updated_at=? WHERE ref=?`, now(), now(), ref)
+	_, err := s.ex.Exec(`UPDATE accounts SET claimed=1, claimed_at=?, updated_at=? WHERE ref=?`, now(), now(), ref)
 	return err
 }
 
@@ -898,9 +994,9 @@ func (s *Store) DueForLiveness(platform string, limit int) ([]Account, error) {
 		q += " AND platform=?"
 		args = append(args, platform)
 	}
-	q += " ORDER BY (health_checked_at = '') DESC, health_checked_at ASC LIMIT ?"
+	q += " ORDER BY (health_checked_at = '') DESC, health_checked_at ASC LIMIT CAST(? AS BIGINT)"
 	args = append(args, limit)
-	rows, err := s.db.Query(q, args...)
+	rows, err := s.ex.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -926,7 +1022,7 @@ func (s *Store) UpsertAccounts(seeds []AccountSeed) (int, error) {
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.Prepare(`INSERT INTO accounts(ref, platform, kind, identity, secret_ref, status, created_at, updated_at)
+	stmt, err := s.ex.PrepareTx(tx, `INSERT INTO accounts(ref, platform, kind, identity, secret_ref, status, created_at, updated_at)
 		VALUES(?,?,?,?,?,'unknown',?,?)
 		ON CONFLICT(ref) DO UPDATE SET
 		  platform=excluded.platform, kind=excluded.kind, identity=excluded.identity,
@@ -975,7 +1071,7 @@ func (s *Store) LibraryAccounts(query, status, platform string, page, pageSize i
 	}
 	defer tx.Rollback()
 	var total int
-	if err := tx.QueryRow("SELECT COUNT(*) FROM accounts WHERE "+cond, args...).Scan(&total); err != nil {
+	if err := s.ex.QueryRowTx(tx, "SELECT COUNT(*) FROM accounts WHERE "+cond, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	if page < 1 {
@@ -986,10 +1082,10 @@ func (s *Store) LibraryAccounts(query, status, platform string, page, pageSize i
 	}
 	offset := (page - 1) * pageSize
 
-	rows, err := tx.Query(`SELECT ref, platform, kind, identity, secret_ref, status, health_checked_at,
+	rows, err := s.ex.QueryTx(tx, `SELECT ref, platform, kind, identity, secret_ref, status, health_checked_at,
 		health_message, claimed, claimed_at, refresh_state, refresh_at, note, version,
 		oauth_status, join_status, liveness_status, liveness_checked_at, updated_at, `+accountLibraryStatusSQL+`
-		FROM accounts WHERE `+cond+` ORDER BY updated_at DESC, ref DESC LIMIT ? OFFSET ?`,
+		FROM accounts WHERE `+cond+` ORDER BY updated_at DESC, ref DESC LIMIT CAST(? AS BIGINT) OFFSET CAST(? AS BIGINT)`,
 		append(args, pageSize, offset)...)
 	if err != nil {
 		return nil, 0, err
@@ -1016,7 +1112,7 @@ func (s *Store) LibraryAccounts(query, status, platform string, page, pageSize i
 
 // MarkPassword 记录改密码结果（能力化：账号状态的一部分）。
 func (s *Store) MarkPassword(ref, state, message string) error {
-	_, err := s.db.Exec(`UPDATE accounts SET password_state=?, password_changed_at=?, password_message=?, updated_at=? WHERE ref=?`,
+	_, err := s.ex.Exec(`UPDATE accounts SET password_state=?, password_changed_at=?, password_message=?, updated_at=? WHERE ref=?`,
 		state, now(), message, now(), ref)
 	return err
 }
@@ -1026,7 +1122,7 @@ func (s *Store) SaveCredential(ref, password, totp string) error {
 	if password == "" && totp == "" {
 		return nil
 	}
-	_, err := s.db.Exec(`INSERT INTO account_credentials(ref, password, totp, updated_at)
+	_, err := s.ex.Exec(`INSERT INTO account_credentials(ref, password, totp, updated_at)
 		VALUES(?,?,?,?)
 		ON CONFLICT(ref) DO UPDATE SET
 		  password=CASE WHEN excluded.password != '' THEN excluded.password ELSE password END,
@@ -1037,13 +1133,13 @@ func (s *Store) SaveCredential(ref, password, totp string) error {
 
 // GetCredential 读取账号凭据。
 func (s *Store) GetCredential(ref string) (password, totp string, err error) {
-	err = s.db.QueryRow(`SELECT password, totp FROM account_credentials WHERE ref=?`, ref).Scan(&password, &totp)
+	err = s.ex.QueryRow(`SELECT password, totp FROM account_credentials WHERE ref=?`, ref).Scan(&password, &totp)
 	return password, totp, err
 }
 
 // OperationTask 由 operation_id 反查本地 task_id（Team 凭 operation 取任务用）。
 func (s *Store) OperationTask(operationID string) (string, error) {
 	var taskID string
-	err := s.db.QueryRow(`SELECT task_id FROM work_operations WHERE operation_id=?`, operationID).Scan(&taskID)
+	err := s.ex.QueryRow(`SELECT task_id FROM work_operations WHERE operation_id=?`, operationID).Scan(&taskID)
 	return taskID, err
 }

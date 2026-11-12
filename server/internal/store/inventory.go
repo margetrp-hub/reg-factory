@@ -58,7 +58,7 @@ func (s *Store) EnsureInventoryRelay() error {
         )`,
 		`CREATE INDEX IF NOT EXISTS idx_inventory_relay_bindings_account ON inventory_relay_bindings(account_ref)`,
 	} {
-		if _, err := s.db.Exec(statement); err != nil {
+		if _, err := s.ex.Exec(statement); err != nil {
 			return err
 		}
 	}
@@ -68,7 +68,7 @@ func (s *Store) EnsureInventoryRelay() error {
 // InventoryEvent returns a saved terminal response. The boolean is false if
 // this event has not been seen before.
 func (s *Store) InventoryEvent(eventID string) (requestSHA, response string, found bool, err error) {
-	err = s.db.QueryRow(`SELECT request_sha256,response_json FROM inventory_relay_events WHERE event_id=?`, eventID).Scan(&requestSHA, &response)
+	err = s.ex.QueryRow(`SELECT request_sha256,response_json FROM inventory_relay_events WHERE event_id=?`, eventID).Scan(&requestSHA, &response)
 	if err == sql.ErrNoRows {
 		return "", "", false, nil
 	}
@@ -88,7 +88,7 @@ type InventoryBinding struct {
 
 func (s *Store) InventoryBinding(teamAssetUUID string) (InventoryBinding, bool, error) {
 	var b InventoryBinding
-	err := s.db.QueryRow(`SELECT team_asset_uuid,node_id,account_ref,revision,state,resource_version
+	err := s.ex.QueryRow(`SELECT team_asset_uuid,node_id,account_ref,revision,state,resource_version
         FROM inventory_relay_bindings WHERE team_asset_uuid=?`, teamAssetUUID).Scan(
 		&b.TeamAssetUUID, &b.NodeID, &b.AccountRef, &b.Revision, &b.State, &b.ResourceVersion)
 	if err == sql.ErrNoRows {
@@ -112,7 +112,7 @@ func (s *Store) CommitInventoryEvent(eventID, requestSHA, response, nodeID, team
 	defer tx.Rollback()
 
 	var oldSHA, oldResponse string
-	err = tx.QueryRow(`SELECT request_sha256,response_json FROM inventory_relay_events WHERE event_id=?`, eventID).Scan(&oldSHA, &oldResponse)
+	err = s.ex.QueryRowTx(tx, `SELECT request_sha256,response_json FROM inventory_relay_events WHERE event_id=?`, eventID).Scan(&oldSHA, &oldResponse)
 	if err == nil {
 		if oldSHA != requestSHA {
 			return "", false, fmt.Errorf("inventory event %s changed", eventID)
@@ -124,7 +124,7 @@ func (s *Store) CommitInventoryEvent(eventID, requestSHA, response, nodeID, team
 	}
 
 	var current int
-	if err = tx.QueryRow(`SELECT version FROM accounts WHERE ref=?`, accountRef).Scan(&current); err != nil {
+	if err = s.ex.QueryRowTx(tx, `SELECT version FROM accounts WHERE ref=?`, accountRef).Scan(&current); err != nil {
 		return "", false, err
 	}
 	if current != expectedVersion {
@@ -132,7 +132,7 @@ func (s *Store) CommitInventoryEvent(eventID, requestSHA, response, nodeID, team
 	}
 
 	var old InventoryBinding
-	err = tx.QueryRow(`SELECT team_asset_uuid,node_id,account_ref,revision,state,resource_version
+	err = s.ex.QueryRowTx(tx, `SELECT team_asset_uuid,node_id,account_ref,revision,state,resource_version
         FROM inventory_relay_bindings WHERE team_asset_uuid=?`, teamAssetUUID).Scan(
 		&old.TeamAssetUUID, &old.NodeID, &old.AccountRef, &old.Revision, &old.State, &old.ResourceVersion)
 	if err == nil {
@@ -149,21 +149,21 @@ func (s *Store) CommitInventoryEvent(eventID, requestSHA, response, nodeID, team
 	now := time.Now().Format(time.RFC3339)
 	// claimed is the existing node-side custody bit. join_status is a stable
 	// projection for the reference endpoint; neither is cleared by retries.
-	if _, err = tx.Exec(`UPDATE accounts SET claimed=1,claimed_at=?,join_status='joined',version=version+1,updated_at=? WHERE ref=? AND version=?`,
+	if _, err = s.ex.ExecTxArgs(tx, `UPDATE accounts SET claimed=1,claimed_at=?,join_status='joined',version=version+1,updated_at=? WHERE ref=? AND version=?`,
 		now, now, accountRef, expectedVersion); err != nil {
 		return "", false, err
 	}
 	if state == "prepared" {
-		_, err = tx.Exec(`INSERT INTO inventory_relay_bindings(team_asset_uuid,node_id,account_ref,revision,state,resource_version,updated_at)
+		_, err = s.ex.ExecTxArgs(tx, `INSERT INTO inventory_relay_bindings(team_asset_uuid,node_id,account_ref,revision,state,resource_version,updated_at)
             VALUES(?,?,?,?,?,?,?)`, teamAssetUUID, nodeID, accountRef, revision, state, expectedVersion+1, now)
 	} else {
-		_, err = tx.Exec(`UPDATE inventory_relay_bindings SET revision=?,state=?,resource_version=?,updated_at=? WHERE team_asset_uuid=?`,
+		_, err = s.ex.ExecTxArgs(tx, `UPDATE inventory_relay_bindings SET revision=?,state=?,resource_version=?,updated_at=? WHERE team_asset_uuid=?`,
 			revision, state, expectedVersion+1, now, teamAssetUUID)
 	}
 	if err != nil {
 		return "", false, err
 	}
-	if _, err = tx.Exec(`INSERT INTO inventory_relay_events(event_id,request_sha256,response_json,created_at) VALUES(?,?,?,?)`,
+	if _, err = s.ex.ExecTxArgs(tx, `INSERT INTO inventory_relay_events(event_id,request_sha256,response_json,created_at) VALUES(?,?,?,?)`,
 		eventID, requestSHA, response, now); err != nil {
 		return "", false, err
 	}
@@ -186,7 +186,7 @@ func (s *Store) CommitCoreInventoryEvent(eventID, requestSHA, response string) (
 	}
 	defer tx.Rollback()
 	var oldSHA, oldResponse string
-	err = tx.QueryRow(`SELECT request_sha256,response_json FROM inventory_relay_events WHERE event_id=?`, eventID).Scan(&oldSHA, &oldResponse)
+	err = s.ex.QueryRowTx(tx, `SELECT request_sha256,response_json FROM inventory_relay_events WHERE event_id=?`, eventID).Scan(&oldSHA, &oldResponse)
 	if err == nil {
 		if oldSHA != requestSHA {
 			return "", false, fmt.Errorf("inventory event %s changed", eventID)
@@ -197,7 +197,7 @@ func (s *Store) CommitCoreInventoryEvent(eventID, requestSHA, response string) (
 		return "", false, err
 	}
 	now := time.Now().Format(time.RFC3339)
-	if _, err = tx.Exec(`INSERT INTO inventory_relay_events(event_id,request_sha256,response_json,created_at) VALUES(?,?,?,?)`,
+	if _, err = s.ex.ExecTxArgs(tx, `INSERT INTO inventory_relay_events(event_id,request_sha256,response_json,created_at) VALUES(?,?,?,?)`,
 		eventID, requestSHA, response, now); err != nil {
 		return "", false, err
 	}
@@ -221,7 +221,7 @@ func (s *Store) CommitCoreInventoryEventForAccount(eventID, requestSHA, response
 	}
 	defer tx.Rollback()
 	var oldSHA, oldResponse string
-	err = tx.QueryRow(`SELECT request_sha256,response_json FROM inventory_relay_events WHERE event_id=?`, eventID).Scan(&oldSHA, &oldResponse)
+	err = s.ex.QueryRowTx(tx, `SELECT request_sha256,response_json FROM inventory_relay_events WHERE event_id=?`, eventID).Scan(&oldSHA, &oldResponse)
 	if err == nil {
 		if oldSHA != requestSHA {
 			return "", false, fmt.Errorf("inventory event %s changed", eventID)
@@ -232,14 +232,14 @@ func (s *Store) CommitCoreInventoryEventForAccount(eventID, requestSHA, response
 		return "", false, err
 	}
 	now := time.Now().Format(time.RFC3339)
-	result, err := tx.Exec(`UPDATE accounts SET version=version+1,updated_at=? WHERE ref=? AND version=?`, now, accountRef, expectedVersion)
+	result, err := s.ex.ExecTxArgs(tx, `UPDATE accounts SET version=version+1,updated_at=? WHERE ref=? AND version=?`, now, accountRef, expectedVersion)
 	if err != nil {
 		return "", false, err
 	}
 	if count, _ := result.RowsAffected(); count != 1 {
 		return "", false, fmt.Errorf("inventory account version conflict")
 	}
-	if _, err = tx.Exec(`INSERT INTO inventory_relay_events(event_id,request_sha256,response_json,created_at) VALUES(?,?,?,?)`,
+	if _, err = s.ex.ExecTxArgs(tx, `INSERT INTO inventory_relay_events(event_id,request_sha256,response_json,created_at) VALUES(?,?,?,?)`,
 		eventID, requestSHA, response, now); err != nil {
 		return "", false, err
 	}
@@ -253,7 +253,7 @@ func (s *Store) CommitCoreInventoryEventForAccount(eventID, requestSHA, response
 // successful core-intake receipt. It is idempotent at the caller boundary: a
 // replay is detected from inventory_relay_events before this method is called.
 func (s *Store) AdvanceAccountVersion(ref string, expected int) error {
-	result, err := s.db.Exec(`UPDATE accounts SET version=version+1,updated_at=? WHERE ref=? AND version=?`,
+	result, err := s.ex.Exec(`UPDATE accounts SET version=version+1,updated_at=? WHERE ref=? AND version=?`,
 		time.Now().Format(time.RFC3339), ref, expected)
 	if err != nil {
 		return err

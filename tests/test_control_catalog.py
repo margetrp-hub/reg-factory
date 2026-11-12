@@ -29,7 +29,7 @@ class ControlCatalogTests(unittest.TestCase):
         self.assertEqual(json.loads((ROOT / "deploy/config.schema.json").read_text(encoding="utf-8")), ENV_SCHEMA)
         fields = {item["key"]: (group, item) for group in ENV_SCHEMA for item in group["items"]}
         self.assertEqual(sum(len(group["items"]) for group in ENV_SCHEMA), len(fields))
-        self.assertEqual(len(fields), 186)
+        self.assertEqual(len(fields), 192)
         catalog = json.loads((ROOT / "server/web/lib/generated-catalog.json").read_text(encoding="utf-8"))
         self.assertEqual(catalog, {"groups": TASK_GROUPS, "platforms": PLATFORMS, "tools": EXTERNAL_LINKS,
                                    "config_modes": CONFIG_MODES})

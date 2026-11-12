@@ -36,7 +36,7 @@ if sys.platform == "win32":
         sys.stdout.reconfigure(encoding="utf-8")
 
 import requests
-from playwright.async_api import async_playwright
+from patchright.async_api import async_playwright
 
 from bitbrowser import BitBrowser
 import config as _config  # noqa: F401  # load the project .env

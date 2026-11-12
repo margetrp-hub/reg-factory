@@ -39,15 +39,18 @@ func (s *Store) CreateCredentialCheck(task Task, accounts []Account) error {
 		return err
 	}
 	defer tx.Rollback()
-	if err = createCredentialCheck(tx, task, accounts); err != nil {
+	if err = createCredentialCheck(s, tx, task, accounts); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
-func createCredentialCheck(tx *sql.Tx, task Task, accounts []Account) error {
+func createCredentialCheck(s *Store, tx *sql.Tx, task Task, accounts []Account) error {
+	if err := s.ex.LockKey(tx, "credential-check-admission"); err != nil {
+		return err
+	}
 	var queued int
-	if err := tx.QueryRow(`SELECT COUNT(*) FROM tasks WHERE script=? AND status IN ('queued','running','stopping')`, CredentialCheckScript).Scan(&queued); err != nil {
+	if err := s.ex.QueryRowTx(tx, `SELECT COUNT(*) FROM tasks WHERE script=? AND status IN ('queued','running','stopping')`, CredentialCheckScript).Scan(&queued); err != nil {
 		return err
 	}
 	if queued >= 20 {
@@ -57,7 +60,7 @@ func createCredentialCheck(tx *sql.Tx, task Task, accounts []Account) error {
 	if createdAt == "" {
 		createdAt = now()
 	}
-	_, err := tx.Exec(`INSERT INTO tasks(id,script,title,args_json,status,created_at,actor) VALUES(?,?,?,?,'queued',?,?)`, task.ID, CredentialCheckScript, task.Title, task.ArgsJSON, createdAt, task.Actor)
+	_, err := s.ex.ExecTxArgs(tx, `INSERT INTO tasks(id,script,title,args_json,status,created_at,actor) VALUES(?,?,?,?,'queued',?,?)`, task.ID, CredentialCheckScript, task.Title, task.ArgsJSON, createdAt, task.Actor)
 	if err != nil {
 		return err
 	}
@@ -66,7 +69,7 @@ func createCredentialCheck(tx *sql.Tx, task Task, accounts []Account) error {
 		if account.Platform == "chatgpt" {
 			mode = "at"
 		}
-		if _, err = tx.Exec(`INSERT INTO credential_check_items(task_id,ordinal,ref,identity,mode) VALUES(?,?,?,?,?)`, task.ID, i, account.Ref, account.Identity, mode); err != nil {
+		if _, err = s.ex.ExecTxArgs(tx, `INSERT INTO credential_check_items(task_id,ordinal,ref,identity,mode) VALUES(?,?,?,?,?)`, task.ID, i, account.Ref, account.Identity, mode); err != nil {
 			return err
 		}
 	}
@@ -76,7 +79,7 @@ func createCredentialCheck(tx *sql.Tx, task Task, accounts []Account) error {
 // ClaimCredentialCheck is used by the single bounded API worker, never Python.
 func (s *Store) ClaimCredentialCheck() (Task, error) {
 	var id string
-	err := s.db.QueryRow(`UPDATE tasks SET status='running',started_at=?
+	err := s.ex.QueryRow(`UPDATE tasks SET status='running',started_at=?
  WHERE id=(SELECT id FROM tasks WHERE script=? AND status='queued' ORDER BY created_at,id LIMIT 1)
  AND status='queued' RETURNING id`, now(), CredentialCheckScript).Scan(&id)
 	if err != nil {
@@ -86,7 +89,7 @@ func (s *Store) ClaimCredentialCheck() (Task, error) {
 }
 
 func (s *Store) CredentialCheckItems(taskID string) ([]CredentialCheckItem, error) {
-	rows, err := s.db.Query(`SELECT i.ordinal,i.ref,i.identity,i.status,i.message,i.checked_at,i.child_task_id,i.mode,
+	rows, err := s.ex.Query(`SELECT i.ordinal,i.ref,i.identity,i.status,i.message,i.checked_at,i.child_task_id,i.mode,
  CASE WHEN a.ref IS NOT NULL AND a.claimed=0 THEN 1 ELSE 0 END
  FROM credential_check_items i LEFT JOIN accounts a ON a.ref=i.ref WHERE i.task_id=? ORDER BY i.ordinal`, taskID)
 	if err != nil {
@@ -113,7 +116,7 @@ func (s *Store) CredentialCheckCounts(ids []string) (map[string]CredentialCheckC
 	for i, id := range ids {
 		args[i] = id
 	}
-	rows, err := s.db.Query(`SELECT task_id,COUNT(*),SUM(status NOT IN ('pending','running')),SUM(status='ok'),SUM(status='needs_refresh'),SUM(status='unknown'),SUM(status NOT IN ('pending','running','ok','needs_refresh','unknown'))
+	rows, err := s.ex.Query(`SELECT task_id,COUNT(*),SUM(CASE WHEN status NOT IN ('pending','running') THEN 1 ELSE 0 END),SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END),SUM(CASE WHEN status='needs_refresh' THEN 1 ELSE 0 END),SUM(CASE WHEN status='unknown' THEN 1 ELSE 0 END),SUM(CASE WHEN status NOT IN ('pending','running','ok','needs_refresh','unknown') THEN 1 ELSE 0 END)
  FROM credential_check_items WHERE task_id IN (`+strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")+`) GROUP BY task_id`, args...)
 	if err != nil {
 		return nil, err
@@ -131,7 +134,7 @@ func (s *Store) CredentialCheckCounts(ids []string) (map[string]CredentialCheckC
 }
 
 func (s *Store) StartCredentialCheckItem(taskID string, ordinal int) (bool, error) {
-	result, err := s.db.Exec(`UPDATE credential_check_items SET status='running' WHERE task_id=? AND ordinal=? AND status='pending' AND EXISTS(SELECT 1 FROM tasks WHERE id=? AND status='running')`, taskID, ordinal, taskID)
+	result, err := s.ex.Exec(`UPDATE credential_check_items SET status='running' WHERE task_id=? AND ordinal=? AND status='pending' AND EXISTS(SELECT 1 FROM tasks WHERE id=? AND status='running')`, taskID, ordinal, taskID)
 	if err != nil {
 		return false, err
 	}
@@ -152,7 +155,7 @@ func (s *Store) CompleteCredentialCheckItem(taskID string, item CredentialCheckI
 	}
 	item.Message = RedactLog(item.Message)
 	if item.Mode == "at" {
-		written, err := recordATHealth(tx, item.Ref, item.Status, item.Message, item.CheckedAt, item.CheckVersion)
+		written, err := s.recordATHealth(tx, item.Ref, item.Status, item.Message, item.CheckedAt, item.CheckVersion)
 		if err != nil {
 			return err
 		}
@@ -160,7 +163,7 @@ func (s *Store) CompleteCredentialCheckItem(taskID string, item CredentialCheckI
 			item.Status, item.Message = "unknown", "凭据版本已变化或原刷新尚未结束；请稍后重测 AT"
 		}
 	}
-	res, err := tx.Exec(`UPDATE credential_check_items SET status=?,message=?,checked_at=?,child_task_id=? WHERE task_id=? AND ordinal=? AND status='running'`, item.Status, item.Message, item.CheckedAt, item.ChildTaskID, taskID, item.Ordinal)
+	res, err := s.ex.ExecTxArgs(tx, `UPDATE credential_check_items SET status=?,message=?,checked_at=?,child_task_id=? WHERE task_id=? AND ordinal=? AND status='running'`, item.Status, item.Message, item.CheckedAt, item.ChildTaskID, taskID, item.Ordinal)
 	if err != nil {
 		return err
 	}
@@ -171,7 +174,7 @@ func (s *Store) CompleteCredentialCheckItem(taskID string, item CredentialCheckI
 	if n != 1 {
 		return errors.New("check_item_not_running")
 	}
-	if _, err = tx.Exec(`INSERT INTO events(task_id,ts,stream,line) VALUES(?,?,'check',?)`, taskID, now(), fmt.Sprintf("第 %d 项 · %s · %s", item.Ordinal+1, item.Status, item.Message)); err != nil {
+	if _, err = s.ex.ExecTxArgs(tx, `INSERT INTO events(task_id,ts,stream,line) VALUES(?,?,'check',?)`, taskID, now(), fmt.Sprintf("第 %d 项 · %s · %s", item.Ordinal+1, item.Status, item.Message)); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -183,11 +186,11 @@ func (s *Store) FinishCredentialCheck(taskID, status, message string) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.Exec(`UPDATE credential_check_items SET status='unknown',message='检查未取得最终结果；可重新测试'
+	if _, err = s.ex.ExecTxArgs(tx, `UPDATE credential_check_items SET status='unknown',message='检查未取得最终结果；可重新测试'
  WHERE task_id=? AND status='running'`, taskID); err != nil {
 		return err
 	}
-	_, err = tx.Exec(`UPDATE tasks SET status=CASE WHEN status='stopping' THEN 'stopped' ELSE ? END,
+	_, err = s.ex.ExecTxArgs(tx, `UPDATE tasks SET status=CASE WHEN status='stopping' THEN 'stopped' ELSE ? END,
  error=?,exit_code=CASE WHEN ?='succeeded' THEN 0 ELSE -1 END,finished_at=?,pid=0
  WHERE id=? AND script=? AND status IN ('running','stopping')`, status, RedactLog(message), status, now(), taskID, CredentialCheckScript)
 	if err != nil {
@@ -197,14 +200,14 @@ func (s *Store) FinishCredentialCheck(taskID, status, message string) error {
 }
 
 func (s *Store) StopCredentialCheck(taskID string) error {
-	_, err := s.db.Exec(`UPDATE tasks SET status=CASE WHEN status='queued' THEN 'stopped' ELSE 'stopping' END,
+	_, err := s.ex.Exec(`UPDATE tasks SET status=CASE WHEN status='queued' THEN 'stopped' ELSE 'stopping' END,
  finished_at=CASE WHEN status='queued' THEN ? ELSE finished_at END,error='操作员停止；保留已返回结果'
  WHERE id=? AND script=? AND status IN ('queued','running')`, now(), taskID, CredentialCheckScript)
 	return err
 }
 
 func (s *Store) StopCredentialChecks() error {
-	_, err := s.db.Exec(`UPDATE tasks SET status=CASE WHEN status='queued' THEN 'stopped' ELSE 'stopping' END,
+	_, err := s.ex.Exec(`UPDATE tasks SET status=CASE WHEN status='queued' THEN 'stopped' ELSE 'stopping' END,
  finished_at=CASE WHEN status='queued' THEN ? ELSE finished_at END,error='操作员停止；保留已返回结果'
  WHERE script=? AND status IN ('queued','running')`, now(), CredentialCheckScript)
 	return err

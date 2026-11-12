@@ -9,11 +9,11 @@ reg-factory 是独立账号生产与凭据管理节点。当前 SG 服务由 Go 
 | 使用场景 | 入口与默认端口 | 文档 |
 | --- | --- | --- |
 | SG/服务器控制台 | Go regd，宿主回环8800；单个panel容器，按需启动Python worker | [构建与部署](deploy/README-GO.md)、[SG环境差异](deploy/README-OCI-SG.md) |
-| Python本地工具 | `start.bat` / `start.sh` 启动 `webui.server:app`，默认8799 | [本地教程](docs/getting-started.md)、[CLI](docs/cli.md) |
+| Python执行工具 | 由Go任务入口调用，或按CLI文档运行独立脚本 | [CLI](docs/cli.md) |
 | Aishop Work接入 | 节点监听及签名协议，地址来自私有部署配置 | [接口说明](docs/api.md#work-机器接口) |
 | 独立K12 | 自有服务、端口及数据目录，不代替SG控制面 | [K12](k12/README.md) |
 
-Python本地入口仍在源码中，不宣称已删除；它不是SG生产面板。8799与8800的鉴权、路由和领取语义不同，调用前先辨认服务。不要为同一生产数据目录启动第二个控制面。
+旧 `webui` 面板已不在当前源码中，历史8799启动脚本不作为服务器发布入口。统一使用Go控制面，不为同一生产数据目录启动第二个控制面。
 
 ## 日常操作
 

@@ -9,7 +9,10 @@
 #
 # 版本给下限 + 上限，避免 fastapi 大版本升级把 @app.on_event 等旧接口移除。
 
-playwright>=1.45,<2
+playwright==1.62.0
+patchright==1.64.4
+camoufox==0.5.9
+ruyiPage==1.2.79
 requests>=2.31,<3
 Pillow>=10,<12
 aiohttp>=3.9,<4
