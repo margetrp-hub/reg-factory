@@ -129,7 +129,7 @@ func configSection(key, fallback string) string {
 		{"浏览器 · RoxyBrowser", []string{"ROXY_"}},
 		{"浏览器 · AdsPower", []string{"ADSPOWER_"}},
 		{"浏览器 · 通用设置", []string{"REG_FACTORY_BROWSER_", "BROWSER_", "CHROMIUM_"}},
-		{"邮箱 · IC 邮箱池", []string{"ICMAIL_"}},
+		{"邮箱 · IC 邮箱池", []string{"ICMAIL_", "MAIL_IMAP_"}},
 		{"邮箱 · iCloud", []string{"ICLOUD_MAIL_"}},
 		{"邮箱 · Outlook 与辅助邮箱", []string{"OUTLOOK_"}},
 		{"邮箱 · 自定义邮箱", []string{"CUSTOM_MAIL_"}},
@@ -175,7 +175,7 @@ func configArea(key string) string {
 	}{
 		{"proxy", []string{"OUTLOOK_PROXY", "CLAUDE_PROXY", "CHATGPT_PROXY", "GROK_PROXY", "KIRO_PROXY", "GITHUB_PROXY"}},
 		{"proxy", []string{"PROXY", "CLASH", "REG_FACTORY_PROXY", "REG_FACTORY_PRODUCTION_PROXY", "REG_FACTORY_RESIDENTIAL_"}},
-		{"mail", []string{"ICMAIL", "ICLOUD", "YYDS", "GPTMAIL", "CFMAIL", "MOEMAIL", "REMAIL", "CUSTOM_MAIL", "OUTLOOK", "CHATGPT_EMAIL", "CHATGPT_VERIFICATION"}},
+		{"mail", []string{"ICMAIL", "MAIL_IMAP_", "ICLOUD", "YYDS", "GPTMAIL", "CFMAIL", "MOEMAIL", "REMAIL", "CUSTOM_MAIL", "OUTLOOK", "CHATGPT_EMAIL", "CHATGPT_VERIFICATION"}},
 		{"sms", []string{"SMS", "HERO", "CODEX_PHONE", "CODEX_SMS", "CODEX_ADDPHONE", "CUSTOM_SMS"}},
 		{"captcha", []string{"CAPSOLVER", "EZCAPTCHA", "YESCAPTCHA", "VISION", "VOTE", "GEMMA", "CLAUDE_VISION_", "CLAUDE_HCAPTCHA_", "CLAUDE_CAPTCHA_"}},
 		{"browser", []string{"BROWSER", "BITBROWSER", "BB_CORE_", "ADSPOWER", "CHROMIUM", "CLOAK", "ROXY", "CUSTOM_BROWSER", "REG_FACTORY_BROWSER"}},

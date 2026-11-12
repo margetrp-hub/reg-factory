@@ -58,10 +58,12 @@ func TestUnknownProviderSettingsRemainInMaterials(t *testing.T) {
 }
 
 func TestMailboxSeedDoesNotClaimToChangeRunningSource(t *testing.T) {
-	groups := MergeConfig(nil, []Entry{{Key: "ICMAIL_IMAP_USER", Value: "fixture@example.test", Line: 1}}, func(string) string { return "mail" })
-	entry := groups["邮箱 · IC 邮箱池"][0]
-	if entry.Apply != "seed" || entry.Help == "" {
-		t.Fatal("IMAP seed must point to current source management", entry.Apply)
+	for _, key := range []string{"ICMAIL_IMAP_USER", "MAIL_IMAP_USER"} {
+		groups := MergeConfig(nil, []Entry{{Key: key, Value: "fixture@example.test", Line: 1}}, func(string) string { return "mail" })
+		entry := groups["邮箱 · IC 邮箱池"][0]
+		if entry.Apply != "seed" || entry.Help == "" || entry.Area != "mail" {
+			t.Fatal("IMAP seed must point to current source management", entry.Apply)
+		}
 	}
 }
 

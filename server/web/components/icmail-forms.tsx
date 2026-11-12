@@ -54,10 +54,10 @@ export function SourceSelect({ sources, value, onChange, allLabel = "暂不绑�
 export function ImportMailboxes({ sources, onClose, onSaved }: { sources: MailSource[]; onClose: () => void; onSaved: (message: string) => void }) {
   const [text, setText] = useState("");
   const [source, setSource] = useState(0);
-  return <MailForm title="导入邮箱地址" subtitle="每行一个地址，最多 1000 个。地址不需要先收到邮件；已有地址的来源与状态会保留。这里只登记地址，转发需在邮箱服务商处设置。" dirty={!!text || source !== 0} onClose={onClose} label="导入地址" submit={async () => {
+  return <MailForm title="导入邮箱地址" subtitle="每行一个地址，最多 1000 个。收信发现的地址经导入后可用于注册；已有来源与暂停状态保留，换来源请在地址设置中修改。转发需在邮箱服务商处设置。" dirty={!!text || source !== 0} onClose={onClose} label="导入地址" submit={async () => {
     const emails = text.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
     const result = await mailRequest<{ added: number }>("/pool/import", { method: "POST", body: JSON.stringify({ source_id: source, emails }) });
-    onSaved(`已导入 ${result.added} 个新地址，已有地址保持原设置。`);
+    onSaved(`已登记 ${result.added} 个地址（包含确认使用的收信发现地址），已有来源与状态保留。`);
   }}><Field label="收件来源"><SourceSelect sources={sources} value={source} onChange={setSource} /></Field><Field label="邮箱地址"><textarea autoFocus rows={9} className="field font-mono" value={text} onChange={e => setText(e.target.value)} spellCheck={false} placeholder={"first@example.com\nsecond@example.com"} /></Field></MailForm>;
 }
 

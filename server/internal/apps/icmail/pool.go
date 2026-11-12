@@ -226,7 +226,8 @@ func (d *DB) ImportMailboxes(ctx context.Context, sourceID int64, addresses []st
 	count := 0
 	for email := range normalized {
 		res, err := tx.Exec(`INSERT INTO mail_pool(email,source_id,origin,created_at) VALUES(?,NULLIF(?,0),'imported',?)
-ON CONFLICT(email) DO NOTHING`, email, sourceID, float64(time.Now().Unix()))
+ON CONFLICT(email) DO UPDATE SET origin='imported',source_id=COALESCE(mail_pool.source_id,excluded.source_id)
+WHERE mail_pool.origin='discovered' AND (excluded.source_id IS NULL OR mail_pool.source_id IS NULL OR mail_pool.source_id=excluded.source_id)`, email, sourceID, float64(time.Now().Unix()))
 		if err != nil {
 			return 0, err
 		}

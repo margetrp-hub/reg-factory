@@ -23,9 +23,6 @@ func TestWorkflowPythonClientWithRealMailboxAPI(t *testing.T) {
 	a := poolApp(t)
 	source := poolSource(t, a, "primary")
 	email := "python@example.test"
-	if _, err := a.DB.ImportMailboxes(context.Background(), source.ID, []string{email}); err != nil {
-		t.Fatal(err)
-	}
 	router := gin.New()
 	router.Use(func(c *gin.Context) {
 		if c.GetHeader("X-API-Key") != "fixture-key" {
@@ -68,6 +65,17 @@ def action(path):
         s.trust_env=False
         s.post(url+'/fixture/'+path,headers={'X-API-Key':'fixture-key'},timeout=5).raise_for_status()
 action('send')
+try: icmail.allocate()
+except icmail.MailboxError: pass
+else: raise AssertionError('discovered recipient allocated without import')
+discovered=icmail._get('/pool')['items'][0]
+with requests.Session() as s:
+    s.trust_env=False
+    body={'emails':[discovered['email']], 'source_id':discovered['sourceId']}
+    response=s.post(url+'/api/apps/icmail/pool/import',json=body,headers={'X-API-Key':'fixture-key'},timeout=5)
+    assert response.json()['data']['added']==1, 'discovered address did not become an imported registration address'
+    replay=s.post(url+'/api/apps/icmail/pool/import',json=body,headers={'X-API-Key':'fixture-key'},timeout=5)
+    assert replay.json()['data']['added']==0
 m=icmail.allocate()
 action('send')
 assert asyncio.run(icmail.poll_code(m,max_wait=.2))=='123452'
@@ -168,6 +176,32 @@ func TestWorkflowMailboxFreshMailAndRecovery(t *testing.T) {
 	for _, bad := range []string{"&after=NaN", "&after=Inf", "&cursor=-1"} {
 		if code, _ := request(bad); code != 400 {
 			t.Fatal("invalid bound", bad, code)
+		}
+	}
+}
+
+func TestImportDiscoveredMailboxPreservesSourceAndPausedState(t *testing.T) {
+	a := poolApp(t)
+	one, two := poolSource(t, a, "one"), poolSource(t, a, "two")
+	email := "discovered@example.test"
+	if _, err := a.DB.StoreMessage(MessageRecord{SourceID: one.ID, Mailbox: "INBOX", UID: "1", ToHeader: email}); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := a.DB.SetMailbox(ctx, email, one.ID, "paused"); err != nil {
+		t.Fatal(err)
+	}
+	for _, check := range []struct {
+		source int64
+		added  int
+	}{{two.ID, 0}, {one.ID, 1}, {one.ID, 0}} {
+		added, err := a.DB.ImportMailboxes(ctx, check.source, []string{email})
+		if err != nil || added != check.added {
+			t.Fatal(added, err)
+		}
+		items, total, err := a.DB.PoolPage(ctx, email, "", 0, 25, 0)
+		if err != nil || total != 1 || items[0].SourceID != one.ID || items[0].State != "paused" {
+			t.Fatal("import changed source, paused state or identity count", items, total, err)
 		}
 	}
 }
