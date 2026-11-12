@@ -101,6 +101,8 @@ class MailCodeProvider:
         self.main_page = main_page
         self.max_wait = max(30, int(max_wait))
         self.graph_ready = False
+        self.icmail = None
+        self.icmail_codes = set()
         self.icloud_ready = False
         self.icloud_existing_codes = set()
         self.icloud_api_url = str(record.get("mail_api_url") or "").strip()
@@ -113,6 +115,10 @@ class MailCodeProvider:
     async def prepare(self):
         email = self.record.get("email") or ""
         provider = str(self.record.get("provider") or "").lower()
+        if provider == "icmail":
+            from common.icmail import bind
+            self.icmail = await asyncio.to_thread(bind, email)
+            return "icmail-pool"
         if provider in {"icloud", "apple"} or is_icloud_email(email):
             self.icloud_ready = True
             try:
@@ -170,6 +176,15 @@ class MailCodeProvider:
 
     async def __call__(self, account_email: str, received_after: float):
         code = None
+        if self.icmail is not None:
+            from common.icmail import MailboxError, poll_code
+            if str(account_email).strip().lower() != self.icmail["email"]:
+                raise MailboxError("授权邮箱与内置邮箱绑定不一致")
+            code = await poll_code(self.icmail, received_after=received_after,
+                max_wait=self.max_wait, exclude_codes=self.icmail_codes)
+            if code:
+                self.icmail_codes.add(code)
+            return code
         if self.icloud_ready:
             from common.temp_email import poll_verification_code
 
@@ -432,7 +447,7 @@ async def import_one(index, total, record, playwright, origin, sub2api_token, gr
             result["stage"] = "mailbox"
             mail_provider = None
             if record.get("email") and (
-                record.get("password") or record.get("refresh_token") or is_icloud_email(record.get("email"))
+                record.get("provider") == "icmail" or record.get("password") or record.get("refresh_token") or is_icloud_email(record.get("email"))
             ):
                 mail_provider = MailCodeProvider(
                     record, context, page, max_wait=args.timeout

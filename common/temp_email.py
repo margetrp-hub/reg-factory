@@ -190,7 +190,7 @@ def normalize_provider(provider=None, base_url=""):
     """归一化 provider 名：moemail | yyds | gptmail | cfmail | icloud | custom。
     provider 显式给出优先；否则从 base_url 域名特征推断；再兜底 config 默认。"""
     p = (provider or "").strip().lower()
-    if p in ("moemail", "yyds", "gptmail", "cfmail", "icloud", "remail", "custom"):
+    if p in ("moemail", "yyds", "gptmail", "cfmail", "icloud", "icmail", "remail", "custom"):
         return p
     b = (base_url or "").lower()
     # base_url 命中自定义 API 根地址 → custom
@@ -209,7 +209,7 @@ def normalize_provider(provider=None, base_url=""):
     if "remail.aishop6.com" in b:
         return "remail"
     dflt = (TEMP_EMAIL_PROVIDER or "gptmail").strip().lower()
-    return dflt if dflt in ("moemail", "yyds", "gptmail", "cfmail", "icloud", "remail") else "gptmail"
+    return dflt if dflt in ("moemail", "yyds", "gptmail", "cfmail", "icloud", "icmail", "remail") else "gptmail"
 
 
 def _norm_base(base_url, default):
@@ -924,7 +924,28 @@ def _custom_fetch(mailbox_id, email, token, api_key, base_url, sess):
 
 
 # ==================================================================== 统一接口
+def _icmail_create(name, domain, expiry_ms, api_key, base_url, sess):
+    from common.icmail import allocate
+    mailbox = allocate("registration")
+    # This token is only a message cursor, not an IMAP or panel credential.
+    mailbox["token"] = json.dumps({key: mailbox[key] for key in
+        ("email", "source_id", "cursor", "started_at")})
+    return mailbox
+
+
+def _icmail_fetch(mailbox_id, email, token, api_key, base_url, sess):
+    from common.icmail import MailboxError, read_messages
+    try:
+        mailbox = json.loads(token or "")
+        if mailbox.get("email") != str(email or mailbox_id).strip().lower():
+            raise ValueError()
+    except (ValueError, AttributeError):
+        raise MailboxError("内置邮箱缺少本次取信范围，请重新发起原任务") from None
+    return read_messages(mailbox)
+
+
 _CREATE = {
+    "icmail": _icmail_create,
     "moemail": _moemail_create,
     "yyds": _yyds_create,
     "gptmail": _gptmail_create,
@@ -934,6 +955,7 @@ _CREATE = {
     "custom": _custom_create,
 }
 _FETCH = {
+    "icmail": _icmail_fetch,
     "moemail": _moemail_fetch,
     "yyds": _yyds_fetch,
     "gptmail": _gptmail_fetch,

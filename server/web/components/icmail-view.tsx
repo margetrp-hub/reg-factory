@@ -50,6 +50,7 @@ export function IcmailView({ tab }: { tab: Tab }) {
   return <div className="sg-workspace sg-mail-workspace">
     <header className="sg-page-head"><div className="flex items-center gap-4"><span className="sg-mail-emblem"><MailIcon /></span><div><p className="sg-eyebrow">供给 · 邮箱</p><h1>邮箱池管理</h1><p className="sg-description">{page.description}</p></div></div><button className="btn-ghost" onClick={reload}>刷新</button></header>
     <nav aria-label="邮箱池工作区" className="sg-account-nav sg-mail-nav">{PAGES.map(item => <Link key={item.id} href={item.href} aria-current={active === item.id ? "page" : undefined}>{item.label}</Link>)}</nav>
+    {active === "pool" && <p className="sg-description">注册选择“内置邮箱池”后使用已导入并启用的地址；重新授权按原账号邮箱取码。邮箱登录在“收件来源”维护。<Link className="ml-2 underline" href="/settings/?category=mail">设置默认邮箱来源</Link></p>}
     <ErrorNote message={sourceData.error} />
     {notice && <p className="sg-mail-notice" role="status">{notice}</p>}
     {pending && <div className="sg-mail-recovery"><div><strong className="text-sm">有一项同步请求尚未确认</strong><p className="sg-description">原请求编号已保留，可以核对受理结果。</p></div><button className="btn-ghost" onClick={() => setSync(pending.source_id)}>核对原请求</button></div>}

@@ -1094,13 +1094,15 @@
         "type": "choice",
         "choices": [
           "pool",
+          "icmail",
           "icloud",
           "remail"
         ],
         "default": "pool",
-        "help": "ChatGPT 默认邮箱来源；icloud/Remail 自动申请并轮询验证码",
+        "help": "注册默认邮箱来源；icmail 使用内置地址池。已有账号授权优先使用保存的邮箱来源，无来源及邮箱专用凭据时沿用此项的内置池选择。邮箱登录在邮箱池→收件来源维护。",
         "label": "ChatGPT 邮箱来源",
-        "smart": true
+        "smart": true,
+        "empty_default": true
       },
       {
         "key": "CLAUDE_USE_TEMP_EMAIL",
@@ -1123,13 +1125,15 @@
           "moemail",
           "cfmail",
           "icloud",
+          "icmail",
           "remail",
           "custom"
         ],
-        "default": "yyds",
+        "default": "gptmail",
         "help": "Claude/Grok 默认临时邮箱 provider(需配好对应 key)，任务表单也可临时指定。",
         "label": "临时邮箱服务商",
-        "smart": true
+        "smart": true,
+        "empty_default": true
       }
     ]
   },
@@ -1162,7 +1166,8 @@
         "default": "https://mail.no-replyca.xyz",
         "help": "iCloud 邮箱 API 请求地址；email.manageh.shop 是文档站，不是接口地址",
         "label": "iCloud 邮箱 API 地址",
-        "smart": true
+        "smart": true,
+        "empty_default": true
       },
       {
         "key": "ICLOUD_MAIL_API_KEY",
@@ -1181,14 +1186,16 @@
         "default": "icloud-code",
         "help": "ChatGPT 注册固定使用 iCloud 接码邮箱；此项供其它流程选择邮箱类型",
         "label": "iCloud 邮箱类型",
-        "smart": true
+        "smart": true,
+        "empty_default": true
       },
       {
         "key": "ICLOUD_MAIL_SERVICE",
         "default": "openai",
         "help": "ChatGPT 固定按 openai 服务申请接码邮箱",
         "label": "iCloud 接码服务",
-        "smart": true
+        "smart": true,
+        "empty_default": true
       }
     ]
   },
@@ -1208,7 +1215,8 @@
         "default": "https://maliapi.215.im",
         "help": "YYDS Mail API 根地址；可粘贴 vip.215.im 或完整 /v1/accounts 地址，程序会自动纠正",
         "label": "YYDS 邮箱 API 地址",
-        "smart": true
+        "smart": true,
+        "empty_default": true
       }
     ]
   },

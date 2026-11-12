@@ -13,6 +13,7 @@ const scripts = JSON.parse(await readFile(path.join(root, '../../deploy/scripts.
 const catalogue = JSON.parse(await readFile(path.join(root, 'lib/generated-catalog.json'), 'utf8'));
 const fields = new Map(schema.flatMap(group => group.items.map(item => [item.key, item])));
 const values = { FINGERPRINT_BROWSER: 'bitbrowser', BITBROWSER_API: 'http://browser.example.test',
+  ICLOUD_MAIL_API_BASE: 'https://previous.example.test',
   CLOAK_LOCALE: 'en-US', ROXY_API_TOKEN: 'synthetic-roxy-secret', CHATGPT_EMAIL_PROVIDER: 'pool',
   TEMP_EMAIL_PROVIDER: 'yyds', OUTLOOK_GRAPH_RECOVERY_PROVIDER: 'yyds', REG_FACTORY_LIVENESS_ENABLED: '0',
   PRIVATE_EXTRA_OPTION: 'preserved', PROXY_MODE: 'clash_auto' };
@@ -56,8 +57,11 @@ await context.route('**/*', async route => {
       return json({ok:true, changed:Object.keys(request.postDataJSON().updates)});
     }
     if (readFailure) { readFailure = false; return fail(503, 'synthetic read failure'); }
-    const groups = Object.fromEntries(schema.map(group => [group.group, group.items.map(item => ({...item,
-      value:values[item.key] || '', line:item.key in values ? 1 : 0, area:group.area}))]));
+    const groups = Object.fromEntries(schema.map(group => [group.group, group.items.map(item => {
+      const set=Object.hasOwn(values,item.key), saved=values[item.key] || '';
+      const effective=(!set || item.empty_default && !saved.trim()) ? String(item.default ?? '') : saved;
+      return {...item, value:saved, line:set ? 1 : 0, area:group.area, effective_source:!set || item.empty_default && !saved.trim() ? 'default' : 'file', effective_value:item.secret ? '' : effective, effective_set:!!effective};
+    })]));
     groups.custom = [{key:'PRIVATE_EXTRA_OPTION', label:'自定义参数', value:values.PRIVATE_EXTRA_OPTION, line:1, secret:false, area:'custom'}];
     return json({path:'/synthetic/.env', groups});
   }
@@ -114,6 +118,13 @@ try {
   for (const field of schema.filter(group => group.area === 'browser').flatMap(group => group.items)) assert.equal(await input(field.key).count(),1,field.key);
   await button('邮箱与取码').click();
   assert.equal(await input('YYDS_API_KEY').count(),1,'two usages share one provider configuration');
+  await input('CHATGPT_EMAIL_PROVIDER').selectOption('icmail');
+  await save(); await page.getByRole('button',{name:'保存全部修改',exact:true}).waitFor();
+  await page.locator('[data-config-effective="CHATGPT_EMAIL_PROVIDER"]').getByText(/保存配置 · icmail/).waitFor();
+  await button('查看全部模式配置').click();
+  await input('ICLOUD_MAIL_API_BASE').fill('');
+  await save(); await page.getByRole('button',{name:'保存全部修改',exact:true}).waitFor();
+  await page.locator('[data-config-effective="ICLOUD_MAIL_API_BASE"]').getByText(/默认值 · https:\/\/mail.no-replyca.xyz/).waitFor();
   await input('CHATGPT_EMAIL_PROVIDER').selectOption('icloud'); await input('ICLOUD_MAIL_SERVICE').fill('synthetic-openai');
   await input('CHATGPT_EMAIL_PROVIDER').selectOption('remail'); await input('REMAIL_PROJECT_ID').fill('synthetic-project');
   await input('CHATGPT_EMAIL_PROVIDER').selectOption('icloud'); assert.equal(await value('ICLOUD_MAIL_SERVICE'),'synthetic-openai');

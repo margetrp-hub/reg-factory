@@ -1777,6 +1777,11 @@ def _allocate_untainted_chatgpt_icloud_mailbox(max_attempts=12):
 
 def allocate_chatgpt_registration_mailbox():
     """Allocate the configured mailbox, falling back without reusing claimed mail."""
+    if EMAIL_PROVIDER == "icmail":
+        from common.icmail import allocate
+        mailbox = allocate(PLATFORM, FIXED_EMAIL or "")
+        return {"email": mailbox["email"], "password": "", "refresh_token": "",
+                "client_id": "", "mailbox": mailbox}
     if FIXED_EMAIL:
         return {
             "email": FIXED_EMAIL,
@@ -1908,7 +1913,7 @@ def import_chatgpt2api(session, email):
 
 
 async def extract_codex(
-    page, email, p=None, ctx=None, release_current=None, totp_secret=""
+    page, email, p=None, ctx=None, release_current=None, totp_secret="", mailbox=None
 ):
     """注册成功后顺手走 Codex OAuth（--codex）。
     复用刚注册完已登录的 page（无需像 oauth_codex.py 那样重载 cookie 再登），
@@ -2005,13 +2010,19 @@ async def extract_codex(
             auth_url, session_id, state = ox.generate_auth_url(origin, token)
             return auth_url, session_id, state
 
+        email_code_provider = None
+        if mailbox and mailbox.get("provider") == "icmail":
+            from tools.import_plus_codex import MailCodeProvider
+            email_code_provider = MailCodeProvider({"email": email, "provider": "icmail"}, ctx, page,
+                                                   max_wait=_env_int("CHATGPT_VERIFICATION_CODE_TIMEOUT", 90))
+            await email_code_provider.prepare()
         code, session_id, cb_state, msg = await ox.authorize_with_retry(
             page, _generate_auth,
             account_email=email, phone_skip_attempts=skip_n,
             skip_timeout=120, phone_timeout=timeout, manual_phone=CODEX_MANUAL_PHONE,
             semi_phone=CODEX_PHONE,
             reset_page=reset_fn, sms_provider=CODEX_SMS_PROVIDER,
-            result_metadata=codex_metadata, totp_secret=totp_secret)
+            result_metadata=codex_metadata, totp_secret=totp_secret, email_code_provider=email_code_provider)
         if reset_fn is not None:
             try:
                 await reset_fn.cleanup()
@@ -2039,6 +2050,8 @@ async def extract_codex(
         cred["codex_phone_status"] = codex_metadata.get("codex_phone_status", "unknown")
         from common.session_export import save_codex_oauth_credentials
         persisted_cred = dict(cred)
+        if mailbox and mailbox.get("provider") == "icmail":
+            persisted_cred["mailbox_provider"] = "icmail"
         if totp_secret:
             persisted_cred["two_factor"] = totp_secret
             persisted_cred["totp_secret"] = totp_secret
@@ -2409,6 +2422,14 @@ async def register_one(index, total, p):
                 poll_interval = max(
                     2, min(15, _env_int("CHATGPT_VERIFICATION_POLL_INTERVAL", 5))
                 )
+                if mailbox and mailbox.get("provider") == "icmail":
+                    from common.icmail import poll_code
+                    c = await poll_code(mailbox, received_after=received_after,
+                        max_wait=code_timeout, poll_interval=poll_interval,
+                        exclude_codes=verification_seen_codes)
+                    if c:
+                        verification_seen_codes.add(str(c))
+                    return c
                 if mailbox and mailbox.get("provider") in {"icloud", "remail"}:
                     mailbox_provider = mailbox.get("provider")
                     c = await poll_verification_code(
@@ -2645,6 +2666,8 @@ async def register_one(index, total, p):
                     sess["totp_secret"] = totp_secret
                 if isinstance(mailbox, dict):
                     sess["email_provider"] = mailbox.get("provider") or "icloud"
+                    if mailbox.get("provider") == "icmail":
+                        sess["mailbox_provider"] = "icmail"
                     share_url = str(
                         mailbox.get("mail_api_url") or mailbox.get("share_url") or ""
                     ).strip()
@@ -2706,6 +2729,7 @@ async def register_one(index, total, p):
                     ctx=ctx,
                     release_current=_release_registration_profile,
                     totp_secret=totp_secret,
+                    mailbox=mailbox,
                 )
             except Exception as e:
                 print(f"  [codex] 异常: {str(e)[:120]}")
@@ -3542,8 +3566,8 @@ async def main():
     parser.add_argument("--password", default=None, help="指定邮箱密码")
     parser.add_argument("--refresh-token", default=None, help="指定 Outlook refresh_token")
     parser.add_argument("--client-id", default=None, help="指定 Outlook OAuth client_id")
-    parser.add_argument("--email-provider", choices=["pool", "icloud", "remail"], default=None,
-                        help="邮箱来源：pool=emails.txt，icloud=API 自动申请并取码")
+    parser.add_argument("--email-provider", choices=["pool", "icmail", "icloud", "remail"], default=None,
+                        help="邮箱来源：pool=Outlook池，icmail=内置邮箱池，icloud/remail=外部服务商")
     two_factor = parser.add_mutually_exclusive_group()
     two_factor.add_argument("--enable-2fa", dest="enable_2fa", action="store_true",
                             help="注册成功后启用验证器 TOTP 并保存密钥")

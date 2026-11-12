@@ -302,7 +302,8 @@ export function ConfigEditor({ scope, area }: { scope: "system" | "node"; area?:
                       setDirty(previous => { const updated={...previous}; if(next===entry.value)delete updated[entry.key]; else updated[entry.key]=next; return updated; });
                     };
                     const choices = entry.type === "bool" ? ["true", "false"] : entry.choices;
-                    const placeholder = entry.default === undefined ? "未设置" : `未设置 · 默认 ${String(entry.default)}`;
+                    const placeholder = entry.empty_default ? `留空使用默认 ${String(entry.default)}` : entry.line ? "空值（不自动使用默认）" : entry.default === undefined ? "未设置" : `未设置 · 默认 ${String(entry.default)}`;
+                    const effectiveSource = ({deployment: "部署环境", file: "保存配置", default: "默认值", unset: "未设置"} as Record<string, string>)[entry.effective_source || ""];
                     return (
                       <tr key={entry.key}>
                         <td className="max-w-[240px] text-[11px] text-muted-foreground">
@@ -311,7 +312,9 @@ export function ConfigEditor({ scope, area }: { scope: "system" | "node"; area?:
                           <div className="truncate font-mono" title={entry.key}>{entry.key}</div>
                           {entry.help && <p className="mt-2 max-w-lg text-[12px] leading-relaxed">{entry.help}</p>}
                           <p className="mt-1 text-[11px]">{entry.line ? "文件已设置" : "文件未设置"}{entry.apply === "restart" ? " · 重启后读取" : ""}{entry.readonly ? " · 原配置留存" : ""}</p>
-                          {isNode && <div className="mt-1 text-[10.5px]">{entry.line ? `文件第 ${entry.line} 行` : "文件未配置 · 当前环境值未知"}</div>}
+                          {effectiveSource && <p className="mt-1 text-[11px]" data-config-effective={entry.key}>{entry.apply === "seed" ? "首次预置配置" : entry.apply === "restart" ? "下次启动配置来源" : "新任务配置来源"}：{effectiveSource}{entry.secret ? entry.effective_set ? " · 已配置" : " · 空值" : ` · ${entry.effective_value || "空值"}`}{entry.overridden ? "。部署环境优先，修改文件不会覆盖它。" : ""}</p>}
+                          {entry.apply === "seed" && <Link className="mt-1 inline-flex text-[11px] underline underline-offset-4" href="/apps/icmail/sources/">管理当前收件来源</Link>}
+                          {isNode && <div className="mt-1 text-[10.5px]">{entry.line ? `文件第 ${entry.line} 行` : "文件未配置"}</div>}
                         </td>
                         <td>
                           {choices?.length && !entry.secret ? <select className={`field ${changed ? "border-warning/50" : ""}`} aria-label={entry.label || entry.key} disabled={busy || loading || rawOpen || entry.readonly} value={value} onChange={event=>update(event.target.value)}>
@@ -359,12 +362,13 @@ export function ConfigEditor({ scope, area }: { scope: "system" | "node"; area?:
           <Card title={isNode ? "配置与当前运行值" : "说明"}>
             {isNode ? <div className="space-y-3 text-[11.5px] leading-relaxed text-muted-foreground">
               <p>这里编辑同一份环境配置文件，不代表当前节点进程的有效值。文件缺少的字段也会显示，填写并保存后追加到文件。</p>
-              <p>配置接口不返回容器环境变量；空白字段不表示当前节点未配置。若容器环境中已设置同名变量，编辑文件不会覆盖它，应在部署环境修改对应变量后重启。</p>
+              <p>每项显示部署环境、保存配置或默认值的来源；秘密环境值只显示是否配置。部署环境中已设置同名变量时，应在部署环境修改对应变量后重启。</p>
               <p>节点参数在启动时读取，保存不会热更新或重启。重启后请回到节点总览核对节点身份、平台和密钥指纹。</p>
               <Link className="btn-ghost inline-flex" href="/nodes/">查看当前节点</Link>
             </div> : <>
             <ul className="space-y-1.5 text-[11.5px] leading-relaxed text-muted-foreground">
               <li>· 与节点和 Python worker 共用同一份配置文件。</li>
+              <li>· 部署环境优先，其次是保存配置；标注“留空使用默认”的邮箱参数共用执行端默认值。密码和密钥清空后保持空值。</li>
               <li>· 同一键只认第一次出现；保存时替换首个匹配、其余的保持原样。</li>
               <li>· 密钥字段默认隐藏，勾选「显示密钥」可查看。</li>
               <li>· 原始编辑会做 KEY=VALUE 校验，拒绝任何非注释的其它行。</li>

@@ -265,8 +265,8 @@ SCRIPTS = [
              "choices": CHATGPT_COUNTRY_CHOICES, "labels": CHATGPT_COUNTRY_LABELS,
              "countryNames": True,
              "default": "auto", "help": "按出口国家筛选网络并校验 Cloudflare loc；找不到匹配出口则停止"},
-            {"flag": "--email-provider", "type": "choice", "choices": ["", "pool", "icloud", "remail"],
-             "labels": {"": "按 .env 配置", "pool": "Outlook 邮箱池", "icloud": "iCloud API 接码", "remail": "Remail 邮箱"},
+            {"flag": "--email-provider", "type": "choice", "choices": ["", "pool", "icmail", "icloud", "remail"],
+             "labels": {"": "按节点配置", "pool": "Outlook 邮箱池", "icmail": "内置邮箱池", "icloud": "iCloud API 接码", "remail": "Remail 邮箱"},
              "default": "", "help": "邮箱来源；留空使用 CHATGPT_EMAIL_PROVIDER 配置"},
             {"flag": "--codex", "type": "bool", "default": False,
              "help": "注册成功后直接导入 SUB2API；需配置 SUB2API_*，OAuth 期间可能需要手机验证"},
@@ -334,8 +334,8 @@ SCRIPTS = [
             {"flag": "--emails", "type": "str", "default": "",
              "help": "批量导入文件路径；支持 email----password、JSON 和现有邮箱记录格式"},
             {"flag": "--provider", "type": "choice",
-             "choices": ["", "google", "yyds", "gptmail", "cfmail", "moemail", "custom"], "default": "",
-             "labels": {"": "Outlook 资产池", "yyds": "YYDS 临时邮箱", "gptmail": "GPTMail 临时邮箱", "cfmail": "CFMail 临时邮箱", "moemail": "MoeMail 临时邮箱", "custom": "自定义临时邮箱"},
+             "choices": ["", "google", "yyds", "gptmail", "cfmail", "moemail", "icmail", "custom"], "default": "",
+             "labels": {"": "Outlook 资产池", "icmail": "内置邮箱池", "yyds": "YYDS 临时邮箱", "gptmail": "GPTMail 临时邮箱", "cfmail": "CFMail 临时邮箱", "moemail": "MoeMail 临时邮箱", "custom": "自定义临时邮箱"},
              "help": "邮箱来源；选择临时邮箱后忽略 Outlook/最新 RT"},
             {"flag": "--protocol", "type": "choice", "choices": ["browser", "http"],
              "labels": {"browser": "Chromium 浏览器协议", "http": "ClaudeX HTTP 协议"},
@@ -384,9 +384,9 @@ SCRIPTS = [
             {"flag": "--email-provider", "type": "choice", "choices": ["pool", "temp", "custom"],
              "default": "pool", "help": "邮箱来源：Outlook 资产池、TEMP_EMAIL_PROVIDER 或自建 CUSTOM_MAIL_* API"},
             {"flag": "--temp-provider", "type": "choice",
-             "choices": ["", "yyds", "remail", "gptmail", "moemail", "cfmail", "icloud", "custom"],
+             "choices": ["", "yyds", "remail", "gptmail", "moemail", "cfmail", "icloud", "icmail", "custom"],
              "labels": {"": "按 .env 配置", "yyds": "YYDS 临时邮箱", "remail": "Remail 临时邮箱",
-                        "gptmail": "GPTMail 临时邮箱", "moemail": "MoeMail 临时邮箱",
+                        "gptmail": "GPTMail 临时邮箱", "moemail": "MoeMail 临时邮箱", "icmail": "内置邮箱池",
                         "cfmail": "CFMail 临时邮箱", "icloud": "iCloud 临时邮箱", "custom": "自定义临时邮箱"},
              "default": "",
              "help": "临时邮箱 provider 覆盖值，如 remail、yyds、gptmail"},
@@ -807,8 +807,8 @@ ENV_SCHEMA = [
         {"key": "OUTLOOK_GRAPH_RECOVERY_POLL_INTERVAL", "default": "5", "help": "Graph 辅助邮箱轮询间隔秒数"},
     ]},
     {"group": "ChatGPT 邮箱", "items": [
-        {"key": "CHATGPT_EMAIL_PROVIDER", "type": "choice", "choices": ["pool", "icloud", "remail"],
-         "default": "pool", "help": "ChatGPT 默认邮箱来源；icloud/Remail 自动申请并轮询验证码"},
+        {"key": "CHATGPT_EMAIL_PROVIDER", "type": "choice", "choices": ["pool", "icmail", "icloud", "remail"],
+         "default": "pool", "help": "注册默认邮箱来源；icmail 使用内置地址池。已有账号授权优先使用保存的邮箱来源，无来源及邮箱专用凭据时沿用此项的内置池选择。邮箱登录在邮箱池→收件来源维护。"},
         {"key": "CHATGPT_ENABLE_2FA", "type": "choice", "choices": ["true", "false"],
          "default": "true", "help": "注册完成后重认证并启用验证器 TOTP，同时保存密钥"},
         {"key": "CHATGPT_VERIFICATION_CODE_TIMEOUT", "type": "int", "default": "90",
@@ -826,7 +826,7 @@ ENV_SCHEMA = [
         {"key": "CLAUDE_USE_TEMP_EMAIL", "type": "choice", "choices": ["false", "true"], "default": "false",
          "help": "Claude 命令行未指定邮箱时默认使用下方临时邮箱；任务表单选择 provider 时无需打开"},
         {"key": "TEMP_EMAIL_PROVIDER", "type": "choice",
-         "choices": ["yyds", "gptmail", "moemail", "cfmail", "icloud", "remail", "custom"], "default": "yyds",
+         "choices": ["yyds", "gptmail", "moemail", "cfmail", "icloud", "icmail", "remail", "custom"], "default": "gptmail",
          "help": "Claude/Grok 默认临时邮箱 provider(需配好对应 key)，任务表单也可临时指定。"},
         {"key": "YYDS_API_KEY", "secret": True, "help": "YYDS Mail key(profile 页,AC- 开头)"},
         {"key": "YYDS_BASE_URL", "default": "https://maliapi.215.im", "help": "YYDS Mail API 根地址；可粘贴 vip.215.im 或完整 /v1/accounts 地址，程序会自动纠正"},
@@ -1284,7 +1284,8 @@ CONFIG_MODES = {
         "selectors": ["CHATGPT_EMAIL_PROVIDER", "TEMP_EMAIL_PROVIDER", "OUTLOOK_GRAPH_RECOVERY_PROVIDER"],
         "common": ["邮箱 · 来源选择", "邮箱 · 收码与等待", "邮箱 · Outlook 与辅助邮箱", "邮箱 · IC 邮箱池"],
         "choices": {
-            "pool": {"label": "统一邮箱池", "groups": []},
+            "pool": {"label": "Outlook 邮箱池", "groups": []},
+            "icmail": {"label": "内置邮箱池", "groups": ["邮箱 · IC 邮箱池"]},
             "outlook": {"label": "Outlook 邮箱池", "groups": []},
             "icloud": {"label": "iCloud", "groups": ["邮箱 · iCloud"]},
             "yyds": {"label": "YYDS", "groups": ["邮箱 · YYDS"]},
@@ -1297,6 +1298,14 @@ CONFIG_MODES = {
     },
 }
 
+
+from schema.mail_settings import MAIL_DEFAULTS
+
+for _group in ENV_SCHEMA:
+    for _field in _group["items"]:
+        if _field["key"] in MAIL_DEFAULTS:
+            _field["default"] = MAIL_DEFAULTS[_field["key"]]
+            _field["empty_default"] = True
 
 # 所有 schema 里出现的 .env key（用于读 .env 时补齐未在模板里的项不丢）
 def env_keys():

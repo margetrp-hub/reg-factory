@@ -33,6 +33,14 @@ Core的 `X-Admin-API-Key` 和客户开发者Bearer属于Aishop平台，不是SG�
 | GET / PUT | `/api/config`、`/api/config/raw` | 读取 / 保存原配置文件，保留未修改键 |
 | GET | `/api/proxy/check` | 指定代理和目标的连通性探测，不修改已保存配置 |
 
+### 内置邮箱执行与配置来源
+
+内置邮箱的注册/授权取信使用 `GET /api/apps/icmail/workflow/mailbox`，沿用面板认证，不能使用公开验证码入口替代。`email` 必须为完整、已登记且绑定启用来源的地址；首次不带 `cursor` 时只返回 `email/source_id/cursor/messages`（messages为空），记录该身份的最大消息编号。后续携带 `cursor` 和 Unix 秒 `after`，只返回该来源、精确收件地址、编号更新且发送时间符合条件的邮件（最多100条），不返回IMAP密码。
+
+非法参数400；未认证401；未登记、暂停、阻止或来源停用409；读取错误500。worker每次轮询复核来源，变更时结束本次等待并提示重配后重新授权。邮箱分配继续使用原跨进程占用账本；账号授权只绑定地址，不改变注册占用。消息时间和编号在查询分页前过滤，避免旧邮件或异常Date遮住本次验证码。
+
+`GET /api/config` 的字段保留原 `value/line`，并返回 `effective_source/effective_value/effective_set/overridden/empty_default`；秘密的 effective_value 为空。`apply=seed` 表示仅空来源库首次预置，`apply=restart` 表示重启读取，不能据此声称当前来源登录已更新。
+
 ### 任务受理与重试
 
 账号页的“更新凭据”统一调用 `POST /api/accounts/refresh`，输入 `ref/platform/request_id/allow_relogin`。ChatGPT 的 `allow_relogin=false` 为纯RT刷新，`true` 为登录重新授权；不因RT失败自动切换登录。批量按账号独立受理，保留已受理任务；丢响应先查询 `request-<request_id>`，同编号不能切换方式。原 `/api/accounts/convert` 保留既有明确重新授权契约，前端不再把它命名为笼统“修复凭证”。已领取与原任务占用限制继续由服务端校验。

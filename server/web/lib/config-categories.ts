@@ -12,8 +12,9 @@ export function modeGroups(category: string, entries: ConfigEntry[], dirty: Reco
   if (!spec.selectors.length) spec.choices[viewMode || Object.keys(spec.choices)[0]]?.groups.forEach(group => selected.add(group));
   for (const key of spec.selectors) {
     const entry = entries.find(item => item.key === key);
-    const value = dirty[key] ?? entry?.value;
-    for (const mode of String(value || entry?.default || "").split(",")) {
+    const value = entry?.overridden ? entry.effective_value : dirty[key] ?? entry?.effective_value ?? entry?.value;
+    const fallback = entry?.empty_default || !entry?.line ? entry?.default : "";
+    for (const mode of String(value || fallback || "").split(",")) {
       spec.choices[mode.trim()]?.groups.forEach(group => selected.add(group));
     }
   }

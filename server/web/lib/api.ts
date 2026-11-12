@@ -45,7 +45,7 @@ export type CredentialCheckDetail = { task: Task; items: CredentialCheckItem[] }
 export type CredentialCheckHistory = { page: TaskPage; counts: Record<string, CredentialCheckCounts> };
 export type TaskFilter = { status?: string; q?: string; scripts?: string[]; offset?: number };
 export type AccountSummary = { platform: string; total: number; available: number; abnormal: number; unknown: number; used: number; leased: number; source_count: number };
-export type ConfigEntry = { key: string; value: string; secret: boolean; line: number; label?: string; help?: string; type?: string; choices?: string[]; default?: unknown; apply?: string; readonly?: boolean; area?: string };
+export type ConfigEntry = { key: string; value: string; secret: boolean; line: number; label?: string; help?: string; type?: string; choices?: string[]; default?: unknown; apply?: string; readonly?: boolean; area?: string; empty_default?: boolean; effective_value?: string; effective_source?: string; effective_set?: boolean; overridden?: boolean };
 
 export type SystemInfo = {
   version: string;

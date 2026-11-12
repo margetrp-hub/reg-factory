@@ -348,8 +348,20 @@ func (d *DB) SourceAliases(id int64) ([]string, error) {
 }
 
 func (d *DB) MessagePage(ctx context.Context, alias, tag string, sourceID int64, limit, offset int) ([]Message, int, error) {
+	return d.messagePage(ctx, alias, tag, sourceID, limit, offset, 0, 0)
+}
+
+func (d *DB) messagePage(ctx context.Context, alias, tag string, sourceID int64, limit, offset int, cursor int64, after float64) ([]Message, int, error) {
 	where := " WHERE 1=1"
 	args := []any{}
+	if cursor > 0 {
+		where += " AND id>?"
+		args = append(args, cursor)
+	}
+	if after > 0 {
+		where += " AND sort_ts>=?"
+		args = append(args, after)
+	}
 	if alias != "" {
 		where += " AND id IN (SELECT message_id FROM mail_recipients WHERE email=?)"
 		args = append(args, strings.ToLower(strings.TrimSpace(alias)))

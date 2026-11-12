@@ -8,6 +8,7 @@ config.py — 全局配置。
 """
 
 import os
+from schema.mail_settings import mail_setting
 
 
 # ---------------------------------------------------------------- .env 加载
@@ -170,7 +171,7 @@ GROK_USE_TEMP_EMAIL = _env("GROK_USE_TEMP_EMAIL", "false").strip().lower() in ("
 # CLAUDE_USE_TEMP_EMAIL=true 时 register.py 走临时邮箱取 magic link，免去 Outlook 注册/轮询。
 CLAUDE_USE_TEMP_EMAIL = _env("CLAUDE_USE_TEMP_EMAIL", "false").strip().lower() in ("1", "true", "yes", "on")
 # provider: moemail | yyds | gptmail | cfmail | icloud | remail（默认 gptmail）
-TEMP_EMAIL_PROVIDER = _env("TEMP_EMAIL_PROVIDER", "gptmail").strip().lower() or "gptmail"
+TEMP_EMAIL_PROVIDER = mail_setting("TEMP_EMAIL_PROVIDER").lower()
 
 # Outlook Graph OAuth 遇到安全信息页时，绑定临时辅助邮箱并自动轮询验证码。
 # provider 可设为 yyds | custom | outlook，也支持 yyds,outlook 这种指定备援的写法。
@@ -193,7 +194,7 @@ OUTLOOK_GRAPH_RECOVERY_POLL_INTERVAL = _env_int(
 )
 
 # ChatGPT 邮箱来源：pool=emails.txt Outlook 池；icloud/Remail=自动申请邮箱并通过 API 取码。
-CHATGPT_EMAIL_PROVIDER = _env("CHATGPT_EMAIL_PROVIDER", "pool").strip().lower() or "pool"
+CHATGPT_EMAIL_PROVIDER = mail_setting("CHATGPT_EMAIL_PROVIDER").lower()
 CHATGPT_ENABLE_2FA = _env("CHATGPT_ENABLE_2FA", "true").strip().lower() in (
     "1", "true", "yes", "on"
 )
@@ -212,7 +213,7 @@ MOEMAIL_DOMAIN = _env("MOEMAIL_DOMAIN", "")  # 留空则运行时从已有邮箱
 MOEMAIL_EXPIRY_MS = int(_env("MOEMAIL_EXPIRY_MS", "3600000") or "3600000")  # 1h|1d(86400000)|3d(259200000)|0永久
 
 # YYDS Mail（vip.215.im / maliapi.215.im）
-YYDS_BASE_URL = _env("YYDS_BASE_URL", "https://maliapi.215.im")
+YYDS_BASE_URL = mail_setting("YYDS_BASE_URL")
 YYDS_API_KEY = _env("YYDS_API_KEY", "")  # AC-... 格式，profile 页获取
 
 # GPTMail（mail.chatgpt.org.uk），支持公共测试 key "gpt-test"
@@ -227,10 +228,10 @@ REMAIL_EMAIL_SUFFIX = _env("REMAIL_EMAIL_SUFFIX", "outlook.com")
 REMAIL_SUPPLY = _env("REMAIL_SUPPLY", "private_first")
 
 # iCloud Mail API（API 主机，不是文档站 email.manageh.shop）
-ICLOUD_MAIL_API_BASE = _env("ICLOUD_MAIL_API_BASE", "https://mail.no-replyca.xyz")
+ICLOUD_MAIL_API_BASE = mail_setting("ICLOUD_MAIL_API_BASE")
 ICLOUD_MAIL_API_KEY = _env("ICLOUD_MAIL_API_KEY", "")
-ICLOUD_MAIL_TYPE = _env("ICLOUD_MAIL_TYPE", "icloud-code").strip().lower() or "icloud-code"
-ICLOUD_MAIL_SERVICE = _env("ICLOUD_MAIL_SERVICE", "openai").strip().lower() or "openai"
+ICLOUD_MAIL_TYPE = mail_setting("ICLOUD_MAIL_TYPE").lower()
+ICLOUD_MAIL_SERVICE = mail_setting("ICLOUD_MAIL_SERVICE").lower()
 
 # Cloudflare Temp Email（dreamhunter2333/cloudflare_temp_email，建议自部署 Workers）
 CFMAIL_BASE_URL = _env("CFMAIL_BASE_URL", "https://temp-email-api.awsl.uk")

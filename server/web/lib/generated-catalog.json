@@ -241,8 +241,14 @@
       ],
       "choices": {
         "pool": {
-          "label": "统一邮箱池",
+          "label": "Outlook 邮箱池",
           "groups": []
+        },
+        "icmail": {
+          "label": "内置邮箱池",
+          "groups": [
+            "邮箱 · IC 邮箱池"
+          ]
         },
         "outlook": {
           "label": "Outlook 邮箱池",

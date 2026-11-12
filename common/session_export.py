@@ -272,6 +272,7 @@ def build_cpa_codex_json(session, email=""):
         "last_refresh": exported_at,
         "expired": expires_at,
         "disabled": True if sess.get("disabled") is True else None,
+        "mailbox_provider": "icmail" if (sess.get("mailbox_provider") or sess.get("email_provider")) == "icmail" else None,
     }
     # 剔除 None/""(对齐 JS 的 .filter(value !== undefined && !== null && !== ''))
     auth_json = {k: v for k, v in raw.items() if v is not None and v != ""}
@@ -302,6 +303,7 @@ def build_cpa_codex_json_from_oauth(cred, email=""):
         "account_id": _s(c.get("chatgpt_account_id")),
         "user_id": _s(c.get("chatgpt_user_id")),
         "plan_type": _s(c.get("plan_type")),
+        "mailbox_provider": _s(c.get("mailbox_provider")),
     }
     return build_cpa_codex_json(pseudo_session, email=email or c.get("email", ""))
 

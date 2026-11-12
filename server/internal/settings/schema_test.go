@@ -2,6 +2,30 @@ package settings
 
 import "testing"
 
+func TestEffectiveConfigurationMatchesWorkerPrecedenceWithoutExposingSecrets(t *testing.T) {
+	t.Setenv("MAIL_ENDPOINT", "https://deployed.example.test")
+	t.Setenv("MAIL_PASSWORD", "not-in-response")
+	schema := []ConfigGroup{{Group: "mail", Items: []ConfigField{
+		{Key: "MAIL_ENDPOINT", Default: "https://default.example.test", EmptyDefault: true},
+		{Key: "MAIL_DEFAULT", Default: "gptmail", EmptyDefault: true},
+		{Key: "MAIL_OPTIONAL", Default: "unused"}, {Key: "MAIL_PASSWORD", Secret: true},
+	}}}
+	items := MergeConfig(schema, []Entry{{Key: "MAIL_ENDPOINT", Value: "saved", Line: 1},
+		{Key: "MAIL_DEFAULT", Line: 2}, {Key: "MAIL_OPTIONAL", Line: 3}}, func(string) string { return "mail" })["mail"]
+	if items[0].Value != "saved" || items[0].EffectiveValue != "https://deployed.example.test" || !items[0].Overridden {
+		t.Fatal(items[0])
+	}
+	if items[1].EffectiveValue != "gptmail" || items[1].EffectiveSource != "default" {
+		t.Fatal(items[1])
+	}
+	if items[2].EffectiveValue != "" || items[2].EffectiveSource != "file" {
+		t.Fatal(items[2])
+	}
+	if items[3].EffectiveValue != "" || !items[3].EffectiveSet || items[3].EffectiveSource != "deployment" {
+		t.Fatal("secret leaked or missing")
+	}
+}
+
 func TestConfigMergePreservesMissingConfiguredAndUnrecognizedFields(t *testing.T) {
 	schema := []ConfigGroup{{Group: "network", Items: []ConfigField{{Key: "PROXY_MODE", Default: "direct", Choices: []string{"direct", "clash"}}, {Key: "API_KEY", Secret: true}}}}
 	entries := []Entry{{Key: "PROXY_MODE", Value: "clash", Line: 2}, {Key: "PROXY_MODE", Value: "ignored", Line: 3}, {Key: "CUSTOM_LOCAL_SETTING", Value: "retained", Line: 4}}
@@ -30,6 +54,14 @@ func TestUnknownProviderSettingsRemainInMaterials(t *testing.T) {
 	}
 	if !groups["短信 · 通用与重试"][0].Secret {
 		t.Fatal("unknown token must stay masked")
+	}
+}
+
+func TestMailboxSeedDoesNotClaimToChangeRunningSource(t *testing.T) {
+	groups := MergeConfig(nil, []Entry{{Key: "ICMAIL_IMAP_USER", Value: "fixture@example.test", Line: 1}}, func(string) string { return "mail" })
+	entry := groups["邮箱 · IC 邮箱池"][0]
+	if entry.Apply != "seed" || entry.Help == "" {
+		t.Fatal("IMAP seed must point to current source management", entry.Apply)
 	}
 }
 

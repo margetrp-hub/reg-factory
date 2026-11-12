@@ -600,6 +600,9 @@ func (m *Manager) buildArgv(task store.Task) ([]string, string, []string, error)
 	if envErr != nil {
 		return nil, "", nil, fmt.Errorf("任务配置不可读: %w", envErr)
 	}
+	// Internal mailbox access uses this running control plane's credentials,
+	// even if its restart-only settings have since been edited in the env file.
+	baseEnv = append(baseEnv, "REG_FACTORY_ICMAIL_ADDR="+m.cfg.Addr, "REG_FACTORY_ICMAIL_KEY="+m.cfg.PanelPass)
 	// raw 任务：ArgsJSON 直接是参数数组，脚本为 tools/<script>.py
 	if task.Script == "asset_ops" || task.Script == "change_password" || task.Script == "import_free_json" {
 		var argvTail []string

@@ -65,6 +65,9 @@ func TestICMailMountedAuthenticationAndPublicCode(t *testing.T) {
 			t.Fatal("management auth", path, w.Code, w.Body.String())
 		}
 	}
+	if w := invoke("GET", "/api/apps/icmail/workflow/mailbox?email=user@example.test", "", false); w.Code != 401 {
+		t.Fatal("anonymous worker mailbox", w.Code)
+	}
 	if w := invoke("POST", "/api/apps/icmail/public/code", `{"email":"user@example.test","turnstileToken":"bad"}`, false); w.Code != 401 {
 		t.Fatal("Turnstile bypass", w.Code)
 	}

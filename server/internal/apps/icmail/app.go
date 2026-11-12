@@ -138,6 +138,7 @@ func (a *App) Stop() {
 // Register mounts the app routes on the given gin group (/api/apps/icmail).
 func (a *App) Register(rg *gin.RouterGroup) {
 	rg.GET("/pool", a.requireAdmin(), a.handlePool)
+	rg.GET("/workflow/mailbox", a.requireAdmin(), a.handleWorkflowMailbox)
 	rg.POST("/pool/import", a.requireAdmin(), a.handlePoolImport)
 	rg.POST("/pool/mailbox", a.requireAdmin(), a.handleMailbox)
 	rg.GET("/sync", a.requireAdmin(), a.handleSyncRuns)

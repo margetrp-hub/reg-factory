@@ -22,7 +22,7 @@ def login_record(document: dict) -> dict:
     # Never pass the OpenAI refresh token to the mailbox provider.
     record = {key: value.get(key) for key in (
         "email", "account_password", "chatgpt_password", "login_password",
-        "mail_api_url", "mail_api_key", "provider", "two_factor", "otp_secret",
+        "mail_api_url", "mail_api_key", "provider", "mailbox_provider", "email_provider", "two_factor", "otp_secret",
     ) if value.get(key)}
     record.update(mailbox)
     record.update(saved)

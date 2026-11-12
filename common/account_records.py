@@ -253,7 +253,8 @@ def _from_mapping(value: dict) -> dict:
         "cookies": cookies,
         "plan_type": plan_type,
         "codex_phone_status": phone_status,
-        "provider": str(value.get("provider") or "").strip().lower(),
+        "provider": str(value.get("mailbox_provider") or value.get("provider") or
+                        ("icmail" if value.get("email_provider") == "icmail" else "")).strip().lower(),
         "mail_api_url": mail_api_url,
         "mail_api_key": mail_api_key,
         "two_factor": two_factor,
@@ -319,15 +320,19 @@ def _validate(record: dict) -> dict:
         return record
     if not email:
         raise ValueError("account record requires email")
+    if not record.get("provider") and not record.get("mail_api_url") and not record.get("refresh_token"):
+        from config import CHATGPT_EMAIL_PROVIDER
+        if CHATGPT_EMAIL_PROVIDER == "icmail":
+            record["provider"] = "icmail"
     if record.get("mail_api_url"):
         if not re.match(r"^https?://[^\s]+$", str(record["mail_api_url"]), re.IGNORECASE):
             raise ValueError("mail API URL must start with http:// or https://")
         record["provider"] = "icloud"
     if record.get("refresh_token") and not record.get("client_id"):
         record["client_id"] = DEFAULT_GRAPH_CLIENT_ID
-    if not record.get("password") and not record.get("refresh_token") and not is_icloud_email(email):
+    if not record.get("password") and not record.get("refresh_token") and not is_icloud_email(email) and record.get("provider") != "icmail":
         raise ValueError("account record requires a password, Graph refresh token, or iCloud mailbox")
-    if record.get("provider") not in {"", "outlook", "graph", "microsoft", "icloud"}:
+    if record.get("provider") not in {"", "outlook", "graph", "microsoft", "icloud", "icmail"}:
         raise ValueError("unsupported mailbox provider")
     if not record.get("provider"):
         record["provider"] = "icloud" if is_icloud_email(email) else "outlook" if is_outlook_email(email) else "outlook"
@@ -498,6 +503,11 @@ def parse_account_text(
 
 
 def canonical_account_line(record: dict) -> str:
+    if record.get("provider") == "icmail":
+        # Preserve the local source across task files; never turn it into a
+        # domain-inferred external iCloud mailbox on the next authorization.
+        return json.dumps({key: value for key, value in record.items()
+            if value not in (None, "", [], {})}, ensure_ascii=False, separators=(",", ":"))
     if record.get("source_type") != "mailbox":
         payload = {
             key: record.get(key)

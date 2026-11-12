@@ -6833,7 +6833,7 @@ async def main():
     )
     parser.add_argument(
         "--provider",
-        choices=("google", "yyds", "gptmail", "cfmail", "moemail", "icloud", "remail", "custom"),
+        choices=("google", "yyds", "gptmail", "cfmail", "moemail", "icloud", "icmail", "remail", "custom"),
         default=None,
         help="temporary email provider; yyds uses YYDS_API_KEY",
     )

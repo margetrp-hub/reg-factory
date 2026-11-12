@@ -2,21 +2,23 @@ package settings
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 )
 
 type ConfigField struct {
-	Key      string   `json:"key"`
-	Label    string   `json:"label"`
-	Help     string   `json:"help"`
-	Type     string   `json:"type"`
-	Choices  []string `json:"choices,omitempty"`
-	Default  any      `json:"default,omitempty"`
-	Secret   bool     `json:"secret"`
-	Apply    string   `json:"apply,omitempty"`
-	ReadOnly bool     `json:"readonly,omitempty"`
-	Area     string   `json:"area,omitempty"`
+	Key          string   `json:"key"`
+	Label        string   `json:"label"`
+	Help         string   `json:"help"`
+	Type         string   `json:"type"`
+	Choices      []string `json:"choices,omitempty"`
+	Default      any      `json:"default,omitempty"`
+	Secret       bool     `json:"secret"`
+	Apply        string   `json:"apply,omitempty"`
+	ReadOnly     bool     `json:"readonly,omitempty"`
+	Area         string   `json:"area,omitempty"`
+	EmptyDefault bool     `json:"empty_default,omitempty"`
 }
 type ConfigGroup struct {
 	Group string        `json:"group"`
@@ -25,8 +27,12 @@ type ConfigGroup struct {
 }
 type ConfigEntry struct {
 	ConfigField
-	Value string `json:"value"`
-	Line  int    `json:"line"`
+	Value           string `json:"value"`
+	Line            int    `json:"line"`
+	EffectiveValue  string `json:"effective_value"`
+	EffectiveSource string `json:"effective_source"`
+	EffectiveSet    bool   `json:"effective_set"`
+	Overridden      bool   `json:"overridden"`
 }
 
 func LoadConfigSchema(path string) ([]ConfigGroup, error) {
@@ -69,6 +75,37 @@ func MergeConfig(schema []ConfigGroup, entries []Entry, fallback func(string) st
 		seen[entry.Key] = true
 		group := configSection(entry.Key, fallback(entry.Key))
 		groups[group] = append(groups[group], ConfigEntry{ConfigField: ConfigField{Key: entry.Key, Secret: entry.Secret || Secret(entry.Key), Area: configArea(entry.Key)}, Value: entry.Value, Line: entry.Line})
+	}
+	for name, list := range groups {
+		for i := range list {
+			entry := &list[i]
+			if strings.HasPrefix(entry.Key, "ICMAIL_IMAP_") || strings.HasPrefix(entry.Key, "MAIL_IMAP_") {
+				entry.Apply = "seed"
+				entry.Help = "仅在空来源库首次启动时预置收件来源；已有邮箱的登录资料请在邮箱池的收件来源中修改。"
+			} else if strings.HasPrefix(entry.Key, "ICMAIL_") {
+				entry.Apply = "restart"
+			}
+			value, source := entry.Value, "file"
+			if deployed, exists := DeploymentValue(entry.Key); exists {
+				value, source, entry.Overridden = deployed, "deployment", true
+			} else if entry.Line == 0 {
+				value, source = "", "unset"
+				if entry.Default != nil {
+					value, source = fmt.Sprint(entry.Default), "default"
+				}
+			}
+			if entry.EmptyDefault {
+				value = strings.TrimSpace(value)
+				if value == "" && entry.Default != nil {
+					value, source = fmt.Sprint(entry.Default), "default"
+				}
+			}
+			entry.EffectiveSource, entry.EffectiveSet = source, value != ""
+			if !entry.Secret {
+				entry.EffectiveValue = value
+			}
+		}
+		groups[name] = list
 	}
 	return groups
 }

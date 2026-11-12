@@ -639,7 +639,7 @@ def main():
     )
     parser.add_argument(
         "--temp-provider",
-        choices=("", "yyds", "remail", "gptmail", "moemail", "cfmail", "icloud", "custom"),
+        choices=("", "yyds", "remail", "gptmail", "moemail", "cfmail", "icloud", "icmail", "custom"),
         default="",
         help="--email-provider temp 时覆盖 TEMP_EMAIL_PROVIDER（如 yyds、gptmail、remail、custom）",
     )

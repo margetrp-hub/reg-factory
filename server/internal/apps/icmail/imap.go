@@ -72,6 +72,12 @@ func Dial(ctx context.Context, src Source) (*Client, error) {
 		return nil, fmt.Errorf("connect: %w", err)
 	}
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	// go-imap manages its own socket deadlines. Bound the whole handshake/login
+	// independently so a silent provider cannot occupy a source indefinitely.
+	loginCtx, cancelLogin := context.WithTimeout(ctx, 30*time.Second)
+	stopLogin := context.AfterFunc(loginCtx, func() { _ = conn.Close() })
+	defer cancelLogin()
+	defer stopLogin()
 	ok := false
 	defer func() {
 		if !ok {
@@ -95,6 +101,16 @@ func Dial(ctx context.Context, src Source) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dial %s: %w", addr, err)
 	}
+	// New starts a reader but does not wait for the greeting. QQ ignores LOGIN
+	// sent before its greeting/capability exchange has finished.
+	if err := raw.WaitGreeting(); err != nil {
+		_ = raw.Close()
+		return nil, fmt.Errorf("greeting: %w", err)
+	}
+	if raw.Caps() == nil {
+		_ = raw.Close()
+		return nil, errors.New("mailbox capability handshake failed")
+	}
 	if err := raw.Login(src.Username, src.Password).Wait(); err != nil {
 		_ = raw.Close()
 		return nil, fmt.Errorf("login %s: %w", src.Username, err)
@@ -110,9 +126,14 @@ func Dial(ctx context.Context, src Source) (*Client, error) {
 	}
 	_ = selectData
 
+	caps := raw.Caps()
+	if loginCtx.Err() != nil {
+		_ = raw.Close()
+		return nil, fmt.Errorf("mailbox login timeout: %w", loginCtx.Err())
+	}
 	_ = conn.SetDeadline(time.Time{})
 	ok = true
-	return &Client{c: raw, mailbox: folder, updates: updates, caps: raw.Caps(), stop: stop}, nil
+	return &Client{c: raw, mailbox: folder, updates: updates, caps: caps, stop: stop}, nil
 }
 
 // Close logs out and drops the socket.
