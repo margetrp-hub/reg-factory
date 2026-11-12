@@ -64,8 +64,8 @@ import (
 	"github.com/go-rod/stealth"
 )
 
-// DefaultChromiumPath 是容器里 Playwright 自带的 Chromium。
-const DefaultChromiumPath = "/ms-playwright/chromium-1254/chrome-linux-arm64/chrome"
+// DefaultChromiumPath is the architecture-independent entry installed by Docker.
+const DefaultChromiumPath = "/usr/local/bin/chromium"
 
 // ErrNoBrowser 表示找不到浏览器二进制。
 var ErrNoBrowser = errors.New("browser: 找不到 Chromium，检查 Config.ExecutablePath 或 REG_FACTORY_BROWSER_PATH")
