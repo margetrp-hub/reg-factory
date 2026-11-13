@@ -30,11 +30,11 @@ func (s *Server) sharedSnapshot(ref string, options map[string]any) (map[string]
 	var email, platform, kind, role, status, liveness, checked string
 	doc := map[string]any{}
 	if strings.HasPrefix(ref, "mail:") {
-		if s.icApp == nil {
+		if s.mailApp == nil {
 			return nil, errors.New("ASSET_MAIL_UNAVAILABLE")
 		}
 		var err error
-		email, platform, kind, role, status, doc, err = s.icApp.ShareSnapshot(ref)
+		email, platform, kind, role, status, doc, err = s.mailApp.ShareSnapshot(ref)
 		if err != nil {
 			return nil, err
 		}
@@ -140,10 +140,10 @@ func selectHandoffParts(native, options map[string]any) map[string]any {
 
 func (s *Server) detachHandoff(ref string) error {
 	if strings.HasPrefix(ref, "mail:") {
-		if s.icApp == nil {
+		if s.mailApp == nil {
 			return errors.New("ASSET_MAIL_UNAVAILABLE")
 		}
-		return s.icApp.WithdrawShared(ref)
+		return s.mailApp.WithdrawShared(ref)
 	}
 	if err := s.st.WithdrawAccount(ref); err != nil {
 		return err
@@ -202,8 +202,8 @@ func (s *Server) shareList(c *gin.Context) {
 			candidates = append(candidates, map[string]any{"ref": a.Ref, "type": "account", "email": a.Identity, "platform": a.Platform, "kind": a.Kind, "status": a.Status})
 		}
 	}
-	if err == nil && kind != "account" && s.icApp != nil {
-		mail, count, e := s.icApp.ShareCandidates(c.Request.Context(), query, limit-len(candidates), max(0, offset-total))
+	if err == nil && kind != "account" && s.mailApp != nil {
+		mail, count, e := s.mailApp.ShareCandidates(c.Request.Context(), query, limit-len(candidates), max(0, offset-total))
 		err = e
 		total += count
 		for _, item := range mail {

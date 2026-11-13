@@ -26,7 +26,7 @@ func hmacSHA256(key []byte, domain string, payload []byte) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-func TestInventoryRelayRouteUsesRelayEnvelope(t *testing.T) {
+func TestAccountNodeDoesNotOfferPlusStock(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db, err := store.Open(t.TempDir() + "/node.db")
 	if err != nil {
@@ -54,19 +54,19 @@ func TestInventoryRelayRouteUsesRelayEnvelope(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	resp := httptest.NewRecorder()
 	router.ServeHTTP(resp, req)
-	if resp.Code != http.StatusOK {
+	if resp.Code != http.StatusForbidden {
 		t.Fatalf("relay route status=%d body=%s", resp.Code, resp.Body.String())
 	}
 	var result map[string]any
 	if err := json.Unmarshal(resp.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if result["signature"] == nil {
-		t.Fatalf("relay response missing signature: %s", resp.Body.String())
+	if !strings.Contains(resp.Body.String(), "WORK_INVENTORY_ACTION_FORBIDDEN") {
+		t.Fatalf("account node offered Plus stock: %s", resp.Body.String())
 	}
 }
 
-func TestAccountsSyncCompatibilityRoute(t *testing.T) {
+func TestAccountsDirectoryRoute(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db, err := store.Open(t.TempDir() + "/node.db")
 	if err != nil {
@@ -85,7 +85,7 @@ func TestAccountsSyncCompatibilityRoute(t *testing.T) {
 	h := New(Config{Enabled: true, NodeID: "sg", Key: key, BusinessKey: key, ArtifactKey: key}, nil, db)
 	router := gin.New()
 	h.Register(router)
-	for _, path := range []string{"/internal/work/v1/accounts?limit=500", "/internal/work/v1/inventory/accounts?limit=500"} {
+	for _, path := range []string{"/internal/work/v1/accounts?limit=500"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		resp := httptest.NewRecorder()
 		router.ServeHTTP(resp, req)
@@ -102,6 +102,37 @@ func TestAccountsSyncCompatibilityRoute(t *testing.T) {
 		if result["total"] != float64(1) {
 			t.Fatalf("accounts route %s total=%v", path, result["total"])
 		}
+	}
+}
+
+func TestUnstockedHandoffReleaseRetainsCredentialsAndReplays(t *testing.T) {
+	db := centralJourneyStore(t, t.TempDir())
+	ref, asset := "unstocked@example.test", "00000000-0000-4000-8000-000000000002"
+	if _, err := db.UpsertAccounts([]store.AccountSeed{{Ref: ref, Platform: "chatgpt", Kind: "oauth", Identity: ref}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := db.CommitInventoryEvent("prepare", "p", "prepare-receipt", "sg", asset, ref, "prepared", 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := db.CommitInventoryEvent("release", "r", "release-receipt", "sg", asset, ref, "released", 2, 2); err != nil {
+		t.Fatal(err)
+	}
+	saved, replay, err := db.CommitInventoryEvent("release", "r", "release-receipt", "sg", asset, ref, "released", 2, 2)
+	if err != nil || !replay || saved != "release-receipt" {
+		t.Fatalf("release replay=%v err=%v", replay, err)
+	}
+	account, err := db.GetAccount(ref)
+	if err != nil || account.Version != 3 || account.Claimed || account.Identity != ref || account.JoinStatus != "joined" {
+		t.Fatalf("release changed unrelated facts or kept custody: %+v %v", account, err)
+	}
+	if _, _, err := db.CommitInventoryEvent("new-prepare", "np", "new-prepare-receipt", "sg", asset, ref, "prepared", 1, 3); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := db.CommitInventoryEvent("stock", "s", "stock-receipt", "sg", asset, ref, "stocked", 2, 4); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := db.CommitInventoryEvent("bad-release", "br", "bad-receipt", "sg", asset, ref, "released", 3, 5); err == nil {
+		t.Fatal("stocked product was released")
 	}
 }
 

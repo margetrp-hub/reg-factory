@@ -97,12 +97,16 @@ def validate_identity(document: dict, tokens: dict) -> None:
 
 
 async def authorize_document(document: dict, *, timeout: int = 600, on_tokens=None, on_progress=None, mailbox=None) -> dict:
-    record = login_record(document)
+    from vendor.reauth_web.engine import ReauthError
+    try:
+        record = login_record(document)
+    except ValueError as exc:
+        raise ReauthError("登录资料格式无效", evidence={"error_code": "credential_login_material_invalid", "token_exchange_started": False}) from exc
     if record.get("account_password") and record.get("two_factor"):
         # The supplier already has a complete protocol login implementation.
         # Password/TOTP accounts do not depend on a desktop browser process.
         return await asyncio.to_thread(_authorize_protocol, document, record, timeout, on_tokens, on_progress)
-    from patchright.async_api import async_playwright
+    from patchright.async_api import async_playwright, Error as BrowserError
     from common.browser import open_and_connect, teardown
     from common.oauth_codex import REDIRECT_URI
     from tools.import_plus_codex import MailCodeProvider
@@ -150,7 +154,7 @@ async def authorize_document(document: dict, *, timeout: int = 600, on_tokens=No
                 workspace_id=_workspace_id(document),
             ), timeout=timeout + 30)
             if not code or callback_state != state:
-                raise RuntimeError("OAuth callback incomplete")
+                raise ReauthError("授权回调不完整", evidence={"error_code": "oauth_callback_invalid", "token_exchange_started": False})
             print("[reauthorize] SG登录授权完成，正在交换新凭据", flush=True)
             tokens = await asyncio.to_thread(_exchange, code, verifier, client_id, REDIRECT_URI)
             if on_tokens:
@@ -159,6 +163,8 @@ async def authorize_document(document: dict, *, timeout: int = 600, on_tokens=No
             expires_in = int(tokens.get("expires_in") or 0)
             tokens["expires_at"] = int(time.time()) + expires_in if expires_in else 0
             return tokens
+        except BrowserError as exc:
+            raise ReauthError("授权浏览器运行失败", evidence={"error_code": "authorization_browser_error"}) from exc
         finally:
             if handle and profile_id:
                 await teardown(handle, profile_id)

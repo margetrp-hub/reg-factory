@@ -42,11 +42,15 @@ func main() {
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("[regd] 配置校验失败: %v", err)
 	}
+	mailConfig := mail.NewConfigFromEnv()
+	if store.DialectOf(mailConfig.DBPath) != store.DialectPG {
+		log.Fatal("[regd] MAIL_DB 必须配置为本机 PostgreSQL；不会创建空白 SQLite 邮箱库")
+	}
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
 		log.Fatalf("[regd] 数据目录不可用: %v", err)
 	}
 
-	// 打印生效的 DSN（脱敏），便于确认 PG/SQLite 分流是否正确
+	// 仅打印数据库类型，不记录连接凭据。
 	log.Printf("[regd] 数据库后端: %s", store.DialectOf(cfg.DBPath))
 	st, err := store.Open(cfg.DBPath)
 	if err != nil {
@@ -88,18 +92,18 @@ func main() {
 	assetSyncLoop(cfg.DataDir)
 
 	version := readVersion(cfg)
-	// IC 邮箱 app（同仓同进程）：/api/apps/mail/* 与 /apps/mail 页面
-	icApp, err := mail.New(mail.NewConfigFromEnv(cfg.DataDir))
+	// 内置邮箱模块：所有收信协议使用 /api/apps/mail 与 /apps/mail。
+	mailApp, err := mail.New(mailConfig)
 	if err != nil {
-		log.Printf("[regd] IC 邮箱初始化失败（跳过该模块）: %v", err)
+		log.Printf("[regd] 邮箱模块初始化失败: %v", err)
 	} else {
-		defer icApp.Close()
-		icApp.Start(context.Background())
-		defer icApp.Stop()
-		log.Printf("[regd] IC 邮箱已挂载: /api/apps/mail")
+		defer mailApp.Close()
+		mailApp.Start(context.Background())
+		defer mailApp.Stop()
+		log.Printf("[regd] 邮箱模块已挂载: /api/apps/mail")
 	}
 
-	apiServer := api.New(cfg, env, st, manager, authenticator, version, icApp)
+	apiServer := api.New(cfg, env, st, manager, authenticator, version, mailApp)
 	apiServer.Register(router)
 	checkContext, stopChecks := context.WithCancel(context.Background())
 	checksDone := apiServer.StartCredentialChecks(checkContext)
@@ -112,6 +116,7 @@ func main() {
 	}
 	apiServer.StartLivenessLoop(context.Background())
 	productionNode := nodeserver.New(nodeserver.Config{
+		Version:     version,
 		EnvFile:     cfg.EnvFile,
 		Enabled:     cfg.NodeID != "" && len(cfg.NodeKey) >= 32,
 		NodeID:      cfg.NodeID,

@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 import register
 from tools import validate_keys
-from webui.scripts import CHATGPT_COUNTRY_CHOICES, ENV_SCHEMA, SCRIPTS
+from schema.scripts import CHATGPT_COUNTRY_CHOICES, ENV_SCHEMA, SCRIPTS
 
 
 def _script(script_id):
@@ -180,17 +180,16 @@ class RegistrationSchemaTests(unittest.TestCase):
         self.assertIn("custom", oauth_args["--sms-provider"]["choices"])
 
     def test_bitbrowser_is_the_default_browser(self):
-        browser_group = next(
-            group for group in ENV_SCHEMA if group["group"] == "指纹浏览器"
-        )
-        items = {item["key"]: item for item in browser_group["items"]}
+        items = {item["key"]: item for group in ENV_SCHEMA for item in group["items"]}
 
         self.assertEqual(items["FINGERPRINT_BROWSER"]["default"], "bitbrowser")
-        self.assertNotIn("advanced", items["CUSTOM_BROWSER_API"])
-        self.assertNotIn("advanced", items["CUSTOM_BROWSER_API_MODE"])
-        self.assertNotIn("advanced", items["CUSTOM_BROWSER_API_KEY"])
-        self.assertTrue(items["CUSTOM_BROWSER_API_CREATE_PATH"]["advanced"])
-        self.assertTrue(items["CUSTOM_BROWSER_API_OPEN_METHOD"]["advanced"])
+        self.assertFalse(items["CUSTOM_BROWSER_API"].get("advanced"))
+        self.assertFalse(items["CUSTOM_BROWSER_API_MODE"].get("advanced"))
+        self.assertFalse(items["CUSTOM_BROWSER_API_KEY"].get("advanced"))
+        # Provider fields now live together in their mode, without a second
+        # advanced-only editor hiding part of the selected connection.
+        self.assertIn("CUSTOM_BROWSER_API_CREATE_PATH", items)
+        self.assertIn("CUSTOM_BROWSER_API_OPEN_METHOD", items)
         self.assertEqual(
             items["FINGERPRINT_BROWSER"]["choices"][0], "bitbrowser"
         )
@@ -255,7 +254,6 @@ class RegistrationSchemaTests(unittest.TestCase):
         claude_items = {
             item["key"]: item
             for group in ENV_SCHEMA
-            if group["group"] == "Claude 注册与验证"
             for item in group["items"]
         }
         self.assertTrue(claude_items["CLAUDE_VISION_API_BASE"]["required"])

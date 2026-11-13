@@ -113,7 +113,7 @@ func (h *Handler) accountsInventory(c *gin.Context) {
 					"email_key":         hex.EncodeToString(keySum[:])[:32],
 					"version":           version,
 					"state":             accountState(doc),
-					"platform":          h.config().Platform,
+					"platform":          "chatgpt",
 					"credential_sha256": hex.EncodeToString(digest[:]),
 					"last_verified_at":  version,
 				},

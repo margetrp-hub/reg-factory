@@ -352,7 +352,7 @@ def save_protocol_session(client: ClaudeProtocolClient, email: str, password: st
 
 
 def _mailbox_for_account(provider: str | None, domain: str | None = None) -> dict:
-    return create_mailbox(provider=provider or TEMP_EMAIL_PROVIDER, domain=domain or None)
+    return create_mailbox(provider=provider or TEMP_EMAIL_PROVIDER, domain=domain or None, platform="claude")
 
 
 def register_one(

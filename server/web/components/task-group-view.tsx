@@ -114,7 +114,7 @@ export function TaskGroupView({ group: slug = "other", platform }: { group?: str
       <header className="sg-task-toolbar items-end">
         {platform && <label className="min-w-40"><span className="label">业务流程</span><select className="field" aria-label="业务流程" value={activeFamily || ""} onChange={event => { const selected = scripts.find(script => groupOf(script).slug === event.target.value); if (selected) choose(selected); }}>{families.map(item => <option key={item.slug} value={item.slug}>{item.title}</option>)}</select></label>}
         <label className="min-w-0 flex-1"><span className="label">执行模式</span><select className="field" aria-label="执行模式" value={mode?.id || ""} disabled={!modes.length} onChange={event => { const selected = scripts.find(script => script.id === event.target.value); if (selected) choose(selected); }}>{modes.map(script => <option key={script.id} value={script.id}>{script.title}{protectedDrafts[script.id] ? " · 草稿" : ""}</option>)}</select></label>
-        <Link className="btn-ghost" href="/apps/icmail/">统一邮箱池</Link>
+        <Link className="btn-ghost" href="/apps/mail/">统一邮箱池</Link>
       </header>
       <div className="p-5">
         {!scripts.length && <Empty>{schemaReady ? "该分类暂无可用模式" : "正在读取执行模式…"}</Empty>}

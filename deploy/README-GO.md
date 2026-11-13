@@ -33,6 +33,7 @@ python server/tools/export_schema.py
 # 5) 运行
 REGD_ADDR=127.0.0.1:8800 REG_FACTORY_DATA_DIR=/data \
 REGD_APP_ROOT="$PWD" REGD_PYTHON=python3 \
+REGD_DB='<本机PostgreSQL DSN>' MAIL_DB='<本机PostgreSQL邮箱库DSN>' \
 REG_FACTORY_PANEL_PASSWORD='<强口令>' ./server/regd
 ```
 
@@ -47,6 +48,7 @@ regd 和 worker 运行时，不依赖本机已有的项目镜像。Python、Chro
 cd deploy
 # 首次部署：复制后设置 REG_FACTORY_PANEL_PASSWORD
 cp .env.server.example .env
+# 同时设置 REGD_DB、MAIL_DB；已有部署沿用实际 DSN
 # 建议 REG_FACTORY_IMAGE=reg-factory:unified
 docker compose build panel
 docker compose up -d --no-build panel
@@ -56,6 +58,8 @@ curl -fsS http://127.0.0.1:8800/api/health
 默认只运行一个 `panel` 服务、一个 `reg-factory` 容器。Go 负责界面、状态和调度，
 中央资产领取/回库和AT检查由Go执行，平台登录/RT等步骤按需启动镜像内的 Python worker；共用 `/data` 与 `/data/.env`。SG的 `REGD_DB`、`MAIL_DB` 使用所在主机的PostgreSQL DSN，沿用现役数据库和账号，不跨机写库。首次启动幂等建表，不依赖容器外手写兼容函数；测试工具仍可使用隔离SQLite。
 启动入口仍负责数据目录初始化、资产 Key 首次生成、Xvfb 和降权，不改变业务或节点密钥协议。
+
+本轮邮箱命名升级在切换前执行一次。对实际 Compose 的每个 env_file 和挂载的数据 `.env` 先运行 `python3 deploy/upgrade-mail-config.py <文件>` 预览，再加 `--apply`。工具保留 `<文件>.mail-v1-backup`，仅报告键名；共享 Turnstile 配置不删除，既有来源资料仍在原 PG 表。必须重新创建容器以使进程环境生效，不能只重启旧容器。旧 `ICMAIL_*` 不在运行时兜底；缺少 PG 连接会报告配置错误，不生成空白运行库。
 
 镜像同时固定Patchright、Playwright、Camoufox和Ruyipage Python包。构建时安装Chromium及Firefox，Firefox缓存位于 `/opt/browser-cache`，可由非root运行用户访问。`BROWSER_ENGINE=patchright` 保留原浏览器供应商选择；`camoufox` 使用独立Firefox上下文。Ruyipage是不同API的工具入口，不能直接替换现有Playwright任务。自动巡检保持显式配置的关闭状态。
 

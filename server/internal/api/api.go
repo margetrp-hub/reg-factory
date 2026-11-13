@@ -54,13 +54,13 @@ type Server struct {
 
 	// 协议注册（Go 原生）并发槽，避免一次点 10 个把出口打死
 	webRegisterSlot chan struct{}
-	// IC 邮箱 app（同进程），协议注册可直接从这里取 magic link
-	icApp   *mail.App
+	// 内置邮箱池：Go 协议注册与 Python worker 共用来源、状态和新邮件规则。
+	mailApp *mail.App
 	sharing *centralasset.Sharing
 }
 
 // New 构造 API。
-func New(cfg *settings.Settings, env *settings.Env, st *store.Store, run *runner.Manager, a *auth.Manager, version string, icApp *mail.App) *Server {
+func New(cfg *settings.Settings, env *settings.Env, st *store.Store, run *runner.Manager, a *auth.Manager, version string, mailApp *mail.App) *Server {
 	s := &Server{
 		cfg:             cfg,
 		env:             env,
@@ -71,9 +71,7 @@ func New(cfg *settings.Settings, env *settings.Env, st *store.Store, run *runner
 		assets:          assetstore.New(cfg.DataDir),
 		version:         version,
 		webRegisterSlot: make(chan struct{}, 3),
-		// 2026-11-13 修：原来这里漏了 icApp，
-		// 导致 s.icApp 永远为 nil，/api/apps/mail 路由从来没注册过。
-		icApp: icApp,
+		mailApp:         mailApp,
 	}
 
 	// 建 ip_pool 表 + 给 accounts 加 pool_* 字段（幂等）。
@@ -90,14 +88,11 @@ func New(cfg *settings.Settings, env *settings.Env, st *store.Store, run *runner
 // Register 注册全部路由。
 func (s *Server) Register(r *gin.Engine) {
 	r.Use(s.auth.Middleware())
-	if s.icApp != nil {
-		// Existing pages and Python workers retain their signed/local endpoint.
-		// Both paths use the same app and database, never a second mailbox pool.
-		for _, base := range []string{"/api/apps/mail", "/api/apps/icmail"} {
-			group := r.Group(base, func(c *gin.Context) { c.Set("mailAuthenticated", true); c.Next() })
-			s.icApp.Register(group)
-			s.icApp.RegisterPublic(r.Group(base + "/public"))
-		}
+	if s.mailApp != nil {
+		// All mailbox providers share one local API and one pool owner.
+		group := r.Group("/api/apps/mail", func(c *gin.Context) { c.Set("mailAuthenticated", true); c.Next() })
+		s.mailApp.Register(group)
+		s.mailApp.RegisterPublic(r.Group("/api/apps/mail/public"))
 	}
 
 	r.GET("/api/health", func(c *gin.Context) {
@@ -795,39 +790,41 @@ func (s *Server) exportAccounts(c *gin.Context) {
 
 // ---------------------------------------------------------------- 协议注册（Go 原生，无浏览器）
 
-// icMailbox 让协议注册直接从 IC 的 SQLite 取信（同进程，零网络、零鉴权）。
-type icMailbox struct {
-	app   *mail.App
-	email string
+// poolMailbox binds the source and watermark before Claude sends this attempt's
+// email. IMAP, POP3 and Graph are selected by the saved source, never the suffix.
+type poolMailbox struct {
+	app       *mail.App
+	email     string
+	sourceID  int64
+	cursor    int64
+	startedAt float64
 }
 
 // Address 返回邮箱地址。
-func (m *icMailbox) Address() string { return m.email }
+func (m *poolMailbox) Address() string { return m.email }
 
-// WaitForMagicLink 轮询 IC 的索引库，找主题/正文里的 Claude magic link。
-func (m *icMailbox) WaitForMagicLink(ctx context.Context, timeout time.Duration) (string, error) {
-	if m.app == nil || m.app.DB == nil {
-		return "", &claudehttp.Error{Kind: claudehttp.ErrMailbox, Detail: "IC 邮箱未初始化"}
-	}
-	deadline := time.Now().Add(timeout)
+func (m *poolMailbox) WaitForMagicLink(ctx context.Context, timeout time.Duration) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	for {
-		if err := m.app.DB.MailboxAvailable(m.email); err != nil {
+		snapshot, err := m.app.DB.WorkflowMailbox(ctx, m.email, "claude", &m.cursor, m.startedAt)
+		if err != nil {
 			return "", &claudehttp.Error{Kind: claudehttp.ErrMailbox, Detail: err.Error()}
 		}
-		messages, err := m.app.DB.Query(m.email, "", 10)
-		if err == nil {
-			for _, message := range messages {
-				text := message.Subject + "\n" + message.BodyText + "\n" + message.Snippet
-				if link := claudehttp.ExtractMagicLink(text); link != "" {
-					return link, nil
-				}
-			}
+		if snapshot.SourceID != m.sourceID {
+			return "", &claudehttp.Error{Kind: claudehttp.ErrMailbox, Detail: "邮箱收件来源已变化，请重新发起原邮箱授权"}
 		}
-		if time.Now().After(deadline) {
-			return "", &claudehttp.Error{Kind: claudehttp.ErrMailbox, Detail: "IC 等 magic link 超时"}
+		for _, message := range snapshot.Messages {
+			text := message.Subject + "\n" + message.BodyText + "\n" + message.Snippet
+			if link := claudehttp.ExtractMagicLink(text); link != "" {
+				return link, nil
+			}
 		}
 		select {
 		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return "", &claudehttp.Error{Kind: claudehttp.ErrMailbox, Detail: "等待本次 Claude 登录邮件超时"}
+			}
 			return "", &claudehttp.Error{Kind: claudehttp.ErrMailbox, Detail: "已取消"}
 		case <-time.After(3 * time.Second):
 		}
@@ -835,14 +832,12 @@ func (m *icMailbox) WaitForMagicLink(ctx context.Context, timeout time.Duration)
 }
 
 type claudeHTTPRequest struct {
-	Email        string `json:"email"`
-	RefreshToken string `json:"refresh_token"`
-	ClientID     string `json:"client_id"`
-	Proxy        string `json:"proxy"`
-	Seed         string `json:"seed"`
-	MagicLink    string `json:"magic_link"`
-	Mailbox      string `json:"mailbox"`
-	Timeout      int    `json:"timeout"`
+	Email     string `json:"email"`
+	Proxy     string `json:"proxy"`
+	Seed      string `json:"seed"`
+	MagicLink string `json:"magic_link"`
+	Mailbox   string `json:"mailbox"`
+	Timeout   int    `json:"timeout"`
 }
 
 // claudeHTTPRegister 用 Go 协议流程注册 Claude（零浏览器）。
@@ -852,20 +847,27 @@ func (s *Server) claudeHTTPRegister(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_body", "detail": "需要 email"})
 		return
 	}
+	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
 	var mailbox claudehttp.Mailbox
 	switch {
 	case strings.TrimSpace(req.MagicLink) != "":
 		mailbox = &claudehttp.StaticMailbox{Addr: req.Email, Link: strings.TrimSpace(req.MagicLink)}
-	case s.icApp != nil && (strings.EqualFold(strings.TrimSpace(req.Mailbox), "icloud") ||
-		strings.HasSuffix(strings.ToLower(strings.TrimSpace(req.Email)), "@icloud.com")):
-		// IC 与 regd 同进程：直接读它的 SQLite，零网络、零鉴权
-		mailbox = &icMailbox{app: s.icApp, email: strings.TrimSpace(req.Email)}
-	case strings.TrimSpace(req.RefreshToken) != "":
-		mailbox = claudehttp.NewOutlookMailbox(req.Email, req.RefreshToken, req.ClientID)
+	case strings.TrimSpace(req.Mailbox) == "icmail" && s.mailApp != nil:
+		snapshot, err := s.mailApp.DB.WorkflowMailbox(c.Request.Context(), req.Email, "claude", nil, 0)
+		if err != nil {
+			status := http.StatusInternalServerError
+			var unavailable *mail.WorkflowUnavailable
+			if errors.As(err, &unavailable) {
+				status = http.StatusConflict
+			}
+			c.JSON(status, gin.H{"error": "mailbox_unavailable", "detail": err.Error()})
+			return
+		}
+		mailbox = &poolMailbox{app: s.mailApp, email: req.Email, sourceID: snapshot.SourceID, cursor: snapshot.Cursor, startedAt: float64(time.Now().Unix())}
 	default:
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error":  "mailbox_required",
-			"detail": "需要 mailbox=icloud（IC 同进程取码）、refresh_token（Outlook）或 magic_link（人工粘贴）",
+			"detail": "请选择 mailbox=icmail 使用已配置的邮箱池，或提供 magic_link；Microsoft 授权资料统一在邮箱收件来源保存",
 		})
 		return
 	}
@@ -983,9 +985,10 @@ func (s *Server) importAccounts(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_body", "detail": "需要 accounts"})
 		return
 	}
-	platform := strings.TrimSpace(req.Platform)
+	platform := strings.ToLower(strings.TrimSpace(req.Platform))
 	if platform == "" {
-		platform = "chatgpt"
+		c.JSON(http.StatusBadRequest, gin.H{"error": "platform_required", "detail": "请选择导入账号所属平台"})
+		return
 	}
 	kind := strings.TrimSpace(req.Kind)
 	if kind == "" {
@@ -994,7 +997,7 @@ func (s *Server) importAccounts(c *gin.Context) {
 
 	batch := "imp-" + strconv.FormatInt(time.Now().UnixNano(), 36)
 	seeds := make([]store.AccountSeed, 0, 64)
-	type parsed struct{ email, password, totp string }
+	type parsed struct{ ref, email, password, totp string }
 	rows := make([]parsed, 0, 64)
 
 	for _, line := range strings.Split(req.Accounts, "\n") {
@@ -1006,7 +1009,7 @@ func (s *Server) importAccounts(c *gin.Context) {
 		if len(parts) == 1 {
 			parts = strings.Fields(text)
 		}
-		email := strings.TrimSpace(parts[0])
+		email := strings.ToLower(strings.TrimSpace(parts[0]))
 		if !strings.Contains(email, "@") {
 			continue
 		}
@@ -1018,18 +1021,23 @@ func (s *Server) importAccounts(c *gin.Context) {
 		if len(parts) > 2 {
 			totp = strings.TrimSpace(parts[2])
 		}
+		ref, err := s.st.ImportRef(platform, email)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "import_read_failed"})
+			return
+		}
 		seeds = append(seeds, store.AccountSeed{
-			Ref: "import:" + strings.ToLower(email), Platform: platform, Kind: kind,
+			Ref: ref, Platform: platform, Kind: kind,
 			Identity: email, SecretRef: batch, ImportBatch: batch,
 		})
-		rows = append(rows, parsed{email: email, password: password, totp: totp})
+		rows = append(rows, parsed{ref: ref, email: email, password: password, totp: totp})
 	}
 	if len(seeds) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "no_valid_rows", "detail": "没有识别到邮箱"})
 		return
 	}
 	for _, row := range rows {
-		ref := "import:" + strings.ToLower(row.email)
+		ref := row.ref
 		if transferred, err := s.st.TransferredAccount(platform, row.email); err != nil || transferred {
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "import_save_failed"})
@@ -1067,7 +1075,7 @@ func (s *Server) importAccounts(c *gin.Context) {
 	if req.AutoChangePassword && strings.TrimSpace(req.NewPassword) != "" {
 		for _, row := range rows {
 			argv := []string{"--platform", platform, "--email", row.email,
-				"--ref", "import:" + strings.ToLower(row.email), "--new-password", req.NewPassword}
+				"--ref", row.ref, "--new-password", req.NewPassword}
 			if row.password != "" {
 				argv = append(argv, "--old-password", row.password)
 			}

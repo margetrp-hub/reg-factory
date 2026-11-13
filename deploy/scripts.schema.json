@@ -2142,8 +2142,8 @@
           "": "按节点配置",
           "pool": "Outlook 邮箱池",
           "icmail": "内置邮箱池",
-          "icloud": "iCloud API 接码",
-          "remail": "Remail 邮箱"
+          "icloud": "iCloud API",
+          "remail": "Remail"
         },
         "positional": false
       },
@@ -2446,22 +2446,26 @@
         "choices": [
           "",
           "google",
+          "icmail",
+          "moemail",
           "yyds",
           "gptmail",
           "cfmail",
-          "moemail",
-          "icmail",
+          "icloud",
+          "remail",
           "custom"
         ],
         "labels": {
           "": "Outlook 资产池",
+          "google": "Google OAuth",
           "icmail": "内置邮箱池",
-          "yyds": "YYDS 临时邮箱",
-          "gptmail": "GPTMail 临时邮箱",
-          "cfmail": "CFMail 临时邮箱",
-          "moemail": "MoeMail 临时邮箱",
-          "custom": "自定义临时邮箱",
-          "google": "Google OAuth"
+          "moemail": "MoeMail",
+          "yyds": "YYDS Mail",
+          "gptmail": "GPTMail",
+          "cfmail": "CFMail",
+          "icloud": "iCloud API",
+          "remail": "Remail",
+          "custom": "自定义邮箱 API"
         },
         "positional": false
       },
@@ -2704,25 +2708,25 @@
         "help": "临时邮箱 provider 覆盖值，如 remail、yyds、gptmail",
         "choices": [
           "",
-          "yyds",
-          "remail",
-          "gptmail",
+          "icmail",
           "moemail",
+          "yyds",
+          "gptmail",
           "cfmail",
           "icloud",
-          "icmail",
+          "remail",
           "custom"
         ],
         "labels": {
-          "": "按 .env 配置",
-          "yyds": "YYDS 临时邮箱",
-          "remail": "Remail 临时邮箱",
-          "gptmail": "GPTMail 临时邮箱",
-          "moemail": "MoeMail 临时邮箱",
+          "": "按节点配置",
           "icmail": "内置邮箱池",
-          "cfmail": "CFMail 临时邮箱",
-          "icloud": "iCloud 临时邮箱",
-          "custom": "自定义临时邮箱"
+          "moemail": "MoeMail",
+          "yyds": "YYDS Mail",
+          "gptmail": "GPTMail",
+          "cfmail": "CFMail",
+          "icloud": "iCloud API",
+          "remail": "Remail",
+          "custom": "自定义邮箱 API"
         },
         "positional": false
       },

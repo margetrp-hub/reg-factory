@@ -6,18 +6,18 @@ import (
 	"errors"
 	"fmt"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tiantianGPU/reg-factory/server/internal/testutil/testdatabase"
 )
 
 func poolApp(t *testing.T) *App {
 	t.Helper()
-	a, err := New(Config{DBPath: filepath.Join(t.TempDir(), "mail.db"), BootstrapLimit: 100, FetchChunk: 10})
+	a, err := New(Config{DBPath: testdatabase.DSN(t, t.TempDir()), BootstrapLimit: 100, FetchChunk: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,13 +80,13 @@ func TestPoolAddressJourneyAndExactLookup(t *testing.T) {
 	if _, err = a.LookupCode("person@example.test", 20); err != nil {
 		t.Fatal(err)
 	}
-	if err = a.DB.SetAliasState(ctx, "manual@example.test", "paused"); err != nil {
+	if err = a.DB.setLegacyAliasState(ctx, "manual@example.test", "paused"); err != nil {
 		t.Fatal(err)
 	}
-	aliases, err := a.DB.ListAliases(ctx)
+	aliases, _, err := a.DB.PoolPage(ctx, "manual@example.test", "", 0, 25, 0)
 	found := false
 	for _, item := range aliases {
-		if item.HME == "manual@example.test" && item.Manual && item.State == "paused" {
+		if item.Email == "manual@example.test" && item.Manual && item.State == "paused" {
 			found = true
 		}
 	}
@@ -106,7 +106,9 @@ func TestPoolAddressJourneyAndExactLookup(t *testing.T) {
 	}
 }
 
-func TestSourceHistoryAndLegacyIndexUpgrade(t *testing.T) {
+func TestSQLiteSourceHistoryAndLegacyIndexUpgrade(t *testing.T) {
+	// Historical snapshot conversion is separate from PostgreSQL acceptance.
+	t.Setenv("REG_FACTORY_TEST_POSTGRES_DSN", "")
 	a := poolApp(t)
 	s1, s2 := poolSource(t, a, "one"), poolSource(t, a, "two")
 	for _, s := range []Source{s1, s2} {
@@ -128,7 +130,7 @@ func TestSourceHistoryAndLegacyIndexUpgrade(t *testing.T) {
 	if _, err = a.DB.db.Exec("DELETE FROM mail_messages WHERE source_id=?", s2.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err = a.DB.SetAliasState(context.Background(), "one@example.test", "blocked"); err != nil {
+	if err = a.DB.setLegacyAliasState(context.Background(), "one@example.test", "blocked"); err != nil {
 		t.Fatal(err)
 	}
 	// Older versions accepted mixed-case addresses. The latest manual state
@@ -366,7 +368,7 @@ func TestSourceRuntimeConsumesSyncAndRecovers(t *testing.T) {
 func TestInactiveMailboxHTTPResult(t *testing.T) {
 	a := poolApp(t)
 	a.Cfg.AdminKey = "fixture-admin"
-	a.DB.SetAliasState(context.Background(), "pool@example.test", "paused")
+	a.DB.setLegacyAliasState(context.Background(), "pool@example.test", "paused")
 	r := gin.New()
 	a.Register(r.Group("/api/apps/mail"))
 	req := httptest.NewRequest("GET", "/api/apps/mail/code?email=pool@example.test", nil)

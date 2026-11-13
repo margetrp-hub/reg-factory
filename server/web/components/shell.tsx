@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -30,7 +30,7 @@ const CONTEXT_LINKS: Record<NavSection, { href: string; label: string }[]> = {
   assets: [{ href: "/accounts/", label: "账号管理" }, { href: "/assets/", label: "当前凭据与导出" }],
   supply: [
     { href: "/materials/", label: "物料总览" },
-    { href: "/apps/icmail/", label: "邮箱池管理" },
+    { href: "/apps/mail/", label: "邮箱池管理" },
   ],
   nodes: [
     { href: "/nodes/", label: "节点总览" },
@@ -116,7 +116,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
   );
   const activeSection: NavSection = /^\/platform\/[^/]+\/(accounts|checks|runs)(\/|$)/.test(pathname) ? "assets" : activeItem?.section ||
     (pathname.startsWith("/assets") ? "assets" : pathname.startsWith("/platform/") ? "production" :
-      pathname.startsWith("/apps/icmail") || pathname.startsWith("/materials") ? "supply" :
+      pathname.startsWith("/apps/mail") || pathname.startsWith("/materials") ? "supply" :
       pathname.startsWith("/nodes") ? "nodes" :
         pathname.startsWith("/audit") ? "system" : "workspace");
   const activeContext = CONTEXT_LINKS[activeSection]

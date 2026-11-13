@@ -22,6 +22,7 @@ type Mailbox struct {
 	SourceName    string  `json:"sourceName"`
 	SourceEnabled bool    `json:"sourceEnabled"`
 	State         string  `json:"state"`
+	ManualState   string  `json:"manualState"`
 	Origin        string  `json:"origin"`
 	Total         int     `json:"total"`
 	RiskHits      int     `json:"riskHits"`
@@ -43,6 +44,14 @@ type Mailbox struct {
 	FailCount      int    `json:"failCount"`
 	MessageCount   int    `json:"messageCount"`
 }
+
+// Administrative availability, mailbox health and parent-provider shutdown are
+// independent facts. Every reader projects them in the same order.
+const mailboxStateSQL = `CASE
+ WHEN COALESCE(a.state,'active')<>'active' THEN a.state
+ WHEN p.parent_state='banned' AND p.ban_scope='' THEN 'parent_banned'
+ WHEN p.state NOT IN ('ready','in_use') THEN p.state
+ ELSE 'active' END`
 
 func (a *App) handlePool(c *gin.Context) {
 	items, total, err := a.DB.PoolPage(c.Request.Context(), c.Query("q"), c.Query("state"), int64(atoiDefault(c.Query("source_id"), 0)), atoiDefault(c.Query("limit"), 25), atoiDefault(c.Query("offset"), 0))
@@ -306,7 +315,7 @@ func (d *DB) PoolPage(ctx context.Context, q, state string, sourceID int64, limi
 		args = append(args, strings.ToLower(strings.TrimSpace(q)))
 	}
 	if state != "" {
-		where += " AND COALESCE(a.state,'active')=?"
+		where += " AND (" + mailboxStateSQL + ")=?"
 		args = append(args, state)
 	}
 	if sourceID > 0 {
@@ -318,12 +327,12 @@ func (d *DB) PoolPage(ctx context.Context, q, state string, sourceID int64, limi
 	if err := d.ex.QueryRowContext(ctx, "SELECT count(*)"+from+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	rows, err := d.ex.QueryContext(ctx, `SELECT p.email,COALESCE(p.source_id,0),COALESCE(s.name,''),COALESCE(s.enabled,0),COALESCE(a.state,'active'),p.origin,
+	rows, err := d.ex.QueryContext(ctx, `SELECT p.email,COALESCE(p.source_id,0),COALESCE(s.name,''),COALESCE(s.enabled,0),`+mailboxStateSQL+`,COALESCE(a.state,'active'),p.origin,
 (SELECT count(*) FROM mail_recipients r WHERE r.email=p.email),
 (SELECT count(*) FROM mail_recipients r JOIN mail_messages m ON m.id=r.message_id WHERE r.email=p.email AND m.primary_tag IN ('risk','banned')),
 COALESCE((SELECT max(m.sort_ts) FROM mail_recipients r JOIN mail_messages m ON m.id=r.message_id WHERE r.email=p.email),0),
 COALESCE((SELECT m.primary_tag FROM mail_recipients r JOIN mail_messages m ON m.id=r.message_id WHERE r.email=p.email ORDER BY m.sort_ts DESC,m.id DESC LIMIT 1),''),
-COALESCE(a.manual,0),COALESCE(a.updated_at,p.created_at),p.provider,p.role,COALESCE(NULLIF(p.transport,''),s.transport,''),p.parent_id`+from+where+" ORDER BY p.email LIMIT CAST(? AS BIGINT) OFFSET CAST(? AS BIGINT)", append(args, limit, offset)...)
+COALESCE(a.manual,0),COALESCE(a.updated_at,p.created_at),p.provider,p.role,COALESCE(NULLIF(p.transport,''),s.transport,''),p.parent_id,p.parent_state`+from+where+" ORDER BY p.email LIMIT CAST(? AS BIGINT) OFFSET CAST(? AS BIGINT)", append(args, limit, offset)...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -331,7 +340,7 @@ COALESCE(a.manual,0),COALESCE(a.updated_at,p.created_at),p.provider,p.role,COALE
 	items := []Mailbox{}
 	for rows.Next() {
 		var m Mailbox
-		if err = rows.Scan(&m.Email, &m.SourceID, &m.SourceName, &m.SourceEnabled, &m.State, &m.Origin, &m.Total, &m.RiskHits, &m.LastAt, &m.LastTag, &m.Manual, &m.UpdatedAt, &m.Provider, &m.Role, &m.Transport, &m.ParentID); err != nil {
+		if err = rows.Scan(&m.Email, &m.SourceID, &m.SourceName, &m.SourceEnabled, &m.State, &m.ManualState, &m.Origin, &m.Total, &m.RiskHits, &m.LastAt, &m.LastTag, &m.Manual, &m.UpdatedAt, &m.Provider, &m.Role, &m.Transport, &m.ParentID, &m.ParentState); err != nil {
 			return nil, 0, err
 		}
 		items = append(items, m)
@@ -350,11 +359,11 @@ func (d *DB) MailboxAvailable(email string) error {
 		return ErrMailboxUnavailable
 	}
 	var state string
-	err := d.ex.QueryRow(`SELECT state FROM mail_alias_state WHERE alias_hme=?`, strings.ToLower(strings.TrimSpace(email))).Scan(&state)
+	err := d.ex.QueryRow(`SELECT `+mailboxStateSQL+` FROM mail_pool p LEFT JOIN mail_alias_state a ON a.alias_hme=p.email WHERE p.email=?`, strings.ToLower(strings.TrimSpace(email))).Scan(&state)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	if state == "blocked" || state == "paused" {
+	if state != "" && state != "active" {
 		return ErrMailboxUnavailable
 	}
 	return nil

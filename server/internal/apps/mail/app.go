@@ -1,9 +1,7 @@
-// Package mail is the "IC 邮箱" app of reg-factory.
-//
-// It owns its own SQLite file next to regd's data, indexes a mailbox over IMAP
-// (IDLE first, heartbeat as fallback) and exposes a small HTTP surface under
-// /api/apps/mail. The public page only ever returns a one-time code; the admin
-// routes expose counts, sources and the message index.
+// Package mail owns SG's local mail sources, address pool and message index.
+// Production uses local PostgreSQL. IMAP, POP3 and Graph feed the same store;
+// temporary HTTP providers use the execution adapter in common/temp_email.py.
+// Public code lookup and authenticated management have separate routes.
 package mail
 
 import (
@@ -12,7 +10,6 @@ import (
 	"errors"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -56,38 +53,32 @@ type App struct {
 	dial    func(context.Context, Source) (mailClient, error)
 }
 
-// NewConfigFromEnv resolves configuration; dbPath defaults to <dataDir>/mail.db.
-func NewConfigFromEnv(dataDir string) Config {
+// NewConfigFromEnv resolves the canonical MAIL_* deployment configuration.
+// Old keys are renamed once by deploy/upgrade-mail-config.py before cutover.
+func NewConfigFromEnv() Config {
 	get := func(key, def string) string {
 		if v := strings.TrimSpace(os.Getenv(key)); v != "" {
 			return v
 		}
 		return def
 	}
-	// MAIL_DB 可以是 SQLite 路径，也可以是 PG DSN。
-	// 旧名 ICMAIL_DB 保留兼容 —— 历史上这个模块叫 icmail（只支持 iCloud），
-	// 现在支持任意邮箱服务商，名字统一成 mail。
-	dbPath := get("MAIL_DB", get("ICMAIL_DB", ""))
-	if dbPath == "" {
-		dbPath = filepath.Join(dataDir, "mail.db")
-	}
 	return Config{
-		DBPath:             dbPath,
-		AdminKey:           firstNonEmpty(get("MAIL_ADMIN_KEY", ""), get("ICMAIL_ADMIN_KEY", ""), get("HME_ADMIN_KEY", "")),
-		TurnstileSiteKey:   firstNonEmpty(get("MAIL_TURNSTILE_SITE_KEY", ""), get("ICMAIL_TURNSTILE_SITE_KEY", ""), get("TURNSTILE_SITE_KEY", "")),
-		TurnstileSecret:    firstNonEmpty(get("MAIL_TURNSTILE_SECRET_KEY", ""), get("ICMAIL_TURNSTILE_SECRET_KEY", ""), get("TURNSTILE_SECRET_KEY", "")),
-		ExpectedHost:       firstNonEmpty(get("MAIL_TURNSTILE_EXPECTED_HOSTNAME", ""), get("ICMAIL_TURNSTILE_EXPECTED_HOSTNAME", ""), get("TURNSTILE_EXPECTED_HOSTNAME", "")),
-		TurnstileVerifyURL: firstNonEmpty(get("MAIL_TURNSTILE_VERIFY_URL", ""), get("ICMAIL_TURNSTILE_VERIFY_URL", "")),
-		RetentionDays:      atoiDefault(firstNonEmpty(get("MAIL_RETENTION_DAYS", ""), get("ICMAIL_RETENTION_DAYS", "90")), 90),
+		DBPath:             get("MAIL_DB", ""),
+		AdminKey:           get("MAIL_ADMIN_KEY", ""),
+		TurnstileSiteKey:   get("MAIL_TURNSTILE_SITE_KEY", ""),
+		TurnstileSecret:    get("MAIL_TURNSTILE_SECRET_KEY", ""),
+		ExpectedHost:       get("MAIL_TURNSTILE_EXPECTED_HOSTNAME", ""),
+		TurnstileVerifyURL: get("MAIL_TURNSTILE_VERIFY_URL", ""),
+		RetentionDays:      atoiDefault(get("MAIL_RETENTION_DAYS", "90"), 90),
 		BootstrapLimit:     300,
 		FetchChunk:         40,
-		IMAPHost:           get("ICMAIL_IMAP_HOST", get("MAIL_IMAP_HOST", "")),
-		IMAPPort:           atoiDefault(get("ICMAIL_IMAP_PORT", get("MAIL_IMAP_PORT", "993")), 993),
-		IMAPUser:           get("ICMAIL_IMAP_USER", get("MAIL_IMAP_USER", "")),
-		IMAPPass:           get("ICMAIL_IMAP_PASSWORD", get("MAIL_IMAP_PASSWORD", "")),
-		IMAPFolder:         get("ICMAIL_IMAP_FOLDER", "INBOX"),
-		IMAPInterval:       atoiDefault(get("ICMAIL_IMAP_INTERVAL", "10"), 10),
-		IMAPHeartbeat:      atoiDefault(get("ICMAIL_IMAP_HEARTBEAT", "60"), 60),
+		IMAPHost:           get("MAIL_IMAP_HOST", ""),
+		IMAPPort:           atoiDefault(get("MAIL_IMAP_PORT", "993"), 993),
+		IMAPUser:           get("MAIL_IMAP_USER", ""),
+		IMAPPass:           get("MAIL_IMAP_PASSWORD", ""),
+		IMAPFolder:         get("MAIL_IMAP_FOLDER", "INBOX"),
+		IMAPInterval:       atoiDefault(get("MAIL_IMAP_INTERVAL", "10"), 10),
+		IMAPHeartbeat:      atoiDefault(get("MAIL_IMAP_HEARTBEAT", "60"), 60),
 	}
 }
 
@@ -98,7 +89,10 @@ func New(cfg Config) (*App, error) {
 		return nil, err
 	}
 	app := &App{Cfg: cfg, DB: db, changed: make(chan struct{}, 1), runners: map[int64]*managedRunner{}}
-	app.seedSource()
+	if err := app.seedSource(); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return app, nil
 }
 
@@ -143,8 +137,12 @@ func (a *App) Stop() {
 func (a *App) Register(rg *gin.RouterGroup) {
 	rg.GET("/pool", a.requireAdmin(), a.handlePool)
 	rg.GET("/workflow/mailbox", a.requireAdmin(), a.handleWorkflowMailbox)
+	rg.GET("/workflow/candidates", a.requireAdmin(), a.handleWorkflowCandidates)
 	rg.POST("/pool/import", a.requireAdmin(), a.handlePoolImport)
 	rg.POST("/pool/mailbox", a.requireAdmin(), a.handleMailbox)
+	rg.GET("/pool/availability", a.requireAdmin(), a.handleAvailability)
+	rg.POST("/pool/platform-state", a.requireAdmin(), a.handlePlatformState)
+	rg.POST("/pool/parent-state", a.requireAdmin(), a.handleParentState)
 	rg.GET("/sync", a.requireAdmin(), a.handleSyncRuns)
 	rg.GET("/health", a.requireAdmin(), a.handleHealth)
 	rg.GET("/messages", a.requireAdmin(), a.handleMessages)
@@ -152,8 +150,6 @@ func (a *App) Register(rg *gin.RouterGroup) {
 	rg.GET("/sources", a.requireAdmin(), a.handleSources)
 	// 管理端查码：面板/协议注册用，不需要 Turnstile（外层已有登录保护）
 	rg.GET("/code", a.requireAdmin(), a.handleAdminCode)
-	rg.GET("/aliases", a.requireAdmin(), a.handleAliases)
-	rg.POST("/aliases/state", a.requireAdmin(), a.handleAliasState)
 	rg.POST("/sources", a.requireAdmin(), a.handleUpsertSource)
 	rg.POST("/sources/:id/toggle", a.requireAdmin(), a.handleSourceToggle)
 	rg.DELETE("/sources/:id", a.requireAdmin(), a.handleSourceDelete)
@@ -245,51 +241,13 @@ func (a *App) handleCode(c *gin.Context) {
 
 // --- 管理端：别名 / 源 / 同步 / 清理 / 配置 ---------------------------------
 
-func (a *App) handleAliases(c *gin.Context) {
-	list, err := a.DB.ListAliases(c.Request.Context())
-	if err != nil {
-		failJSON(c, http.StatusInternalServerError, "DB_ERROR", err.Error())
-		return
-	}
-	okJSON(c, gin.H{"aliases": list, "count": len(list)})
-}
-
-func (a *App) handleAliasState(c *gin.Context) {
-	var body struct {
-		HME   string `json:"hme"`
-		State string `json:"state"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil || strings.TrimSpace(body.HME) == "" {
-		failJSON(c, http.StatusBadRequest, "BAD_REQUEST", "hme is required")
-		return
-	}
-	state := strings.ToLower(strings.TrimSpace(body.State))
-	switch state {
-	case "active", "paused", "blocked":
-	default:
-		failJSON(c, http.StatusBadRequest, "BAD_REQUEST", "state must be active/paused/blocked")
-		return
-	}
-	if err := a.DB.SetAliasState(c.Request.Context(), strings.ToLower(strings.TrimSpace(body.HME)), state); err != nil {
-		failJSON(c, http.StatusInternalServerError, "DB_ERROR", err.Error())
-		return
-	}
-	okJSON(c, gin.H{"hme": body.HME, "state": state})
-}
-
 func (a *App) handleUpsertSource(c *gin.Context) {
 	var src Source
-	if err := c.ShouldBindJSON(&src); err != nil || strings.TrimSpace(src.Name) == "" || strings.TrimSpace(src.Host) == "" {
-		failJSON(c, http.StatusBadRequest, "BAD_REQUEST", "name and host are required")
+	if err := c.ShouldBindJSON(&src); err != nil {
+		failJSON(c, http.StatusBadRequest, "BAD_REQUEST", "收件来源格式无效")
 		return
 	}
-	if src.Port == 0 {
-		src.Port = 993
-	}
-	if strings.TrimSpace(src.Folder) == "" {
-		src.Folder = "INBOX"
-	}
-	if src.ID < 0 || src.Port < 1 || src.Port > 65535 || strings.ContainsAny(src.Host, " /\\\r\n") || src.IntervalSeconds < 0 || src.HeartbeatSeconds < 0 {
+	if src.ID < 0 || src.IntervalSeconds < 0 || src.HeartbeatSeconds < 0 {
 		failJSON(c, http.StatusBadRequest, "BAD_SOURCE", "请检查服务器、端口和同步间隔")
 		return
 	}
@@ -302,6 +260,7 @@ func (a *App) handleUpsertSource(c *gin.Context) {
 	okJSON(c, gin.H{"source": gin.H{
 		"id": saved.ID, "name": saved.Name, "host": saved.Host, "port": saved.Port,
 		"username": saved.Username, "folder": saved.Folder, "enabled": saved.Enabled,
+		"transport": saved.Transport, "credentialMode": saved.CredentialMode,
 	}})
 }
 
@@ -482,6 +441,8 @@ func (a *App) handleSources(c *gin.Context) {
 			"lastError": nullStr(s.LastError),
 			"lastUID":   s.LastUID, "lastOKAt": s.LastOKAt, "intervalSeconds": s.IntervalSeconds, "heartbeatSeconds": s.HeartbeatSeconds,
 			"passwordSet": s.Password != "", "runtime": a.sourceRuntime(s),
+			"transport": s.Transport, "credentialMode": s.CredentialMode,
+			"clientID": s.ClientID, "refreshTokenSet": s.RefreshToken != "",
 		})
 	}
 	okJSON(c, gin.H{"sources": out})
@@ -526,14 +487,18 @@ func atoiDefault(v string, def int) int {
 
 // seedSource makes the configured mailbox the first source. It is idempotent, so
 // a panel-managed source always wins over the env seed.
-func (a *App) seedSource() {
-	if a.Cfg.IMAPHost == "" || a.Cfg.IMAPUser == "" {
-		return
+func (a *App) seedSource() error {
+	if a.Cfg.IMAPHost == "" && a.Cfg.IMAPUser == "" {
+		return nil
 	}
-	if existing, err := a.DB.ListSources(false); err == nil && len(existing) > 0 {
-		return
+	existing, err := a.DB.ListSources(false)
+	if err != nil {
+		return err
 	}
-	_, _ = a.DB.UpsertSource(Source{
+	if len(existing) > 0 {
+		return nil
+	}
+	_, err = a.DB.UpsertSource(Source{
 		Name:             "default",
 		Host:             a.Cfg.IMAPHost,
 		Port:             a.Cfg.IMAPPort,
@@ -545,14 +510,5 @@ func (a *App) seedSource() {
 		IntervalSeconds:  a.Cfg.IMAPInterval,
 		HeartbeatSeconds: a.Cfg.IMAPHeartbeat,
 	})
-}
-
-// firstNonEmpty 返回第一个非空字符串，用于 env 别名回退。
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if strings.TrimSpace(v) != "" {
-			return v
-		}
-	}
-	return ""
+	return err
 }

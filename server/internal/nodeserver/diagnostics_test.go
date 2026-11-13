@@ -5,12 +5,13 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"aishop-next/execution-go/nodeassets"
 	"github.com/gin-gonic/gin"
 )
 
 func TestUnconfiguredNodeExposesJSONDiagnostics(t *testing.T) {
 	r := gin.New()
-	New(Config{}, nil, nil).Register(r)
+	New(Config{Version: "test-module-version"}, nil, nil).Register(r)
 	for _, path := range []string{"/ready", "/node/capabilities"} {
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
@@ -20,6 +21,13 @@ func TestUnconfiguredNodeExposesJSONDiagnostics(t *testing.T) {
 		}
 		if path == "/ready" && (body["ready"] != false || body["execution_ready"] != false) {
 			t.Fatalf("unconfigured node claimed readiness: %v", body)
+		}
+		if path == "/ready" {
+			runtime := body["runtime"].(map[string]any)
+			sdk := runtime["node_sdk"].(map[string]any)
+			if runtime["module_version"] != "test-module-version" || sdk["version"] != nodeassets.SDKVersion {
+				t.Fatalf("runtime versions do not describe this node: %v", runtime)
+			}
 		}
 	}
 }

@@ -32,7 +32,6 @@ func TestWorkflowPythonClientWithRealMailboxAPI(t *testing.T) {
 		c.Next()
 	})
 	a.Register(router.Group("/api/apps/mail"))
-	a.Register(router.Group("/api/apps/icmail")) // Same compatibility route as the real server.
 	sequence := 0
 	router.POST("/fixture/send", func(c *gin.Context) {
 		sequence++
@@ -57,10 +56,10 @@ func TestWorkflowPythonClientWithRealMailboxAPI(t *testing.T) {
 	data := t.TempDir()
 	cmd := exec.Command(python, "-c", `
 import asyncio, os, requests
-from common import icmail as mail, emails
+from common import mail_pool as mail, emails
 from tools.import_plus_codex import MailCodeProvider
 emails.EMAILS_FILE = os.path.join(os.environ['REG_FACTORY_DATA_DIR'], 'emails.txt')
-url='http://' + os.environ['REG_FACTORY_ICMAIL_ADDR']
+url='http://' + os.environ['REG_FACTORY_MAIL_ADDR']
 def action(path):
     with requests.Session() as s:
         s.trust_env=False
@@ -95,7 +94,7 @@ print('MAILBOX_JOURNEY_OK')
 `)
 	cmd.Dir = root
 	cmd.Env = append(os.Environ(), "PYTHONPATH="+root, "REG_FACTORY_DATA_DIR="+data,
-		"REG_FACTORY_ICMAIL_ADDR="+strings.TrimPrefix(host.URL, "http://"), "REG_FACTORY_ICMAIL_KEY=fixture-key", "PYTHONIOENCODING=utf-8")
+		"REG_FACTORY_MAIL_ADDR="+strings.TrimPrefix(host.URL, "http://"), "REG_FACTORY_MAIL_KEY=fixture-key", "PYTHONIOENCODING=utf-8")
 	output, err := cmd.CombinedOutput()
 	if err != nil || !strings.Contains(string(output), "MAILBOX_JOURNEY_OK") {
 		t.Fatalf("mailbox journey: %v\n%s", err, output)

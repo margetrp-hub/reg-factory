@@ -142,7 +142,7 @@ func (s *Store) CommitInventoryEvent(eventID, requestSHA, response, nodeID, team
 		&old.TeamAssetUUID, &old.NodeID, &old.AccountRef, &old.Revision, &old.State, &old.ResourceVersion)
 	if err == nil {
 		if old.NodeID != nodeID || old.AccountRef != accountRef || revision != old.Revision+1 ||
-			state == "prepared" || old.State == "retired" {
+			state == "prepared" || old.State == "retired" || state == "released" && old.State != "prepared" {
 			return "", false, fmt.Errorf("inventory binding conflict")
 		}
 	} else if err != sql.ErrNoRows {
@@ -152,15 +152,23 @@ func (s *Store) CommitInventoryEvent(eventID, requestSHA, response, nodeID, team
 	}
 
 	now := time.Now().Format(time.RFC3339)
-	// claimed is the existing node-side custody bit. join_status is a stable
-	// projection for the reference endpoint; neither is cleared by retries.
-	if _, err = s.ex.ExecTxArgs(tx, `UPDATE accounts SET claimed=1,claimed_at=?,join_status='joined',version=version+1,updated_at=? WHERE ref=? AND version=?`,
-		now, now, accountRef, expectedVersion); err != nil {
+	// Release only the unfinished handoff's custody. Membership and credentials
+	// are separate facts; never leave a workspace or delete an existing product.
+	if state == "released" {
+		_, err = s.ex.ExecTxArgs(tx, `UPDATE accounts SET claimed=0,claimed_at='',version=version+1,updated_at=? WHERE ref=? AND version=?`, now, accountRef, expectedVersion)
+	} else {
+		_, err = s.ex.ExecTxArgs(tx, `UPDATE accounts SET claimed=1,claimed_at=?,join_status='joined',version=version+1,updated_at=? WHERE ref=? AND version=?`, now, now, accountRef, expectedVersion)
+	}
+	if err != nil {
 		return "", false, err
 	}
 	if state == "prepared" {
 		_, err = s.ex.ExecTxArgs(tx, `INSERT INTO inventory_relay_bindings(team_asset_uuid,node_id,account_ref,revision,state,resource_version,updated_at)
             VALUES(?,?,?,?,?,?,?)`, teamAssetUUID, nodeID, accountRef, revision, state, expectedVersion+1, now)
+	} else if state == "released" {
+		// Historical events keep their exact signed receipts. Removing only
+		// this unused binding permits a future authorized handoff.
+		_, err = s.ex.ExecTxArgs(tx, `DELETE FROM inventory_relay_bindings WHERE team_asset_uuid=?`, teamAssetUUID)
 	} else {
 		_, err = s.ex.ExecTxArgs(tx, `UPDATE inventory_relay_bindings SET revision=?,state=?,resource_version=?,updated_at=? WHERE team_asset_uuid=?`,
 			revision, state, expectedVersion+1, now, teamAssetUUID)

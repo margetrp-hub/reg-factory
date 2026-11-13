@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """
+
 schema/scripts.py — 控制面的任务定义：把每个入口脚本的命令行参数、以及 .env 配置项
 结构化成 schema，前端据此自动生成表单。新增脚本/配置项只改这里。
 
@@ -11,6 +12,8 @@ schema/scripts.py — 控制面的任务定义：把每个入口脚本的命令�
   multi  -> 多选(nargs="+"，选中的值空格分隔追加在 --flag 后)
 positional=True 表示位置参数(不带 --，直接拼值)。
 """
+
+from schema.mail_settings import MAIL_PROVIDERS, CHATGPT_MAIL_PROVIDERS
 
 # Complete ISO 3166-1 alpha-2 list. The registration worker still verifies the
 # actual Cloudflare exit country before creating a browser profile.
@@ -265,8 +268,8 @@ SCRIPTS = [
              "choices": CHATGPT_COUNTRY_CHOICES, "labels": CHATGPT_COUNTRY_LABELS,
              "countryNames": True,
              "default": "auto", "help": "按出口国家筛选网络并校验 Cloudflare loc；找不到匹配出口则停止"},
-            {"flag": "--email-provider", "type": "choice", "choices": ["", "pool", "icmail", "icloud", "remail"],
-             "labels": {"": "按节点配置", "pool": "Outlook 邮箱池", "icmail": "内置邮箱池", "icloud": "iCloud API 接码", "remail": "Remail 邮箱"},
+            {"flag": "--email-provider", "type": "choice", "choices": ["", *CHATGPT_MAIL_PROVIDERS],
+             "labels": {"": "按节点配置", **CHATGPT_MAIL_PROVIDERS},
              "default": "", "help": "邮箱来源；留空使用 CHATGPT_EMAIL_PROVIDER 配置"},
             {"flag": "--codex", "type": "bool", "default": False,
              "help": "注册成功后直接导入 SUB2API；需配置 SUB2API_*，OAuth 期间可能需要手机验证"},
@@ -334,8 +337,8 @@ SCRIPTS = [
             {"flag": "--emails", "type": "str", "default": "",
              "help": "批量导入文件路径；支持 email----password、JSON 和现有邮箱记录格式"},
             {"flag": "--provider", "type": "choice",
-             "choices": ["", "google", "yyds", "gptmail", "cfmail", "moemail", "icmail", "custom"], "default": "",
-             "labels": {"": "Outlook 资产池", "icmail": "内置邮箱池", "yyds": "YYDS 临时邮箱", "gptmail": "GPTMail 临时邮箱", "cfmail": "CFMail 临时邮箱", "moemail": "MoeMail 临时邮箱", "custom": "自定义临时邮箱"},
+             "choices": ["", "google", *MAIL_PROVIDERS], "default": "",
+             "labels": {"": "Outlook 资产池", "google": "Google OAuth", **MAIL_PROVIDERS},
              "help": "邮箱来源；选择临时邮箱后忽略 Outlook/最新 RT"},
             {"flag": "--protocol", "type": "choice", "choices": ["browser", "http"],
              "labels": {"browser": "Chromium 浏览器协议", "http": "ClaudeX HTTP 协议"},
@@ -384,10 +387,8 @@ SCRIPTS = [
             {"flag": "--email-provider", "type": "choice", "choices": ["pool", "temp", "custom"],
              "default": "pool", "help": "邮箱来源：Outlook 资产池、TEMP_EMAIL_PROVIDER 或自建 CUSTOM_MAIL_* API"},
             {"flag": "--temp-provider", "type": "choice",
-             "choices": ["", "yyds", "remail", "gptmail", "moemail", "cfmail", "icloud", "icmail", "custom"],
-             "labels": {"": "按 .env 配置", "yyds": "YYDS 临时邮箱", "remail": "Remail 临时邮箱",
-                        "gptmail": "GPTMail 临时邮箱", "moemail": "MoeMail 临时邮箱", "icmail": "内置邮箱池",
-                        "cfmail": "CFMail 临时邮箱", "icloud": "iCloud 临时邮箱", "custom": "自定义临时邮箱"},
+             "choices": ["", *MAIL_PROVIDERS],
+             "labels": {"": "按节点配置", **MAIL_PROVIDERS},
              "default": "",
              "help": "临时邮箱 provider 覆盖值，如 remail、yyds、gptmail"},
             {"flag": "--account-password", "type": "str", "default": "", "help": "Kiro 账号密码(留空随机生成)"},
@@ -544,9 +545,12 @@ TASK_GROUPS = [
     {"slug": "other", "title": "其他能力", "desc": "完整展示尚未分类的已注册任务。"},
 ]
 PLATFORMS = [
-    {"slug": "claude", "name": "Claude"}, {"slug": "chatgpt", "name": "ChatGPT"},
-    {"slug": "grok", "name": "Grok"}, {"slug": "outlook", "name": "Outlook"},
-    {"slug": "kiro", "name": "Kiro"}, {"slug": "github", "name": "GitHub"},
+    {"slug": "claude", "name": "Claude", "summary": "邮箱链接或 Google 授权注册，保存 Claude 会话；浏览器与协议模式分别配置。"},
+    {"slug": "chatgpt", "name": "ChatGPT", "summary": "注册、登录授权与 Codex 凭据管理；AT 检查、RT 刷新和登录重新授权分别执行。"},
+    {"slug": "grok", "name": "Grok", "summary": "浏览器或协议注册，邮箱验证码验证，保存并管理 Grok SSO。"},
+    {"slug": "outlook", "name": "Outlook", "summary": "邮箱注册、Microsoft Graph 授权与账号恢复；邮箱资料可作为其他平台的收件来源。"},
+    {"slug": "kiro", "name": "Kiro", "summary": "Builder ID 注册、邮箱验证与授权资料保存；使用账号邮箱、临时邮箱或内置邮箱池。"},
+    {"slug": "github", "name": "GitHub", "summary": "使用现有邮箱注册、验证并保存 GitHub 账号；沿本平台任务和账号记录查看结果。"},
 ]
 _TASK_GROUP_BY_ID = {
     "run_full_flow": "pipeline", "register_three_platforms": "pipeline",
@@ -802,7 +806,7 @@ ENV_SCHEMA = [
          "help": "Outlook Clash 强制排除的节点国家关键词；默认排除香港"},
         {"key": "OUTLOOK_GRAPH_RECOVERY_EMAIL", "type": "bool",
          "default": "true", "help": "启用 Graph proofs/Add 辅助邮箱自动绑定和接码；关闭后无法保证 RT 可提取"},
-        {"key": "OUTLOOK_GRAPH_RECOVERY_PROVIDER", "type": "choice", "choices": ["yyds", "custom", "outlook"],
+        {"key": "OUTLOOK_GRAPH_RECOVERY_PROVIDER", "type": "choice", "choices": [*MAIL_PROVIDERS, "outlook"], "labels": {**MAIL_PROVIDERS, "outlook": "已有 Outlook 辅助邮箱"},
          "default": "yyds", "help": "Graph 辅助邮箱提供方；outlook 使用下方用户自有邮箱并通过 Graph API 收码"},
         {"key": "OUTLOOK_GRAPH_RECOVERY_OUTLOOK_MAILBOX", "secret": True,
          "help": "provider=outlook 时必填：email@outlook.com----password----refresh_token----client_id。保存前可点本组验证按钮检查 Graph API。"},
@@ -810,7 +814,7 @@ ENV_SCHEMA = [
         {"key": "OUTLOOK_GRAPH_RECOVERY_POLL_INTERVAL", "default": "5", "help": "Graph 辅助邮箱轮询间隔秒数"},
     ]},
     {"group": "ChatGPT 邮箱", "items": [
-        {"key": "CHATGPT_EMAIL_PROVIDER", "type": "choice", "choices": ["pool", "icmail", "icloud", "remail"],
+        {"key": "CHATGPT_EMAIL_PROVIDER", "type": "choice", "choices": list(CHATGPT_MAIL_PROVIDERS), "labels": CHATGPT_MAIL_PROVIDERS,
          "default": "pool", "help": "注册默认邮箱来源；icmail 使用内置地址池。已有账号授权优先使用保存的邮箱来源，无来源及邮箱专用凭据时沿用此项的内置池选择。邮箱登录在邮箱池→收件来源维护。"},
         {"key": "CHATGPT_ENABLE_2FA", "type": "choice", "choices": ["true", "false"],
          "default": "true", "help": "注册完成后重认证并启用验证器 TOTP，同时保存密钥"},
@@ -829,8 +833,8 @@ ENV_SCHEMA = [
         {"key": "CLAUDE_USE_TEMP_EMAIL", "type": "choice", "choices": ["false", "true"], "default": "false",
          "help": "Claude 命令行未指定邮箱时默认使用下方临时邮箱；任务表单选择 provider 时无需打开"},
         {"key": "TEMP_EMAIL_PROVIDER", "type": "choice",
-         "choices": ["yyds", "gptmail", "moemail", "cfmail", "icloud", "icmail", "remail", "custom"], "default": "gptmail",
-         "help": "Claude/Grok 默认临时邮箱 provider(需配好对应 key)，任务表单也可临时指定。"},
+         "choices": list(MAIL_PROVIDERS), "labels": MAIL_PROVIDERS, "default": "gptmail",
+         "help": "API 邮箱与内置邮箱池共用来源目录；各平台任务按自己的模式选择，取信时始终沿用申请邮箱时的来源。"},
         {"key": "YYDS_API_KEY", "secret": True, "help": "YYDS Mail key(profile 页,AC- 开头)"},
         {"key": "YYDS_BASE_URL", "default": "https://maliapi.215.im", "help": "YYDS Mail API 根地址；可粘贴 vip.215.im 或完整 /v1/accounts 地址，程序会自动纠正"},
         {"key": "GPTMAIL_API_KEY", "secret": True, "help": "GPTMail key(mail.chatgpt.org.uk)"},
@@ -1119,6 +1123,13 @@ for _group in ENV_SCHEMA:
 # Go owns process settings; the worker schema remains the sole definition for
 # worker choices. Missing values are displayed, never silently written as defaults.
 ENV_SCHEMA.extend([
+    {"group": "邮箱 · 内置邮箱池", "area": "mail", "items": [
+        {"key": "MAIL_ADMIN_KEY", "label": "额外管理密钥", "secret": True, "apply": "restart", "help": "可选；正常使用面板登录。独立调用管理接口时使用额外密钥。"},
+        {"key": "MAIL_RETENTION_DAYS", "label": "邮件保留天数", "type": "int", "default": 90, "apply": "restart", "help": "所有收件来源共用保留规则，每小时清理过期正文；不删除地址、凭据和手动状态。"},
+        {"key": "MAIL_TURNSTILE_SITE_KEY", "label": "公开取码站点密钥", "apply": "restart", "help": "公开取码页使用的 Turnstile Site Key。"},
+        {"key": "MAIL_TURNSTILE_SECRET_KEY", "label": "公开取码验证密钥", "secret": True, "apply": "restart", "help": "公开取码请求的 Turnstile Secret Key。"},
+        {"key": "MAIL_TURNSTILE_EXPECTED_HOSTNAME", "label": "公开取码域名", "apply": "restart", "help": "核对验证码来源的域名，不包含协议与路径。"},
+    ]},
     {"group": "周期巡检", "items": [
         {"key": "REG_FACTORY_LIVENESS_ENABLED", "label": "启用周期巡检", "type": "choice", "choices": ["0", "1"], "default": "0", "apply": "live",
          "help": "默认关闭。保存后15秒内更新排期；开启后等待一个完整周期，不立即首扫。关闭不影响手动检查和凭据修复后的AT核验。"},
@@ -1163,7 +1174,7 @@ _CONFIG_AREAS = {
     "网络出口": "proxy", "生产与修复出口": "proxy", "指纹浏览器": "browser",
     "短信接码": "sms", "Codex add-phone 接码调参": "sms",
     "打码平台(可选)": "captcha", "视觉模型与投票(可选)": "captcha",
-    "Outlook 自注册": "mail", "ChatGPT 邮箱": "mail", "临时邮箱(Claude/Grok 注册取码)": "mail",
+    "Outlook 自注册": "mail", "ChatGPT 邮箱": "mail", "临时邮箱(Claude/Grok 注册取码)": "mail", "邮箱 · 内置邮箱池": "mail",
     "节点身份与密钥": "node", "控制面运行": "runtime", "周期巡检": "runtime",
 }
 for _group in ENV_SCHEMA:
@@ -1296,10 +1307,10 @@ CONFIG_MODES = {
     },
     "mail": {
         "selectors": ["CHATGPT_EMAIL_PROVIDER", "TEMP_EMAIL_PROVIDER", "OUTLOOK_GRAPH_RECOVERY_PROVIDER"],
-        "common": ["邮箱 · 来源选择", "邮箱 · 收码与等待", "邮箱 · Outlook 与辅助邮箱", "邮箱 · IC 邮箱池"],
+        "common": ["邮箱 · 来源选择", "邮箱 · 收码与等待", "邮箱 · Outlook 与辅助邮箱", "邮箱 · 内置邮箱池"],
         "choices": {
             "pool": {"label": "Outlook 邮箱池", "groups": []},
-            "icmail": {"label": "内置邮箱池", "groups": ["邮箱 · IC 邮箱池"]},
+            "icmail": {"label": "内置邮箱池", "groups": ["邮箱 · 内置邮箱池"]},
             "outlook": {"label": "Outlook 邮箱池", "groups": []},
             "icloud": {"label": "iCloud", "groups": ["邮箱 · iCloud"]},
             "yyds": {"label": "YYDS", "groups": ["邮箱 · YYDS"]},

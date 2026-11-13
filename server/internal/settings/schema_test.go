@@ -45,9 +45,9 @@ func TestConfigMergePreservesMissingConfiguredAndUnrecognizedFields(t *testing.T
 }
 
 func TestUnknownProviderSettingsRemainInMaterials(t *testing.T) {
-	entries := []Entry{{Key: "ICMAIL_CUSTOM_HOST", Value: "fixture", Line: 1}, {Key: "REG_FACTORY_PROXY_URL", Value: "fixture", Line: 2}, {Key: "SMS_NEW_TOKEN", Value: "fixture", Line: 3}}
+	entries := []Entry{{Key: "MAIL_CUSTOM_HOST", Value: "fixture", Line: 1}, {Key: "REG_FACTORY_PROXY_URL", Value: "fixture", Line: 2}, {Key: "SMS_NEW_TOKEN", Value: "fixture", Line: 3}}
 	groups := MergeConfig(nil, entries, func(string) string { return "other" })
-	for group, area := range map[string]string{"邮箱 · IC 邮箱池": "mail", "网络 · 住宅代理": "proxy", "短信 · 通用与重试": "sms"} {
+	for group, area := range map[string]string{"邮箱 · 内置邮箱池": "mail", "网络 · 住宅代理": "proxy", "短信 · 通用与重试": "sms"} {
 		if len(groups[group]) != 1 || groups[group][0].Area != area {
 			t.Fatal("material setting disappeared", group)
 		}
@@ -58,9 +58,9 @@ func TestUnknownProviderSettingsRemainInMaterials(t *testing.T) {
 }
 
 func TestMailboxSeedDoesNotClaimToChangeRunningSource(t *testing.T) {
-	for _, key := range []string{"ICMAIL_IMAP_USER", "MAIL_IMAP_USER"} {
+	for _, key := range []string{"MAIL_IMAP_USER", "MAIL_IMAP_PASSWORD"} {
 		groups := MergeConfig(nil, []Entry{{Key: key, Value: "fixture@example.test", Line: 1}}, func(string) string { return "mail" })
-		entry := groups["邮箱 · IC 邮箱池"][0]
+		entry := groups["邮箱 · 内置邮箱池"][0]
 		if entry.Apply != "seed" || entry.Help == "" || entry.Area != "mail" {
 			t.Fatal("IMAP seed must point to current source management", entry.Apply)
 		}

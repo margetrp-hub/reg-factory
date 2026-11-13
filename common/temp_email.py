@@ -5,13 +5,15 @@ common/temp_email.py — 临时邮箱统一接口（纯 HTTP API 取验证码）
 参考 grokcli-2api（HM2899/grokcli-2api）：用临时邮箱 HTTP API 直接拉验证码，
 免去 Outlook 浏览器登录 + 收件箱轮询的重开销，取码从 ~80-120s 降到 ~10-30s。
 
-支持 7 个 provider：
+支持内置邮箱池与 7 个 API provider（目录见 schema/mail_settings.py）：
   - moemail : beilunyang/moemail（自部署）           X-API-Key
   - yyds    : YYDS Mail (vip.215.im / maliapi.215.im) X-API-Key(AC-...) / Bearer token
   - gptmail : mail.chatgpt.org.uk（含公共测试 key）   X-API-Key(gpt-test)
   - cfmail  : dreamhunter2333/cloudflare_temp_email   x-admin-auth / Bearer jwt
   - icloud  : mail.no-replyca.xyz（iCloud / iCloud code） URL query apikey
   - remail   : remail.aishop6.com（Remail 开放 API，Bearer rk-...）
+  - custom   : 自定义 HTTP API
+  - icmail   : 本节点内置邮箱池（非 iCloud API）
 
 统一接口：
   create_mailbox(provider=...) -> {"id","email","token","provider","raw"}
@@ -37,49 +39,26 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
-try:
-    from config import (
-        TEMP_EMAIL_PROVIDER,
-        ICLOUD_MAIL_API_BASE, ICLOUD_MAIL_API_KEY, ICLOUD_MAIL_TYPE, ICLOUD_MAIL_SERVICE,
-        MOEMAIL_BASE_URL, MOEMAIL_API_KEY, MOEMAIL_DOMAIN, MOEMAIL_EXPIRY_MS,
-        YYDS_BASE_URL, YYDS_API_KEY,
-        GPTMAIL_BASE_URL, GPTMAIL_API_KEY,
-        REMAIL_BASE_URL, REMAIL_API_KEY, REMAIL_PROJECT_ID, REMAIL_EMAIL_SUFFIX, REMAIL_SUPPLY,
-        CFMAIL_BASE_URL, CFMAIL_ADMIN_PASSWORD, CFMAIL_SITE_PASSWORD,
-        CUSTOM_MAIL_BASE_URL, CUSTOM_MAIL_AUTH_HEADER, CUSTOM_MAIL_API_KEY,
-        CUSTOM_MAIL_AUTH_PREFIX, CUSTOM_MAIL_CREATE_METHOD, CUSTOM_MAIL_CREATE_PATH,
-        CUSTOM_MAIL_CREATE_BODY, CUSTOM_MAIL_EMAIL_PATH, CUSTOM_MAIL_ID_PATH,
-        CUSTOM_MAIL_TOKEN_PATH, CUSTOM_MAIL_FETCH_METHOD, CUSTOM_MAIL_FETCH_PATH,
-        CUSTOM_MAIL_FETCH_AUTH, CUSTOM_MAIL_LIST_PATH, CUSTOM_MAIL_DETAIL_PATH,
-        CUSTOM_MAIL_MSG_ID_PATH, CUSTOM_MAIL_MSG_PATH,
-    )
-except Exception:  # pragma: no cover - config 缺失时的兜底默认
-    TEMP_EMAIL_PROVIDER = "gptmail"
-    ICLOUD_MAIL_API_BASE = "https://mail.no-replyca.xyz"
-    ICLOUD_MAIL_API_KEY = ICLOUD_MAIL_TYPE = ICLOUD_MAIL_SERVICE = ""
-    MOEMAIL_BASE_URL = "https://moemail.example.com"
-    MOEMAIL_API_KEY = MOEMAIL_DOMAIN = ""
-    MOEMAIL_EXPIRY_MS = 3600000
-    YYDS_BASE_URL = "https://maliapi.215.im"
-    YYDS_API_KEY = ""
-    GPTMAIL_BASE_URL = "https://mail.chatgpt.org.uk"
-    GPTMAIL_API_KEY = "gpt-test"
-    REMAIL_BASE_URL = "https://remail.aishop6.com"
-    REMAIL_API_KEY = REMAIL_EMAIL_SUFFIX = REMAIL_SUPPLY = ""
-    REMAIL_PROJECT_ID = 0
-    CFMAIL_BASE_URL = "https://temp-email-api.awsl.uk"
-    CFMAIL_ADMIN_PASSWORD = CFMAIL_SITE_PASSWORD = ""
-    CUSTOM_MAIL_BASE_URL = CUSTOM_MAIL_AUTH_HEADER = CUSTOM_MAIL_API_KEY = ""
-    CUSTOM_MAIL_AUTH_PREFIX = CUSTOM_MAIL_CREATE_PATH = CUSTOM_MAIL_CREATE_BODY = ""
-    CUSTOM_MAIL_CREATE_METHOD = "POST"
-    CUSTOM_MAIL_EMAIL_PATH = "email"
-    CUSTOM_MAIL_ID_PATH = CUSTOM_MAIL_TOKEN_PATH = ""
-    CUSTOM_MAIL_FETCH_METHOD = "GET"
-    CUSTOM_MAIL_FETCH_PATH = CUSTOM_MAIL_LIST_PATH = CUSTOM_MAIL_DETAIL_PATH = ""
-    CUSTOM_MAIL_FETCH_AUTH = "key"
-    CUSTOM_MAIL_MSG_ID_PATH = "id"
-    CUSTOM_MAIL_MSG_PATH = ""
+from schema.mail_settings import MAIL_PROVIDERS
+
+from config import (
+    TEMP_EMAIL_PROVIDER,
+    ICLOUD_MAIL_API_BASE, ICLOUD_MAIL_API_KEY, ICLOUD_MAIL_TYPE, ICLOUD_MAIL_SERVICE,
+    MOEMAIL_BASE_URL, MOEMAIL_API_KEY, MOEMAIL_DOMAIN, MOEMAIL_EXPIRY_MS,
+    YYDS_BASE_URL, YYDS_API_KEY,
+    GPTMAIL_BASE_URL, GPTMAIL_API_KEY,
+    REMAIL_BASE_URL, REMAIL_API_KEY, REMAIL_PROJECT_ID, REMAIL_EMAIL_SUFFIX, REMAIL_SUPPLY,
+    CFMAIL_BASE_URL, CFMAIL_ADMIN_PASSWORD, CFMAIL_SITE_PASSWORD,
+    CUSTOM_MAIL_BASE_URL, CUSTOM_MAIL_AUTH_HEADER, CUSTOM_MAIL_API_KEY,
+    CUSTOM_MAIL_AUTH_PREFIX, CUSTOM_MAIL_CREATE_METHOD, CUSTOM_MAIL_CREATE_PATH,
+    CUSTOM_MAIL_CREATE_BODY, CUSTOM_MAIL_EMAIL_PATH, CUSTOM_MAIL_ID_PATH,
+    CUSTOM_MAIL_TOKEN_PATH, CUSTOM_MAIL_FETCH_METHOD, CUSTOM_MAIL_FETCH_PATH,
+    CUSTOM_MAIL_FETCH_AUTH, CUSTOM_MAIL_LIST_PATH, CUSTOM_MAIL_DETAIL_PATH,
+    CUSTOM_MAIL_MSG_ID_PATH, CUSTOM_MAIL_MSG_PATH,
+)
 
 HTTP_TIMEOUT = 30
 # 临时邮箱端点在国外，走本机代理反而不稳；这里默认直连（trust_env=False 绕 HTTP(S)_PROXY），
@@ -98,6 +77,12 @@ def _session():
     s = requests.Session()
     s.trust_env = False
     s.proxies = {"http": None, "https": None}
+    # Reads can retry transient transport/HTTP failures. Mailbox creation POSTs
+    # are not replayed after a response is lost.
+    retry = Retry(total=2, backoff_factor=0.5, status_forcelist=(429, 500, 502, 503, 504),
+                  allowed_methods={"GET", "HEAD"}, respect_retry_after_header=False)
+    s.mount("https://", HTTPAdapter(max_retries=retry))
+    s.mount("http://", HTTPAdapter(max_retries=retry))
     return s
 
 
@@ -190,8 +175,10 @@ def normalize_provider(provider=None, base_url=""):
     """归一化 provider 名：moemail | yyds | gptmail | cfmail | icloud | custom。
     provider 显式给出优先；否则从 base_url 域名特征推断；再兜底 config 默认。"""
     p = (provider or "").strip().lower()
-    if p in ("moemail", "yyds", "gptmail", "cfmail", "icloud", "icmail", "remail", "custom"):
+    if p in MAIL_PROVIDERS:
         return p
+    if p:
+        raise ValueError(f"未知邮箱来源：{p}")
     b = (base_url or "").lower()
     # base_url 命中自定义 API 根地址 → custom
     if CUSTOM_MAIL_BASE_URL and CUSTOM_MAIL_BASE_URL.lower().rstrip("/") in b:
@@ -208,8 +195,10 @@ def normalize_provider(provider=None, base_url=""):
         return "icloud"
     if "remail.aishop6.com" in b:
         return "remail"
-    dflt = (TEMP_EMAIL_PROVIDER or "gptmail").strip().lower()
-    return dflt if dflt in ("moemail", "yyds", "gptmail", "cfmail", "icloud", "icmail", "remail") else "gptmail"
+    dflt = TEMP_EMAIL_PROVIDER.strip().lower()
+    if dflt not in MAIL_PROVIDERS:
+        raise ValueError("请选择单个邮箱来源；多来源顺序仅用于创建邮箱")
+    return dflt
 
 
 def _norm_base(base_url, default):
@@ -252,22 +241,22 @@ def _moemail_create(name, domain, expiry_ms, api_key, base_url, sess):
     headers = {"X-API-Key": key, "Content-Type": "application/json"}
     r = sess.post(f"{base}/api/emails/generate", json=payload, headers=headers, timeout=HTTP_TIMEOUT)
     if r.status_code >= 400:
-        raise RuntimeError(f"MoeMail create {r.status_code}: {r.text[:200]}")
+        raise RuntimeError(f"MoeMail 创建邮箱失败（HTTP {r.status_code}）")
     data = r.json()
     eid = data.get("id") or data.get("emailId")
     addr = data.get("email") or data.get("address")
     if not eid or not addr:
-        raise RuntimeError(f"MoeMail create 返回异常: {data}")
+        raise RuntimeError("MoeMail 创建结果缺少邮箱地址或标识")
     return {"id": str(eid), "email": str(addr), "token": "", "provider": "moemail", "raw": data}
 
 
-def _moemail_fetch(mailbox_id, api_key, base_url, sess):
+def _moemail_fetch(mailbox_id, email, token, api_key, base_url, sess):
     key = (api_key or MOEMAIL_API_KEY or "").strip()
     base = _norm_base(base_url, MOEMAIL_BASE_URL)
     headers = {"X-API-Key": key}
     r = sess.get(f"{base}/api/emails/{mailbox_id}", headers=headers, timeout=HTTP_TIMEOUT)
     if r.status_code >= 400:
-        return []
+        raise RuntimeError(f"MoeMail 取信失败（HTTP {r.status_code}）")
     msgs = (r.json() or {}).get("messages") or []
     out = []
     for raw in msgs[:20]:
@@ -277,6 +266,8 @@ def _moemail_fetch(mailbox_id, api_key, base_url, sess):
         mid = item.get("id") or item.get("messageId")
         if mid:
             d = sess.get(f"{base}/api/emails/{mailbox_id}/{mid}", headers=headers, timeout=HTTP_TIMEOUT)
+            if d.status_code >= 400:
+                raise RuntimeError(f"MoeMail 邮件正文读取失败（HTTP {d.status_code}）")
             if d.status_code == 200:
                 msg = (d.json() or {}).get("message")
                 if isinstance(msg, dict):
@@ -349,24 +340,24 @@ def _yyds_create(name, domain, expiry_ms, api_key, base_url, sess):
         shared_domain_block = r.status_code == 403 and "shared domain" in body_text.lower()
         if not shared_domain_block or explicit_domain:
             hint = "；YYDS_BASE_URL 应填 https://maliapi.215.im" if r.status_code == 404 else ""
-            raise RuntimeError(f"YYDS create {r.status_code} ({base}/v1/accounts): {body_text}{hint}")
+            raise RuntimeError(f"YYDS 创建邮箱失败（HTTP {r.status_code}）{hint}")
         next_dom = _yyds_pick_domain(key, base, sess, exclude=tried_domains)
         if not next_dom:
             raise RuntimeError(
-                f"YYDS create 403 ({base}/v1/accounts): {body_text}; no alternate shared domain"
+                "YYDS 创建邮箱失败（HTTP 403）：共享域名被拒绝，无其它可用域名"
             )
         dom = next_dom
         payload["domain"] = dom
         print(f"  [temp-email] YYDS shared domain rejected, retrying with {dom}")
     else:
-        raise RuntimeError(f"YYDS create {r.status_code} ({base}/v1/accounts): {(r.text or '')[:200]}")
+        raise RuntimeError(f"YYDS 创建邮箱失败（HTTP {r.status_code}）：候选域名已用尽")
     data = r.json()
     body = data.get("data") if isinstance(data, dict) and "data" in data else data
     eid = body.get("id") or body.get("inboxId") or body.get("accountId")
     addr = body.get("address") or body.get("email")
     token = body.get("token") or body.get("tempToken") or ""
     if not addr:
-        raise RuntimeError(f"YYDS create 返回异常: {data}")
+        raise RuntimeError("YYDS 创建结果缺少邮箱地址")
     return {"id": str(eid or ""), "email": str(addr), "token": str(token), "provider": "yyds", "raw": data}
 
 
@@ -399,11 +390,11 @@ def _yyds_fetch(mailbox_id, email, token, api_key, base_url, sess):
         raise ValueError("YYDS fetch 缺少 mailbox token 或 YYDS_API_KEY")
     if r.status_code >= 400:
         hint = "；请检查 YYDS_BASE_URL，应为 https://maliapi.215.im" if r.status_code == 404 else ""
-        raise RuntimeError(f"YYDS fetch {r.status_code}: {r.text[:160]}{hint}")
+        raise RuntimeError(f"YYDS 取信失败（HTTP {r.status_code}）{hint}")
     try:
         data = r.json() if r.content else {}
     except ValueError as e:
-        raise RuntimeError(f"YYDS fetch 返回非 JSON（请检查 YYDS_BASE_URL={base}）") from e
+        raise RuntimeError("YYDS 取信返回非 JSON，请检查 YYDS_BASE_URL") from None
     body = data.get("data") if isinstance(data, dict) and "data" in data else data
     msgs = body.get("messages") or body.get("items") or [] if isinstance(body, dict) else []
     out = []
@@ -416,6 +407,8 @@ def _yyds_fetch(mailbox_id, email, token, api_key, base_url, sess):
             detail_params = {"address": email} if email and "X-API-Key" in headers else {}
             d = sess.get(f"{base}/v1/messages/{mid}", headers=headers,
                          params=detail_params, timeout=HTTP_TIMEOUT)
+            if d.status_code >= 400:
+                raise RuntimeError(f"YYDS 邮件正文读取失败（HTTP {d.status_code}）")
             if d.status_code == 200 and d.content:
                 dd = d.json()
                 msg = dd.get("data") if isinstance(dd, dict) and "data" in dd else dd
@@ -480,25 +473,25 @@ def _gptmail_create(name, domain, expiry_ms, api_key, base_url, sess):
                 addr = f"{local}@{dom2}"
                 return {"id": str(addr), "email": str(addr), "token": "",
                         "provider": "gptmail", "raw": {"composed": True}}
-        raise RuntimeError(f"GPTMail create {r.status_code}: {r.text[:200]}")
+        raise RuntimeError(f"GPTMail 创建邮箱失败（HTTP {r.status_code}）")
     data = r.json() if r.content else {}
     body = data.get("data") if isinstance(data, dict) and "data" in data else data
     addr = (body.get("email") or body.get("address")) if isinstance(body, dict) else None
     if not addr:
-        raise RuntimeError(f"GPTMail create 返回异常: {data}")
+        raise RuntimeError("GPTMail 创建结果缺少邮箱地址")
     return {"id": str(addr), "email": str(addr), "token": "", "provider": "gptmail", "raw": data}
 
 
 def _gptmail_fetch(mailbox_id, email, token, api_key, base_url, sess):
     addr = (email or mailbox_id or "").strip()
     if "@" not in addr:
-        return []
+        raise ValueError("GPTMail 取信需要完整邮箱地址")
     key = (api_key or GPTMAIL_API_KEY or MOEMAIL_API_KEY or "").strip() or GPTMAIL_PUBLIC_TEST_KEY
     base = _norm_base(base_url, GPTMAIL_BASE_URL)
     headers = {"X-API-Key": key}
     r = sess.get(f"{base}/api/emails", headers=headers, params={"email": addr}, timeout=HTTP_TIMEOUT)
     if r.status_code >= 400:
-        return []
+        raise RuntimeError(f"GPTMail 取信失败（HTTP {r.status_code}）")
     data = r.json() if r.content else {}
     body = data.get("data") if isinstance(data, dict) and "data" in data else data
     msgs = (body.get("emails") or body.get("messages") or []) if isinstance(body, dict) else []
@@ -510,6 +503,8 @@ def _gptmail_fetch(mailbox_id, email, token, api_key, base_url, sess):
         mid = item.get("id") or item.get("messageId")
         if mid:
             d = sess.get(f"{base}/api/email/{mid}", headers=headers, timeout=HTTP_TIMEOUT)
+            if d.status_code >= 400:
+                raise RuntimeError(f"GPTMail 邮件正文读取失败（HTTP {d.status_code}）")
             if d.status_code == 200 and d.content:
                 dd = d.json()
                 msg = dd.get("data") if isinstance(dd, dict) and "data" in dd else dd
@@ -524,16 +519,8 @@ def _gptmail_fetch(mailbox_id, email, token, api_key, base_url, sess):
 
 # ==================================================================== iCloud Mail API
 def _icloud_error(response, action):
-    """Format provider errors without echoing the apikey embedded in the URL."""
-    message = ""
-    try:
-        body = response.json() if response.content else {}
-        if isinstance(body, dict):
-            message = str(body.get("message") or body.get("error") or "")
-    except Exception:
-        pass
-    message = message[:160] or (response.text or "")[:160]
-    return RuntimeError(f"iCloud Mail {action} {response.status_code}: {message}")
+    """Provider bodies can echo an API key; log the action and HTTP result only."""
+    return RuntimeError(f"iCloud Mail {action}失败（HTTP {response.status_code}）")
 
 
 def _icloud_base_and_query(base_url):
@@ -668,7 +655,7 @@ def _icloud_fetch(mailbox_id, email, token, api_key, base_url, sess):
     key = (api_key or pasted_query.get("apikey") or ICLOUD_MAIL_API_KEY or "").strip()
     address = (email or mailbox_id or "").strip()
     if not key or "@" not in address:
-        return []
+        raise ValueError("iCloud API 取信需要邮箱地址和 API 密钥，或该邮箱的独立取信链接")
     response = sess.get(
         f"{base}/api/user/mail",
         params={"email": address, "apikey": key},
@@ -717,15 +704,15 @@ def _remail_create(name, domain, expiry_ms, api_key, base_url, sess):
         timeout=HTTP_TIMEOUT,
     )
     if response.status_code >= 400:
-        raise RuntimeError(f"Remail create {response.status_code}: {response.text[:220]}")
+        raise RuntimeError(f"Remail 创建邮箱失败（HTTP {response.status_code}）")
     data = response.json() if response.content else {}
     body = data.get("data") if isinstance(data, dict) and isinstance(data.get("data"), dict) else data
     if not isinstance(body, dict):
-        raise RuntimeError(f"Remail create 返回异常: {str(data)[:220]}")
+        raise RuntimeError("Remail 创建结果格式无效")
     email = str(body.get("deliveryEmail") or body.get("email") or "").strip()
     service_token = str(body.get("serviceToken") or body.get("token") or "").strip()
     if not email or "@" not in email or not service_token:
-        raise RuntimeError(f"Remail create 缺少 deliveryEmail/serviceToken: {str(data)[:220]}")
+        raise RuntimeError("Remail 创建结果缺少 deliveryEmail/serviceToken")
     order_id = body.get("id") or body.get("orderNo") or email
     return {
         "id": str(order_id), "email": email, "token": service_token,
@@ -739,15 +726,14 @@ def _remail_fetch(mailbox_id, email, token, api_key, base_url, sess):
     address = str(email or "").strip()
     service_token = str(token or "").strip()
     if not address or not service_token:
-        return []
+        raise ValueError("Remail 取信缺少邮箱地址或 serviceToken")
     response = sess.get(
         f"{_remail_base(base_url)}/v1/pickup",
         params={"email": address, "token": service_token},
         headers=_remail_headers(api_key), timeout=HTTP_TIMEOUT,
     )
     if response.status_code >= 400:
-        detail = (response.text or "").strip()[:220]
-        raise RuntimeError(f"Remail fetch {response.status_code}: {detail}")
+        raise RuntimeError(f"Remail 取信失败（HTTP {response.status_code}）")
     data = response.json() if response.content else {}
     body = data.get("data") if isinstance(data, dict) and isinstance(data.get("data"), dict) else data
     if not isinstance(body, dict):
@@ -793,34 +779,34 @@ def _cfmail_create(name, domain, expiry_ms, api_key, base_url, sess):
     else:
         r = sess.post(f"{base}/api/new_address", json=payload, headers=headers, timeout=HTTP_TIMEOUT)
     if r.status_code >= 400:
-        raise RuntimeError(f"CFMail create {r.status_code}: {r.text[:200]}")
+        raise RuntimeError(f"CFMail 创建邮箱失败（HTTP {r.status_code}）")
     data = r.json() if r.content else {}
     body = data.get("data") if isinstance(data, dict) and "data" in data else data
     addr = body.get("address") if isinstance(body, dict) else None
     jwt = (body.get("jwt") or body.get("token")) if isinstance(body, dict) else None
     aid = body.get("address_id") if isinstance(body, dict) else None
     if not addr or not jwt:
-        raise RuntimeError(f"CFMail create 返回异常: {data}")
+        raise RuntimeError("CFMail 创建结果缺少邮箱地址或访问凭据")
     return {"id": str(aid or addr), "email": str(addr), "token": str(jwt), "provider": "cfmail", "raw": data}
 
 
 def _cfmail_fetch(mailbox_id, email, token, api_key, base_url, sess):
     if not token:
-        return []
+        raise ValueError("CFMail 取信缺少该邮箱的访问凭据")
     base = _norm_base(base_url, CFMAIL_BASE_URL)
     headers = {"Authorization": f"Bearer {token}"}
     r = sess.get(f"{base}/api/parsed_mails", headers=headers,
                  params={"limit": 20, "offset": 0}, timeout=HTTP_TIMEOUT)
-    if r.status_code >= 400:
+    if r.status_code == 404:
         r = sess.get(f"{base}/api/mails", headers=headers,
                      params={"limit": 20, "offset": 0}, timeout=HTTP_TIMEOUT)
-        if r.status_code >= 400:
-            return []
+    if r.status_code >= 400:
+        raise RuntimeError(f"CFMail 取信失败（HTTP {r.status_code}）")
     data = r.json() if r.content else {}
     body = data.get("data") if isinstance(data, dict) and "data" in data else data
     results = body.get("results") if isinstance(body, dict) else body
     if not isinstance(results, list):
-        return []
+        raise ValueError("CFMail 未返回有效邮件列表")
     out = []
     for raw in results[:20]:
         if not isinstance(raw, dict):
@@ -828,17 +814,14 @@ def _cfmail_fetch(mailbox_id, email, token, api_key, base_url, sess):
         item = dict(raw)
         # 只有 raw RFC822 时解析出 text/html
         if not (item.get("text") or item.get("html")) and item.get("raw"):
-            try:
-                msg = email_parser.message_from_string(item["raw"])
-                item["subject"] = item.get("subject") or msg.get("subject", "")
-                for part in msg.walk():
-                    ctype = part.get_content_type()
-                    if ctype == "text/plain" and not item.get("text"):
-                        item["text"] = part.get_payload(decode=True).decode(errors="ignore")
-                    elif ctype == "text/html" and not item.get("html"):
-                        item["html"] = part.get_payload(decode=True).decode(errors="ignore")
-            except Exception:
-                pass
+            msg = email_parser.message_from_string(item["raw"])
+            item["subject"] = item.get("subject") or msg.get("subject", "")
+            for part in msg.walk():
+                ctype = part.get_content_type()
+                if ctype == "text/plain" and not item.get("text"):
+                    item["text"] = (part.get_payload(decode=True) or b"").decode(errors="ignore")
+                elif ctype == "text/html" and not item.get("html"):
+                    item["html"] = (part.get_payload(decode=True) or b"").decode(errors="ignore")
         out.append(item)
     return out
 
@@ -863,17 +846,17 @@ def _custom_create(name, domain, expiry_ms, api_key, base_url, sess):
         if CUSTOM_MAIL_CREATE_BODY:
             try:
                 body = json.loads(_fill_tpl(CUSTOM_MAIL_CREATE_BODY, ctx))
-            except Exception as e:
+            except json.JSONDecodeError as e:
                 raise ValueError(f"CUSTOM_MAIL_CREATE_BODY 不是合法 JSON: {str(e)[:60]}")
         r = sess.post(url, json=body, headers=headers, timeout=HTTP_TIMEOUT)
     else:
         r = sess.get(url, headers=headers, timeout=HTTP_TIMEOUT)
     if r.status_code >= 400:
-        raise RuntimeError(f"custom create {r.status_code}: {r.text[:200]}")
+        raise RuntimeError(f"自定义邮箱创建失败（HTTP {r.status_code}）")
     data = r.json() if r.content else {}
     addr = _json_path(data, CUSTOM_MAIL_EMAIL_PATH)
     if not addr:
-        raise RuntimeError(f"custom create 未按 CUSTOM_MAIL_EMAIL_PATH='{CUSTOM_MAIL_EMAIL_PATH}' 取到 email: {str(data)[:200]}")
+        raise RuntimeError("自定义邮箱创建结果不符合 CUSTOM_MAIL_EMAIL_PATH 地址路径配置")
     eid = _json_path(data, CUSTOM_MAIL_ID_PATH) if CUSTOM_MAIL_ID_PATH else addr
     token = _json_path(data, CUSTOM_MAIL_TOKEN_PATH) if CUSTOM_MAIL_TOKEN_PATH else ""
     return {"id": str(eid or addr), "email": str(addr), "token": str(token or ""),
@@ -884,7 +867,7 @@ def _custom_fetch(mailbox_id, email, token, api_key, base_url, sess):
     """配置驱动地拉自定义临时邮箱收件箱。返回 raw dict 列表（取码交给 fetch_messages 统一逻辑）。"""
     base = _norm_base(base_url, CUSTOM_MAIL_BASE_URL)
     if not base or not CUSTOM_MAIL_FETCH_PATH:
-        return []
+        raise ValueError("自定义邮箱需要配置取信地址和路径")
     ctx = {"name": "", "domain": "", "email": email or "", "id": mailbox_id or "",
            "token": token or "", "msg_id": ""}
     url = base + _fill_tpl(CUSTOM_MAIL_FETCH_PATH, ctx)
@@ -894,11 +877,11 @@ def _custom_fetch(mailbox_id, email, token, api_key, base_url, sess):
     r = sess.post(url, headers=headers, timeout=HTTP_TIMEOUT) if method == "POST" \
         else sess.get(url, headers=headers, timeout=HTTP_TIMEOUT)
     if r.status_code >= 400:
-        return []
+        raise RuntimeError(f"自定义邮箱取信失败（HTTP {r.status_code}）")
     data = r.json() if r.content else {}
     msgs = _json_path(data, CUSTOM_MAIL_LIST_PATH) if CUSTOM_MAIL_LIST_PATH else data
     if not isinstance(msgs, list):
-        return []
+        raise ValueError("自定义邮箱取信结果不符合邮件列表路径配置")
     out = []
     for raw in msgs[:20]:
         if not isinstance(raw, dict):
@@ -910,31 +893,32 @@ def _custom_fetch(mailbox_id, email, token, api_key, base_url, sess):
             if mid:
                 dctx = dict(ctx, msg_id=str(mid))
                 durl = base + _fill_tpl(CUSTOM_MAIL_DETAIL_PATH, dctx)
-                try:
-                    d = sess.get(durl, headers=headers, timeout=HTTP_TIMEOUT)
-                    if d.status_code == 200 and d.content:
-                        dd = d.json()
-                        msg = _json_path(dd, CUSTOM_MAIL_MSG_PATH) if CUSTOM_MAIL_MSG_PATH else dd
-                        if isinstance(msg, dict):
-                            item.update(msg)
-                except Exception:
-                    pass
+                d = sess.get(durl, headers=headers, timeout=HTTP_TIMEOUT)
+                if d.status_code >= 400:
+                    raise RuntimeError(f"自定义邮箱正文读取失败（HTTP {d.status_code}）")
+                dd = d.json()
+                msg = _json_path(dd, CUSTOM_MAIL_MSG_PATH) if CUSTOM_MAIL_MSG_PATH else dd
+                if not isinstance(msg, dict):
+                    raise ValueError("自定义邮箱正文不符合详情路径配置")
+                item.update(msg)
         out.append(item)
     return out
 
 
 # ==================================================================== 统一接口
-def _icmail_create(name, domain, expiry_ms, api_key, base_url, sess):
-    from common.icmail import allocate
-    mailbox = allocate("registration")
+def _icmail_create(name, domain, expiry_ms, api_key, base_url, sess, *, platform):
+    from common.mail_pool import allocate
+    if not platform:
+        raise ValueError("内置邮箱分配需要指定目标平台")
+    mailbox = allocate(platform)
     # This token is only a message cursor, not an IMAP or panel credential.
     mailbox["token"] = json.dumps({key: mailbox[key] for key in
-        ("email", "source_id", "cursor", "started_at")})
+        ("email", "platform", "source_id", "cursor", "started_at")})
     return mailbox
 
 
 def _icmail_fetch(mailbox_id, email, token, api_key, base_url, sess):
-    from common.icmail import MailboxError, read_messages
+    from common.mail_pool import MailboxError, read_messages
     try:
         mailbox = json.loads(token or "")
         if mailbox.get("email") != str(email or mailbox_id).strip().lower():
@@ -988,36 +972,33 @@ def _provider_list(provider=None):
 
 
 def create_mailbox(provider=None, name=None, domain=None, expiry_ms=None,
-                   api_key=None, base_url=None, mail_type=None, service=None):
+                   api_key=None, base_url=None, mail_type=None, service=None, platform=""):
     """创建临时邮箱。返回 {"id", "email", "token", "provider", "raw"}。
     provider 为空时用 config.TEMP_EMAIL_PROVIDER，支持逗号分隔的多 provider 故障转移：
     按序尝试，第一个建号成功的即返回；全失败才抛异常（把各家错误合并抛出）。
     显式传 base_url/api_key 时只按单 provider 走（多 provider 无法共用同一 base_url）。"""
-    # 显式 base_url 只对单 provider 有意义，退回单 provider 路径
-    if base_url or api_key:
-        prov = normalize_provider(provider or TEMP_EMAIL_PROVIDER, base_url)
-        fn = _CREATE.get(prov)
-        if not fn:
-            raise ValueError(f"未知临时邮箱 provider: {prov}")
-        kwargs = {"mail_type": mail_type, "service": service} if prov == "icloud" else {}
-        return fn(name, domain, expiry_ms, api_key, base_url, _session(), **kwargs)
-    provs = _provider_list(provider)
+    provs = [normalize_provider(provider or TEMP_EMAIL_PROVIDER, base_url)] if base_url or api_key else _provider_list(provider)
+    if "icmail" in provs and not platform:
+        raise ValueError("内置邮箱分配需要指定目标平台")
     errors = []
     for prov in provs:
-        fn = _CREATE.get(prov)
-        if not fn:
-            errors.append(f"{prov}: 未知 provider")
-            continue
+        fn = _CREATE[prov]
         try:
             kwargs = {"mail_type": mail_type, "service": service} if prov == "icloud" else {}
-            mb = fn(name, domain, expiry_ms, None, None, _session(), **kwargs)
+            if prov == "icmail": kwargs["platform"] = platform
+            with _session() as session:
+                mb = fn(name, domain, expiry_ms, api_key, base_url, session, **kwargs)
             if len(provs) > 1:
                 print(f"  [temp-email] provider={prov} 建号成功（候选 {provs}）")
             return mb
-        except Exception as e:
-            msg = f"{prov}: {str(e)[:120]}"
-            print(f"  [temp-email] provider {prov} 建号失败，尝试下一个 -> {str(e)[:80]}")
-            errors.append(msg)
+        except requests.RequestException as e:
+            # Request URLs can contain mailbox service tokens and API keys.
+            detail = f"连接或响应异常（{type(e).__name__}）"
+        except (RuntimeError, ValueError) as e:
+            detail = str(e)
+        errors.append(f"{prov}: {detail}")
+        if len(provs) > 1:
+            print(f"  [temp-email] {prov} 建号失败：{detail}")
     raise RuntimeError("所有临时邮箱 provider 均建号失败：\n  " + "\n  ".join(errors))
 
 
@@ -1027,9 +1008,12 @@ def fetch_messages(mailbox_id, provider, email=None, token=None,
     prov = normalize_provider(provider, base_url)
     fn = _FETCH.get(prov)
     if not fn:
-        return []
-    sess = _session()
-    msgs = fn(mailbox_id, email, token, api_key, base_url, sess)
+        raise ValueError(f"邮箱来源没有取信实现：{prov}")
+    try:
+        with _session() as sess:
+            msgs = fn(mailbox_id, email, token, api_key, base_url, sess)
+    except requests.RequestException as e:
+        raise RuntimeError(f"{prov} 取信连接或响应异常（{type(e).__name__}）") from None
     for m in msgs:
         text = "\n".join(str(m.get(k) or "") for k in (
             "subject", "content", "text", "textBody", "html", "htmlBody",
@@ -1071,12 +1055,10 @@ def _hit(msg, sender_hint, subject_hint):
 def _scan_once(mailbox_id, provider, email, token, api_key, base_url,
                sender_hint, subject_hint, code_regex, exclude_codes=()):
     """同步扫一轮，命中目标邮件就返回 code，否则 None。给 poll 用 executor 调。"""
-    try:
-        msgs = fetch_messages(mailbox_id, provider, email=email, token=token,
-                              api_key=api_key, base_url=base_url)
-    except Exception as e:
-        print(f"  [temp-email] fetch error: {str(e)[:80]}")
-        return None
+    # A failed read is not an empty inbox. Preserve the cause on the owning task;
+    # waiting for an OTP is only appropriate after a successful mailbox read.
+    msgs = fetch_messages(mailbox_id, provider, email=email, token=token,
+                          api_key=api_key, base_url=base_url)
     pat = re.compile(code_regex) if code_regex else None
     excluded = {str(code) for code in (exclude_codes or ()) if code}
     for m in msgs:

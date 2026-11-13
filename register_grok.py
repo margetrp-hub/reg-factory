@@ -992,7 +992,7 @@ async def register_one(index, total, p, node):
             refresh_token = ""
     elif GROK_USE_TEMP_EMAIL:
         try:
-            temp_mb = create_mailbox(provider=TEMP_EMAIL_PROVIDER)
+            temp_mb = create_mailbox(provider=TEMP_EMAIL_PROVIDER, platform="grok")
             email = temp_mb["email"]
             email_pw, refresh_token, client_id = "", "", ""
             print(f"  [temp-email] created {temp_mb['provider']} mailbox: {email}")
@@ -1175,7 +1175,7 @@ async def register_one(index, total, p, node):
                 if temp_mb and submit_try + 1 < submit_limit:
                     try:
                         print("  [4] xAI 未接受该临时邮箱域名，自动更换邮箱")
-                        temp_mb = create_mailbox(provider=TEMP_EMAIL_PROVIDER)
+                        temp_mb = create_mailbox(provider=TEMP_EMAIL_PROVIDER, platform="grok")
                         email = temp_mb["email"]
                         print(f"  [temp-email] replacement: {email}")
                         if not await react_fill(page, email_sel, email):

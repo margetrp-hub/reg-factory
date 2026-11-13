@@ -27,7 +27,7 @@ func (m *Manager) launchCentral(task store.Task, weight int) error {
 		return err
 	}
 	env = append(env, "REG_FACTORY_DATA_DIR="+m.cfg.DataDir, "REG_FACTORY_RUN_ID="+task.ID,
-		"REG_FACTORY_ICMAIL_ADDR="+m.cfg.Addr, "REG_FACTORY_ICMAIL_KEY="+m.cfg.PanelPass, "PYTHONIOENCODING=utf-8", "PYTHONUNBUFFERED=1")
+		"REG_FACTORY_MAIL_ADDR="+m.cfg.Addr, "REG_FACTORY_MAIL_KEY="+m.cfg.PanelPass, "PYTHONIOENCODING=utf-8", "PYTHONUNBUFFERED=1")
 	timeout := m.taskTimeout()
 	if timeout <= 0 {
 		timeout = 15 * time.Minute
@@ -157,12 +157,15 @@ func (m *Manager) executeCentral(ctx context.Context, task store.Task, env []str
 		_ = killGroup(cmd.Process.Pid, 5*time.Second)
 	}
 	err = cmd.Wait()
+	if ctx.Err() != nil {
+		return nil, errors.New("ASSET_EXECUTOR_TIMEOUT")
+	}
 	var result map[string]any
 	if output.overflow || json.Unmarshal(output.Bytes(), &result) != nil {
-		return nil, errors.New("ASSET_EXECUTION_UNKNOWN")
+		return nil, errors.New("ASSET_EXECUTOR_RESULT_INVALID")
 	}
 	if err != nil {
-		return result, errors.New("ASSET_EXECUTION_UNKNOWN")
+		return result, errors.New("ASSET_EXECUTOR_EXITED")
 	}
 	return result, nil
 }

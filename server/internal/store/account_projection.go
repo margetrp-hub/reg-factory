@@ -1,5 +1,23 @@
 package store
 
+import (
+	"database/sql"
+	"errors"
+)
+
+// ImportRef keeps existing task/custody references stable. New identities are
+// namespaced by platform so a mailbox reused elsewhere never shares a password.
+func (s *Store) ImportRef(platform, email string) (string, error) {
+	var ref string
+	err := s.ex.QueryRow(`SELECT ref FROM accounts
+	 WHERE platform=? AND lower(trim(identity))=? AND ref LIKE 'import:%'
+	 ORDER BY imported_at DESC, ref LIMIT 1`, platform, email).Scan(&ref)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "import:" + platform + ":" + email, nil
+	}
+	return ref, err
+}
+
 // Account pages show identities, not one account for every file and production
 // result. Original refs remain authoritative for receipts and result history.
 // A missing identity is never merged; a platform boundary is never crossed.

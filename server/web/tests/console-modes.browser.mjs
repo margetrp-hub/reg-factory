@@ -20,6 +20,11 @@ const values = { FINGERPRINT_BROWSER: 'bitbrowser', BITBROWSER_API: 'http://brow
 const initialKeys = Object.keys(values);
 const deployed = {REG_FACTORY_WORK_ORIGIN:'http://work.example.test:18099',REG_FACTORY_ASSET_CENTER_ID:'production-center-test',REG_FACTORY_NODE_ID:'sg-test'};
 const requests = [], problems = [], tasks = new Map();
+const mailSources = [{id:1,name:'Microsoft test inbox',transport:'graph',host:'',port:993,
+  username:'owner@example.test',folder:'INBOX',enabled:true,idle:false,intervalSeconds:10,
+  heartbeatSeconds:60,clientID:'test-client',refreshTokenSet:true,passwordSet:false,runtime:'running'}];
+const mailboxes = [], sourceSaves = [], platformStates = new Map();
+let mailStateReject = false;
 let readFailure = true, saveMode = 'ok', taskMode = 'ok', saves = 0, starts = 0;
 const mime = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css', '.json': 'application/json', '.txt': 'text/x-component', '.woff2': 'font/woff2', '.svg': 'image/svg+xml' };
 const server = createServer(async (req, res) => {
@@ -68,8 +73,24 @@ await context.route('**/*', async route => {
     return json({path:'/synthetic/.env', groups});
   }
   if (endpoint === '/api/scripts') return json({scripts, count:scripts.length});
-  if (endpoint === '/api/apps/icmail/sources') return json({ok:true, data:{sources:[]}});
-  if (endpoint === '/api/apps/icmail/pool') return json({ok:true, data:{items:[], total:0}});
+  if (endpoint === '/api/apps/mail/sources') {
+    if (request.method() === 'POST') {
+      const body = request.postDataJSON(); sourceSaves.push(body);
+      const source = mailSources.find(item=>item.id===body.id);
+      Object.assign(source, body, {refreshTokenSet:source.refreshTokenSet || !!body.refreshToken});
+      delete source.refreshToken; delete source.password;
+      return json({ok:true,data:source});
+    }
+    return json({ok:true, data:{sources:mailSources}});
+  }
+  if (endpoint === '/api/apps/mail/pool') return json({ok:true, data:{items:mailboxes,total:mailboxes.length}});
+  if (endpoint === '/api/apps/mail/pool/availability') return json({ok:true,data:{
+    platforms:[...platformStates].map(([platform,state])=>({platform,state})),parentId:'',parentState:'active'}});
+  if (endpoint === '/api/apps/mail/pool/platform-state') {
+    if (mailStateReject) { mailStateReject=false; return route.fulfill({status:409,json:{ok:false,error:{message:'synthetic state save failure'}}}); }
+    const body=request.postDataJSON(); platformStates.set(body.platform,body.state);
+    return json({ok:true,data:{saved:true}});
+  }
   if (endpoint === '/api/accounts/summary') return json({platforms:[{platform:'chatgpt',total:3,available:2,abnormal:1,unknown:0,used:0,leased:0,source_count:3}]});
   if (endpoint === '/api/tasks' && request.method() === 'POST') {
     starts++;
@@ -187,10 +208,56 @@ try {
   assert(requests.slice(start).filter(([method,url])=>url==='/api/tasks').length <= 2,'one summary read, not one per platform');
   await page.screenshot({path:path.join(output,'production-desktop.png'),fullPage:true});
   const beforeMail=requests.length;
-  await page.goto(origin+'/materials/mail/'); await page.waitForURL('**/apps/icmail/');
+  await page.goto(origin+'/materials/mail/'); await page.waitForURL('**/apps/mail/');
   await page.getByRole('button',{name:'导入地址',exact:true}).waitFor();
   await page.getByText('还没有邮箱地址。可先导入地址，也可由收信自动发现。',{exact:true}).waitFor();
-  assert.equal(requests.slice(beforeMail).filter(([,url])=>url==='/api/apps/icmail/pool').length,1,'legacy mail entry must use one canonical pool view');
+  assert.equal(requests.slice(beforeMail).filter(([,url])=>url==='/api/apps/mail/pool').length,1,'legacy mail entry must use one canonical pool view');
+  await page.goto(origin+'/apps/mail/sources/');
+  await page.getByRole('button',{name:'Microsoft test inbox',exact:true}).click();
+  const sourceDialog=page.getByRole('dialog');
+  assert.equal(await sourceDialog.getByLabel(/^收信方式/).inputValue(),'graph');
+  assert.equal(await sourceDialog.getByLabel(/^邮箱 Refresh Token/).inputValue(),'');
+  await sourceDialog.getByLabel('来源名称',{exact:true}).fill('Reauthorized inbox');
+  await sourceDialog.getByRole('button',{name:'保存',exact:true}).click();
+  await sourceDialog.waitFor({state:'hidden'});
+  assert.equal(sourceSaves.at(-1).refreshToken,'','blank save must preserve existing RT');
+  assert.equal(mailSources[0].refreshTokenSet,true);
+  await page.getByRole('button',{name:'Reauthorized inbox',exact:true}).click();
+  await sourceDialog.getByLabel(/^收信方式/).selectOption('pop3');
+  assert.equal(await sourceDialog.getByLabel('端口',{exact:true}).inputValue(),'995');
+  assert.equal(await sourceDialog.getByLabel(/^邮箱 Refresh Token/).count(),0);
+  await sourceDialog.getByLabel(/^收信方式/).selectOption('imap');
+  assert.equal(await sourceDialog.getByLabel('端口',{exact:true}).inputValue(),'993');
+  await sourceDialog.getByLabel('优先使用实时推送（IDLE）',{exact:true}).waitFor();
+  await sourceDialog.getByLabel(/^收信方式/).selectOption('graph');
+  assert.equal(await sourceDialog.getByLabel('Client ID',{exact:true}).inputValue(),'test-client');
+  await sourceDialog.getByRole('button',{name:'取消',exact:true}).click();
+  await sourceDialog.waitFor({state:'hidden'});
+  mailboxes.push({email:'person@example.test',sourceId:1,sourceName:'Reauthorized inbox',sourceEnabled:true,
+    state:'active',manualState:'active',origin:'imported',total:0,riskHits:0,manual:true,provider:'mail',role:'address',transport:'graph'});
+  await page.goto(origin+'/apps/mail/');
+  await page.getByRole('button',{name:'person@example.test',exact:true}).click();
+  const mailDialog=page.getByRole('dialog');
+  await mailDialog.getByLabel(/^应用范围/).locator('option').first().waitFor({state:'attached'});
+  assert.deepEqual(await mailDialog.getByLabel(/^应用范围/).locator('option').evaluateAll(options=>options.map(o=>o.value)),catalogue.platforms.map(p=>p.slug));
+  await mailDialog.getByLabel(/^应用范围/).selectOption('chatgpt');
+  await mailDialog.getByLabel(/^使用状态/).selectOption('banned');
+  mailStateReject=true;
+  await mailDialog.getByRole('button',{name:'更新使用状态',exact:true}).click();
+  await mailDialog.getByText('synthetic state save failure',{exact:true}).waitFor();
+  assert.equal(await mailDialog.getByLabel(/^使用状态/).inputValue(),'banned','failed save keeps draft');
+  await mailDialog.getByRole('button',{name:'更新使用状态',exact:true}).click();
+  await page.waitForFunction(()=>document.querySelector('select') && [...document.querySelectorAll('button')].some(b=>b.textContent==='更新使用状态' && b.disabled));
+  assert.equal(platformStates.get('chatgpt'),'banned');
+  await mailDialog.getByLabel(/^应用范围/).selectOption('github');
+  assert.equal(await mailDialog.getByLabel(/^使用状态/).inputValue(),'unknown','platform restriction stays scoped');
+  await page.setViewportSize({width:390,height:844});
+  assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth+1),'mailbox dialog mobile overflow');
+  await page.screenshot({path:path.join(output,'mailbox-mobile.png'),fullPage:true});
+  await mailDialog.getByRole('button',{name:'取消',exact:true}).click();
+  await mailDialog.waitFor({state:'hidden'});
+  await page.setViewportSize({width:1440,height:1000});
+  await page.screenshot({path:path.join(output,'mailbox-desktop.png'),fullPage:true});
   await page.goto(origin+'/materials/proxy/'); await page.waitForURL('**/settings/?category=proxy*'); await loaded();
   await page.setViewportSize({width:390,height:844});
   assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth+1),'mobile page overflow');
@@ -216,7 +283,7 @@ try {
   await page.goto(origin+'/tasks/group/pipeline/'); await page.getByLabel('执行模式').waitFor();
   assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth+1),'mobile mode overflow');
   assert.deepEqual(problems,[]);
-  console.log(JSON.stringify({result:'passed',scripts:scripts.length,parameters:scripts.reduce((n,item)=>n+item.args.length,0),configurationFields:fields.size,productionWrites:0,checks:['config read retry','mode draft retention','save and reload','rejected save','lost save recovery','all original modes','rejected task','lost task recovery','SSE terminal result','summary request counts','old entry redirects','mobile layout']},null,2));
+  console.log(JSON.stringify({result:'passed',scripts:scripts.length,parameters:scripts.reduce((n,item)=>n+item.args.length,0),configurationFields:fields.size,productionWrites:0,checks:['config read retry','mode draft retention','save and reload','rejected save','lost save recovery','all original modes','rejected task','lost task recovery','SSE terminal result','summary request counts','old entry redirects','mail protocol selection','blank RT save','six platform mailbox states','mail state failure recovery','mobile layout']},null,2));
 } catch (error) {
   await page.screenshot({path:path.join(output,'failure.png'),fullPage:true}).catch(()=>{});
   await writeFile(path.join(output,'failure.json'),JSON.stringify({error:String(error),url:page.url(),requests,problems},null,2));

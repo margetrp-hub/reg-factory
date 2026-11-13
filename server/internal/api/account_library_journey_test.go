@@ -34,7 +34,7 @@ func TestAccountLibraryJourneyFromATCheckThroughUnknownRecovery(t *testing.T) {
 	assets := assetstore.New(root)
 	refs := []string{}
 	for i := 0; i < 10; i++ {
-		ref := fmt.Sprintf("import:account-%d@example.test", i)
+		ref := fmt.Sprintf("import:chatgpt:account-%d@example.test", i)
 		refs = append(refs, ref)
 		if _, err = st.UpsertAccounts([]store.AccountSeed{{Ref: ref, Platform: "chatgpt", Kind: "oauth", Identity: ref[7:]}}); err != nil {
 			t.Fatal(err)

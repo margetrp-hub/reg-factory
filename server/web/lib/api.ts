@@ -204,12 +204,12 @@ export const api = {
   credentialCheck: (id: string, signal?: AbortSignal) =>
     request<CredentialCheckDetail>(`/api/accounts/checks/${encodeURIComponent(id)}`, {signal}, {timeoutMs:20000}),
   icMailHealth: async (signal?: AbortSignal) => {
-    const result = await request<{ok: boolean; data: {stats: {indexed: number; sources: number}}; error?: string}>("/api/apps/icmail/health", {signal});
+    const result = await request<{ok: boolean; data: {stats: {indexed: number; sources: number}}; error?: string}>("/api/apps/mail/health", {signal});
     if (!result.ok) throw new Error(result.error || "IC 索引读取失败");
     return result.data;
   },
   icMailSources: async (signal?: AbortSignal) => {
-    const result = await request<{ok: boolean; data: {sources: {id: number; name: string; host: string; port: number; username: string; folder: string; enabled: boolean; lastUID: number}[]}; error?: string}>("/api/apps/icmail/sources", {signal});
+    const result = await request<{ok: boolean; data: {sources: {id: number; name: string; host: string; port: number; username: string; folder: string; enabled: boolean; lastUID: number}[]}; error?: string}>("/api/apps/mail/sources", {signal});
     if (!result.ok) throw new Error(result.error || "IC 源读取失败");
     return result.data;
   },
@@ -262,11 +262,9 @@ export const api = {
   saveRaw: (content: string) => request<{ ok: boolean }>("/api/config/raw", { method: "PUT", body: JSON.stringify({ content }) }),
   claudeHTTPRegister: (body: {
     email: string;
-    refresh_token?: string;
-    client_id?: string;
     proxy?: string;
     magic_link?: string;
-    mailbox?: string;
+    mailbox?: "icmail";
   }) =>
     request<{ ok: boolean; email: string; session_key_len: number; saved_to: string }>(
       "/api/registry/claude-http",

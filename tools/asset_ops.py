@@ -40,15 +40,15 @@ OPENAI_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 
 
 def _emit(payload: dict) -> int:
+    if payload.get("result") in {"unknown", "relogin_required", "banned", "workspace_deactivated", "failed"}:
+        payload["error_schema"] = "account.failure.v2"
+        payload.setdefault("error_code", "credential_result_incomplete")
+        payload["result"] = "failed"
     print(json.dumps(payload, ensure_ascii=False))
-    if payload.get("result") == "unknown":
-        # Distinguish an uncertain provider result from a confirmed rejection.
-        # The runner records a failure; a new task must reauthorize rather than replay the RT.
-        return 75
     # The runner maps the process exit code to the Work receipt.  Returning
     # zero for relogin/unknown made a refresh look successful even though no
     # new credential document was written.
-    if payload.get("result") in {"unknown", "relogin_required", "banned", "workspace_deactivated", "failed"}:
+    if payload.get("result") == "failed":
         return 1
     if "result" not in payload and payload.get("status") in {"unknown", "error", "expired", "banned", "workspace_deactivated"}:
         return 1
@@ -172,8 +172,9 @@ def cmd_refresh(args) -> int:
 
     return _emit({
         "ref": args.ref,
-        "result": "relogin_required",
-        "message": f"{platform or '未知平台'} 需要邮箱+密码重新登录，v1 未自动执行",
+        "result": "failed",
+        "error_code": "platform_authorization_unsupported",
+        "message": f"{platform or '未知平台'} 尚未支持自动授权，本次未执行",
     })
 
 
@@ -613,9 +614,9 @@ def _credential_operation(fn):
                        '使用 RT 获取新凭据' if fn.__name__ == '_refresh_chatgpt' else '使用原账号资料重新登录授权')
                 return fn(ref, email, *args, **kwargs)
         except BlockingIOError:
-            return {'ref': ref, 'result': 'failed', 'message': '该账号已有凭据任务执行中，本次未执行；请查看原任务'}
+            return {'ref': ref, 'result': 'failed', 'error_code': 'credential_task_busy', 'message': '该账号已有凭据任务执行中，本次未执行'}
         except ValueError:
-            return {'ref': ref, 'result': 'failed', 'message': '账号工作区或凭据版本不明确，请核对当前资料后重试'}
+            return {'ref': ref, 'result': 'failed', 'error_code': 'credential_document_ambiguous', 'message': '账号工作区或凭据版本不一致'}
     return guarded
 
 
@@ -624,17 +625,14 @@ def _refresh_chatgpt(ref: str, email: str = "") -> dict:
     """Refresh a ChatGPT OAuth record and atomically persist the new JSON."""
     import requests
 
-    try:
-        found = _find_credential(ref or email)
-    except ValueError:
-        return {"ref": ref, "result": "unknown", "message": "存在不同凭据版本，请在资产页选择确定结果"}
+    found = _find_credential(ref or email)
     if not found:
-        return {"ref": ref, "result": "relogin_required", "message": "找不到可刷新凭据"}
+        return {"ref": ref, "result": "relogin_required", "error_code": "credential_not_found", "message": "找不到可刷新凭据"}
     path, document = found
     token = _token_map(document)
     refresh_token = str((token or {}).get("refresh_token") or (token or {}).get("refreshToken") or "").strip()
     if not refresh_token:
-        return {"ref": ref, "result": "relogin_required", "message": "账号 JSON 缺少 refresh_token"}
+        return {"ref": ref, "result": "relogin_required", "error_code": "refresh_token_required", "message": "账号 JSON 缺少 refresh_token"}
     client_id = str((token or {}).get("client_id") or (token or {}).get("clientId") or OPENAI_CLIENT_ID).strip()
     try:
         session = requests.Session()
@@ -649,7 +647,8 @@ def _refresh_chatgpt(ref: str, email: str = "") -> dict:
             timeout=int(os.environ.get("REG_FACTORY_REFRESH_TIMEOUT", "30")),
         )
     except requests.RequestException as exc:
-        return {"ref": ref, "result": "unknown", "message": f"{type(exc).__name__}"}
+        code = "oauth_network_timeout" if isinstance(exc, requests.Timeout) else "oauth_tls_handshake_failed" if isinstance(exc, requests.exceptions.SSLError) else "oauth_network_unavailable"
+        return {"ref": ref, "result": "failed", "error_code": code, "message": type(exc).__name__}
     try:
         payload = response.json() if response.content else {}
     except (ValueError, json.JSONDecodeError):
@@ -666,16 +665,17 @@ def _refresh_chatgpt(ref: str, email: str = "") -> dict:
         try:
             written = _refresh_document_copies(ref, _json_email(document) or email, path, document, updates)
         except OSError as exc:
-            return {"ref": ref, "result": "unknown", "message": f"刷新成功但 JSON 写回失败：{type(exc).__name__}"}
+            return {"ref": ref, "result": "failed", "error_code": "credential_save_failed", "message": f"刷新成功但 JSON 写回失败：{type(exc).__name__}"}
         return {"ref": ref, "result": "refreshed", "expires_in": expires_in,
                 "updated_files": len(written), "message": "最新凭据已保存，原账号引用已同步"}
     explicit = account_failure(payload) if response.status_code >= 400 else None
     if explicit:
         return {'ref': ref, 'result': 'failed', 'error_schema': 'account.failure.v1', **explicit}
     code = error_code(payload)
-    if response.status_code in {400, 401} and code in {"invalid_grant", "invalid_token"}:
-        return {"ref": ref, "result": "relogin_required", "message": f"refresh_token 无效（{code or response.status_code}）"}
-    return {"ref": ref, "result": "unknown", "message": f"OAuth HTTP {response.status_code}"}
+    if response.status_code in {400, 401} and code in {"invalid_grant", "invalid_token", "refresh_token_reused", "refresh_token_expired", "refresh_token_revoked"}:
+        return {"ref": ref, "result": "relogin_required", "error_code": code, "message": f"刷新授权被拒绝（{code}）"}
+    code = "rate_limit_exceeded" if response.status_code == 429 else "oauth_service_unavailable" if response.status_code >= 500 else "oauth_response_invalid" if response.status_code == 200 else "oauth_request_rejected"
+    return {"ref": ref, "result": "failed", "error_code": code, "message": f"OAuth HTTP {response.status_code}"}
 
 
 def _reauthorization_document(document: dict) -> dict:
@@ -735,30 +735,29 @@ def _reauthorize_chatgpt(ref: str, email: str = "", timeout: int = 600) -> dict:
     """An authorize command must perform a fresh supplier-owned OAuth login."""
     import asyncio
     from tools.chatgpt_reauthorize import authorize_document
+    from vendor.reauth_web.engine import ERROR_HINTS, ReauthError
+    from requests import RequestException, Timeout
+    from requests.exceptions import SSLError
 
-    try:
-        found = _find_credential(ref or email)
-    except ValueError:
-        return {"ref": ref, "result": "unknown", "message": "存在不同凭据版本，请在资产页选择确定结果"}
+    found = _find_credential(ref or email)
     if not found:
-        return {"ref": ref, "result": "relogin_required", "message": "找不到原账号登录资料"}
+        return {"ref": ref, "result": "relogin_required", "error_code": "credential_not_found", "message": "找不到原账号登录资料"}
     path, document = found
     try:
         login_document = _reauthorization_document(document)
         updates = asyncio.run(authorize_document(login_document, timeout=timeout))
+    except ReauthError as exc:
+        evidence = exc.evidence
+        code = evidence.get("error_code") or "credential_result_incomplete"
+        return {"ref": ref, "result": "failed", "error_schema": "account.failure.v2", "error_code": code,
+                "message": ERROR_HINTS.get(code, type(exc).__name__), "evidence": evidence}
+    except (TimeoutError, RequestException) as exc:
+        code = "oauth_network_timeout" if isinstance(exc, (TimeoutError, Timeout)) else "oauth_tls_handshake_failed" if isinstance(exc, SSLError) else "oauth_network_unavailable"
+        return {"ref": ref, "result": "failed", "error_code": code, "message": type(exc).__name__}
+    try:
         written = _refresh_document_copies(ref, _json_email(document), path, document, updates)
-    except Exception as exc:
-        from vendor.reauth_web.engine import ERROR_HINTS, ReauthError
-        evidence = exc.evidence if isinstance(exc, ReauthError) else {}
-        if evidence.get("stage") == "authorize" and (evidence.get("token_exchange_started") is False or evidence.get('token_exchange_rejected') is True):
-            code = evidence.get("error_code")
-            reason = ERROR_HINTS.get(code, "登录授权未完成，请查看执行日志")
-            return {"ref": ref, "result": "failed", "message": f"SG重新授权失败：{reason}；原凭据保留",
-                    "error_code": code if code in ERROR_HINTS else "oauth_authorization_failed",
-                    "error_schema": "account.failure.v1"}
-        # Browser/transport failures can leave an external result unknown. Do
-        # not replay automatically or print provider responses/credentials.
-        return {"ref": ref, "result": "unknown", "message": f"SG重新授权未完成：{type(exc).__name__}"}
+    except OSError as exc:
+        return {"ref": ref, "result": "failed", "error_code": "credential_save_failed", "message": type(exc).__name__}
     return {"ref": ref, "result": "refreshed", "updated_files": len(written),
             "message": "SG已重新登录并获取全新OAuth凭据，原账号JSON已更新"}
 

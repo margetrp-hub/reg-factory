@@ -16,7 +16,7 @@ export const MATERIAL_KINDS: Kind[] = ["mail", "proxy", "sms", "captcha"];
 
 export function MaterialsView({ kind }: { kind?: Kind }) {
   const router = useRouter();
-  const target = (key: Kind) => key === "mail" ? "/apps/icmail/" : `/settings/?category=${key}`;
+  const target = (key: Kind) => key === "mail" ? "/apps/mail/" : `/settings/?category=${key}`;
   useEffect(() => {
     if (kind) router.replace(target(kind));
   }, [kind, router]);

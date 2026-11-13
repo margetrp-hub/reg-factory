@@ -44,7 +44,7 @@ export default function ProductionIndexPage() {
       <span>账号 <strong className="ml-2 text-2xl font-medium tabular-nums text-foreground">{total ?? "—"}</strong></span>
       <span>可用 <strong className="ml-2 text-2xl font-medium tabular-nums text-success">{available ?? "—"}</strong></span>
       <span>运行中 <strong className="ml-2 text-2xl font-medium tabular-nums text-foreground">{page ? (page.stats.running || 0) + (page.stats.queued || 0) : "—"}</strong></span>
-      <Link className="ml-auto underline underline-offset-4" href="/apps/icmail/">统一邮箱池</Link>
+      <Link className="ml-auto underline underline-offset-4" href="/apps/mail/">统一邮箱池</Link>
     </div>
     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3" aria-label="业务流程">
       {TASK_GROUPS.filter(group => group.slug !== "other" || scripts.some(script => groupOf(script).slug === "other")).map(group => <Link className="sg-mode-card" key={group.slug} href={`/tasks/group/${group.slug}/`}>

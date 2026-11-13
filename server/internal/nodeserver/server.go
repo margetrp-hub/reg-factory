@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"aishop-next/execution-go/nodeassets"
 	"github.com/gin-gonic/gin"
 
 	"github.com/tiantianGPU/reg-factory/server/internal/runner"
@@ -21,6 +22,7 @@ import (
 
 // Config 是节点身份与行为配置。
 type Config struct {
+	Version string
 	EnvFile string
 	Enabled bool
 	NodeID  string
@@ -86,24 +88,20 @@ func (h *Handler) Register(r *gin.Engine) {
 		if enabled && productionError == "" {
 			actions = append(actions, productionAction, "production.team_json.existing_result", "production.team_json.produce")
 		}
+		runtime, _ := nodeassets.Runtime("", "", nil)
+		runtime["module_version"] = h.cfg.Version
+		runtime["central_assets"] = h.centralReadiness()
+		runtime["supported_actions"] = actions
+		runtime["protocol_capabilities"] = []string{
+			"account-node.work.v1", "account-node.receipt.v1", "work.inventory-relay.v1",
+			"account-node.accounts.v1", "aishop.node-assets.v1", productionResumeProtocol,
+			productionAdmitProtocol, productionMaterialSchema,
+		}
 		c.JSON(http.StatusOK, gin.H{
 			"ready":            enabled,
 			"execution_ready":  enabled,
 			"action_readiness": gin.H{productionAction: gin.H{"ready": enabled && productionError == "", "error_code": productionError, "processing_owner": "node_admin"}},
-			"runtime": gin.H{
-				"central_assets":    h.centralReadiness(),
-				"supported_actions": actions,
-				"protocol_capabilities": []string{
-					"account-node.work.v1",
-					"account-node.receipt.v1",
-					"work.inventory-relay.v1",
-					"account-node.accounts.v1",
-					"aishop.node-assets.v1",
-					productionResumeProtocol,
-					productionAdmitProtocol,
-					productionMaterialSchema,
-				},
-			},
+			"runtime":          runtime,
 		})
 	})
 
@@ -160,7 +158,6 @@ func (h *Handler) Register(r *gin.Engine) {
 	group.POST("/inventory/library", h.withConfig((*Handler).accountLibrary))
 	group.POST("/inventory/reference", h.withConfig((*Handler).accountReference))
 	group.GET("/accounts", h.withConfig((*Handler).accountsInventory))
-	group.GET("/inventory/accounts", h.withConfig((*Handler).accountsInventory))
 	group.POST("/inventory/:action", h.withConfig((*Handler).inventoryRelay))
 	if h.st != nil {
 		if err := h.st.EnsureInventoryRelay(); err != nil {
@@ -220,19 +217,22 @@ func (h *Handler) acceptTask(c *gin.Context) {
 		h.writeAccepted(c, verified)
 		return
 	}
+	var argvTail string
 	if existing == sql.ErrNoRows && !centralBinding(verified) {
-		if ref, ok := h.subjectRef(verified.Subject); ok {
-			moved, e := h.st.TransferredRef(ref)
-			if e != nil || moved {
-				writeErr(c, perr("ASSET_SOURCE_TRANSFERRED", 409))
+		switch verified.Action {
+		case "account.authorize", "account.refresh", "account.liveness", "asset.liveness":
+			argvTail, err = h.assetOpArgv(verified)
+			if err != nil {
+				writeErr(c, err)
 				return
 			}
-		}
-		if email := h.subjectEmail(verified); email != "" {
-			moved, lookupErr := h.st.TransferredAccount(h.config().Platform, email)
-			if lookupErr != nil || moved {
-				writeErr(c, perr("ASSET_SOURCE_TRANSFERRED", 409))
-				return
+		case "account.register":
+			if email := h.subjectEmail(verified); email != "" {
+				moved, lookupErr := h.st.TransferredAccount(h.config().Platform, email)
+				if lookupErr != nil || moved {
+					writeErr(c, perr("ASSET_SOURCE_TRANSFERRED", 409))
+					return
+				}
 			}
 		}
 	}
@@ -276,25 +276,7 @@ func (h *Handler) acceptTask(c *gin.Context) {
 		}
 		log.Printf("[node] accept %s task=%s subject=%s -> %s", verified.Action, verified.TaskID, verified.Subject, task.ID)
 		h.writeAccepted(c, verified)
-	case "account.authorize":
-		// 授权 = 重新登录/换凭据，走本地 refresh 通道（带 --allow-relogin）
-		argvTail := h.authorizeArgv(verified)
-		task := store.Task{
-			ID:       "work-" + verified.TaskID,
-			Script:   "asset_ops",
-			Title:    "节点授权 · " + verified.Subject,
-			ArgsJSON: argvTail,
-			Actor:    "work:" + h.config().NodeID,
-		}
-		if err := h.mgr.Submit(task); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "submit_failed", "detail": err.Error()})
-			return
-		}
-		log.Printf("[node] accept %s task=%s subject=%s", verified.Action, verified.TaskID, verified.Subject)
-		h.writeAccepted(c, verified)
-
-	case "account.liveness", "asset.liveness", "account.refresh":
-		argvTail := h.assetOpArgv(verified)
+	case "account.authorize", "account.liveness", "asset.liveness", "account.refresh":
 		task := store.Task{
 			ID:       "work-" + verified.TaskID,
 			Script:   "asset_ops",
@@ -338,45 +320,47 @@ func (h *Handler) registerTask(mailbox string) (string, string) {
 	return "register_three_platforms", args
 }
 
-// authorizeArgv 把 account.authorize 映射成 asset_ops refresh（允许重新登录）。
-func (h *Handler) authorizeArgv(v *Verified) string {
-	platform := strings.TrimSpace(h.config().Platform)
-	ref := v.Subject
-	if resolved, ok := h.subjectRef(ref); ok {
-		ref = resolved
-	}
-	argv := []string{"refresh", "--ref", ref, "--allow-relogin"}
-	if email := h.subjectEmail(v); email != "" {
-		argv = append(argv, "--email", email)
-	}
-	if platform != "" {
-		argv = append(argv, "--platform", platform)
-	}
-	raw, _ := json.Marshal(argv)
-	return string(raw)
-}
-
 // assetOpArgv 把 Work 动作映射成 asset_ops.py 的参数数组。
-func (h *Handler) assetOpArgv(v *Verified) string {
-	platform := strings.TrimSpace(h.config().Platform)
-	ref := v.Subject
-	if resolved, ok := h.subjectRef(ref); ok {
-		ref = resolved
+func (h *Handler) assetOpArgv(v *Verified) (string, error) {
+	ref, ok := h.subjectRef(v.Subject)
+	if !ok {
+		return "", perr("WORK_ACCOUNT_REFERENCE_INVALID", 422)
+	}
+	account, err := h.st.GetAccount(ref)
+	if err == sql.ErrNoRows {
+		return "", perr("WORK_ACCOUNT_REFERENCE_INVALID", 422)
+	}
+	if err != nil {
+		return "", perr("WORK_ACCOUNT_SOURCE_UNAVAILABLE", 503)
+	}
+	if account.Platform == "" {
+		return "", perr("WORK_ACCOUNT_PLATFORM_REQUIRED", 422)
+	}
+	moved, err := h.st.TransferredRef(ref)
+	if err == nil && !moved && account.Identity != "" {
+		moved, err = h.st.TransferredAccount(account.Platform, account.Identity)
+	}
+	if err != nil {
+		return "", perr("WORK_ACCOUNT_SOURCE_UNAVAILABLE", 503)
+	}
+	if moved {
+		return "", perr("ASSET_SOURCE_TRANSFERRED", 409)
 	}
 	argv := []string{}
-	if v.Action == "account.refresh" {
+	if v.Action == "account.refresh" || v.Action == "account.authorize" {
 		argv = append(argv, "refresh", "--ref", ref)
+		if v.Action == "account.authorize" {
+			argv = append(argv, "--allow-relogin")
+		}
 	} else {
 		argv = append(argv, "liveness", "--ref", ref)
 	}
-	if email := h.subjectEmail(v); email != "" {
-		argv = append(argv, "--email", email)
+	if account.Identity != "" {
+		argv = append(argv, "--email", account.Identity)
 	}
-	if platform != "" {
-		argv = append(argv, "--platform", platform)
-	}
+	argv = append(argv, "--platform", account.Platform)
 	raw, _ := json.Marshal(argv)
-	return string(raw)
+	return string(raw), nil
 }
 
 // subjectEmail keeps credential lookup on the node side.  Work deliberately

@@ -52,7 +52,7 @@ class CentralExecutionTests(unittest.TestCase):
         self.assertEqual(document, before)
 
     def test_explicit_account_states_and_generic_401(self):
-        for code, expected in [('account_banned', 'account_banned'), ('account_deactivated', 'account_deactivated'), ('workspace_deactivated', 'workspace_deactivated'), ('deactivated_workspace', 'deactivated_workspace'), ('invalid_grant', 'RT_REJECTED')]:
+        for code, expected in [('account_banned', 'account_banned'), ('account_deactivated', 'account_deactivated'), ('workspace_deactivated', 'workspace_deactivated'), ('deactivated_workspace', 'deactivated_workspace'), ('invalid_grant', 'INVALID_GRANT')]:
             with self.subTest(code=code), patch('requests.Session') as session:
                 response = Mock(status_code=401, content=b'json')
                 response.json.return_value = {'error': {'code': code}}
@@ -61,6 +61,18 @@ class CentralExecutionTests(unittest.TestCase):
                 self.assertEqual(result['status'], 'failed')
                 self.assertEqual(result['error_code'], expected.upper())
                 self.assertIsNone(result['document'])
+
+    def test_transient_refresh_failures_keep_reason_and_original_material(self):
+        import requests
+        document = {'email': 'fixture@example.invalid', 'refresh_token': 'original-rt'}
+        for error, expected in [(requests.Timeout('private'), 'OAUTH_NETWORK_TIMEOUT'),
+                                (requests.exceptions.SSLError('private'), 'OAUTH_TLS_HANDSHAKE_FAILED'),
+                                (requests.ConnectionError('private'), 'OAUTH_NETWORK_UNAVAILABLE')]:
+            with self.subTest(code=expected), patch('requests.Session') as session:
+                session.return_value.__enter__.return_value.post.side_effect = error
+                result = execute({'action': 'account.refresh', 'expires_at': time.time()+60}, {'document': document})
+                self.assertEqual(result, {'status': 'failed', 'document': None, 'error_code': expected})
+                self.assertEqual(document['refresh_token'], 'original-rt')
 
     def test_received_rotation_is_retained_if_projection_cannot_finish(self):
         response = Mock(status_code=200, content=b'json')

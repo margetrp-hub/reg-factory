@@ -44,7 +44,7 @@ type Manager struct {
 	centralCheckMu   sync.Mutex
 	centralCheckedAt time.Time
 	centralCheckErr  error
-	assetRestorer func(context.Context, map[string]any, map[string]any) (map[string]any, error)
+	assetRestorer    func(context.Context, map[string]any, map[string]any) (map[string]any, error)
 	workers          sync.WaitGroup
 	procs            map[string]*proc
 	slots            int
@@ -532,6 +532,12 @@ func (m *Manager) launch(task store.Task, weight int) error {
 				status = "failed"
 			}
 		}
+		if credentialRef != "" && err != nil && refreshResult == "" && !stopping {
+			failure, _ := json.Marshal(map[string]any{"ref": credentialRef, "result": "failed",
+				"error_schema": "account.failure.v2", "error_code": "credential_worker_exited", "exit_code": code})
+			m.record(task.ID, "stdout", string(failure))
+			refreshResult, message = "failed", "凭据执行进程异常退出"
+		}
 		if isChatGPTCredential(task) {
 			var finishErr error
 			status, code, message, finishErr = m.settleCredential(task, refreshResult, status, code, message)
@@ -652,7 +658,7 @@ func (m *Manager) buildArgv(task store.Task) ([]string, string, []string, error)
 	}
 	// Internal mailbox access uses this running control plane's credentials,
 	// even if its restart-only settings have since been edited in the env file.
-	baseEnv = append(baseEnv, "REG_FACTORY_ICMAIL_ADDR="+m.cfg.Addr, "REG_FACTORY_ICMAIL_KEY="+m.cfg.PanelPass)
+	baseEnv = append(baseEnv, "REG_FACTORY_MAIL_ADDR="+m.cfg.Addr, "REG_FACTORY_MAIL_KEY="+m.cfg.PanelPass)
 	// raw 任务：ArgsJSON 直接是参数数组，脚本为 tools/<script>.py
 	if task.Script == "asset_ops" || task.Script == "change_password" || task.Script == "import_free_json" {
 		var argvTail []string

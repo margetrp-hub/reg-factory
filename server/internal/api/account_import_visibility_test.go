@@ -108,7 +108,7 @@ func TestImportRetryPreservesLoginMaterial(t *testing.T) {
 	r := gin.New()
 	r.POST("/import", s.importAccounts)
 	for _, line := range []string{"retry@example.test----private-password----JBSWY3DPEHPK3PXP", "retry@example.test"} {
-		raw, _ := json.Marshal(map[string]string{"accounts": line})
+		raw, _ := json.Marshal(map[string]string{"platform": "chatgpt", "accounts": line})
 		req := httptest.NewRequest("POST", "/import", strings.NewReader(string(raw)))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
@@ -116,23 +116,23 @@ func TestImportRetryPreservesLoginMaterial(t *testing.T) {
 		if w.Code != 200 {
 			t.Fatal(w.Code, w.Body.String())
 		}
-		password, totp, err := st.GetCredential("import:retry@example.test")
+		password, totp, err := st.GetCredential("import:chatgpt:retry@example.test")
 		if err != nil || password != "private-password" || totp != "JBSWY3DPEHPK3PXP" {
 			t.Fatal("retry lost stored login material", err)
 		}
-		asset, err := s.assets.Get("import:retry@example.test")
+		asset, err := s.assets.Get("import:chatgpt:retry@example.test")
 		if err != nil || asset.Payload["password"] != password || asset.Payload["totp"] != totp {
 			t.Fatal("export disagrees with production login material", err)
 		}
 	}
-	if err := st.WithdrawAccount("import:retry@example.test"); err != nil {
+	if err := st.WithdrawAccount("import:chatgpt:retry@example.test"); err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest("POST", "/import", strings.NewReader(`{"accounts":"retry@example.test----replacement"}`))
+	req := httptest.NewRequest("POST", "/import", strings.NewReader(`{"platform":"chatgpt","accounts":"retry@example.test----replacement"}`))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
-	password, _, err := st.GetCredential("import:retry@example.test")
+	password, _, err := st.GetCredential("import:chatgpt:retry@example.test")
 	if w.Code != 409 || err != nil || password != "private-password" {
 		t.Fatal("transferred source was mutated", w.Code, err)
 	}
@@ -147,11 +147,11 @@ func TestImportDatabaseFailureCanRetryWithoutDuplicate(t *testing.T) {
 	s := &Server{st: st, assets: assetstore.New(root)}
 	r := gin.New()
 	r.POST("/import", s.importAccounts)
-	if _, err := st.Execer().Exec("ALTER TABLE account_credentials ADD CONSTRAINT synthetic_import_failure CHECK (ref <> 'import:db-retry@example.test')"); err != nil {
+	if _, err := st.Execer().Exec("ALTER TABLE account_credentials ADD CONSTRAINT synthetic_import_failure CHECK (ref <> 'import:chatgpt:db-retry@example.test')"); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []int{500, 200, 200} {
-		req := httptest.NewRequest("POST", "/import", strings.NewReader(`{"accounts":"db-retry@example.test----private-password----JBSWY3DPEHPK3PXP"}`))
+		req := httptest.NewRequest("POST", "/import", strings.NewReader(`{"platform":"chatgpt","accounts":"db-retry@example.test----private-password----JBSWY3DPEHPK3PXP"}`))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -171,7 +171,7 @@ func TestImportDatabaseFailureCanRetryWithoutDuplicate(t *testing.T) {
 	if err != nil || len(accounts) != 1 {
 		t.Fatal("retry duplicated account", err)
 	}
-	password, totp, err := st.GetCredential("import:db-retry@example.test")
+	password, totp, err := st.GetCredential("import:chatgpt:db-retry@example.test")
 	if err != nil || password != "private-password" || totp != "JBSWY3DPEHPK3PXP" {
 		t.Fatal("retry did not restore production login material", err)
 	}
@@ -192,5 +192,76 @@ func TestImportStorageFailureDoesNotReportSuccess(t *testing.T) {
 	r.ServeHTTP(w, req)
 	if w.Code != 500 || !strings.Contains(w.Body.String(), "import_save_failed") || strings.Contains(w.Body.String(), "private-password") {
 		t.Fatal(w.Code, w.Body.String())
+	}
+}
+
+func TestImportSameMailboxAcrossPlatformsKeepsIndependentCredentials(t *testing.T) {
+	root := t.TempDir()
+	st := testdatabase.Open(t, root)
+	s := &Server{st: st, assets: assetstore.New(root)}
+	r := gin.New()
+	r.POST("/import", s.importAccounts)
+	platforms := []string{"claude", "chatgpt", "grok", "outlook", "kiro", "github"}
+	for _, platform := range platforms {
+		for _, material := range []string{"SAME@example.test----" + platform + "-password", "same@example.test"} {
+			body, _ := json.Marshal(map[string]string{"platform": platform, "accounts": material})
+			req := httptest.NewRequest("POST", "/import", strings.NewReader(string(body)))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+			if w.Code != 200 {
+				t.Fatal(platform, w.Code, w.Body.String())
+			}
+		}
+	}
+	rows, err := st.ListAccounts("", "", "", 100)
+	if err != nil || len(rows) != len(platforms) {
+		t.Fatalf("platform identities overwritten: count=%d err=%v", len(rows), err)
+	}
+	for _, account := range rows {
+		password, _, err := st.GetCredential(account.Ref)
+		if err != nil || password != account.Platform+"-password" {
+			t.Fatal("cross-platform login material", account.Platform, err)
+		}
+		asset, err := s.assets.Get(account.Ref)
+		if err != nil || asset.Platform != account.Platform || asset.Payload["password"] != password {
+			t.Fatal("export identity disagrees", account.Platform, err)
+		}
+	}
+}
+
+func TestReimportKeepsExistingBusinessReference(t *testing.T) {
+	root := t.TempDir()
+	st := testdatabase.Open(t, root)
+	s := &Server{st: st, assets: assetstore.New(root)}
+	ref := "import:existing@example.test"
+	if _, err := st.UpsertAccounts([]store.AccountSeed{{Ref: ref, Platform: "chatgpt", Identity: "existing@example.test", Kind: "imported"}}); err != nil {
+		t.Fatal(err)
+	}
+	r := gin.New()
+	r.POST("/import", s.importAccounts)
+	for _, platform := range []string{"chatgpt", "github"} {
+		body, _ := json.Marshal(map[string]string{"platform": platform, "accounts": "EXISTING@example.test----" + platform + "-password"})
+		req := httptest.NewRequest("POST", "/import", strings.NewReader(string(body)))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != 200 {
+			t.Fatal(w.Code, w.Body)
+		}
+	}
+	rows, err := st.ListAccounts("", "", "", 100)
+	if err != nil || len(rows) != 2 {
+		t.Fatal("reimport duplicated business identity", len(rows), err)
+	}
+	for _, key := range []string{ref, "import:github:existing@example.test"} {
+		account, err := st.GetAccount(key)
+		if err != nil {
+			t.Fatal("business reference lost", err)
+		}
+		password, _, err := st.GetCredential(key)
+		if err != nil || password != account.Platform+"-password" {
+			t.Fatal("cross-platform credential changed", err)
+		}
 	}
 }

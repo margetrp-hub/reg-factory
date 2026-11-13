@@ -15,6 +15,17 @@ import (
 
 func Open(t *testing.T, root string) *store.Store {
 	t.Helper()
+	st, err := store.Open(DSN(t, root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	return st
+}
+
+// DSN lets the mail store exercise its own schema on the same isolated fixture.
+func DSN(t *testing.T, root string) string {
+	t.Helper()
 	dsn := os.Getenv("REG_FACTORY_TEST_POSTGRES_DSN")
 	if dsn == "" {
 		dsn = filepath.Join(root, "tasks.db")
@@ -38,10 +49,5 @@ func Open(t *testing.T, root string) *store.Store {
 		u.RawQuery = q.Encode()
 		dsn = u.String()
 	}
-	st, err := store.Open(dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { st.Close() })
-	return st
+	return dsn
 }

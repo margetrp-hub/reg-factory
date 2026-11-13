@@ -18,8 +18,8 @@ sys.path.insert(0, str(ROOT))
 def execute(context, material):
     from tools.asset_ops import _token_map, _update_oauth_document, _primary_account, OPENAI_TOKEN_URL, OPENAI_CLIENT_ID
     from tools.chatgpt_reauthorize import authorize_document, validate_identity
-    from common.oauth_errors import account_failure
-    from vendor.reauth_web.engine import ReauthError, ERROR_HINTS
+    from common.oauth_errors import account_failure, error_code
+    from vendor.reauth_web.engine import ReauthError
     import requests
     document = json.loads(json.dumps(material['document']))
     try:
@@ -45,12 +45,14 @@ def execute(context, material):
         try:
             with contextlib.redirect_stdout(sys.stderr):
                 updates = asyncio.run(authorize_document(primary, timeout=timeout, mailbox=mailbox or None, on_tokens=lambda v: received.update(v)))
-        except Exception as exc:
-            evidence = exc.evidence if isinstance(exc, ReauthError) else {}
-            code = evidence.get('error_code')
-            if not received and (evidence.get('token_exchange_started') is False or evidence.get('token_exchange_rejected') is True) and code in ERROR_HINTS:
-                return {'status': 'failed', 'document': None, 'error_code': code.upper()}
-            return {'status': 'unknown', 'document': None, 'error_code': 'AUTHORIZATION_UNCONFIRMED', 'unapplied_result': received}
+        except ReauthError as exc:
+            code = exc.evidence.get('error_code') or 'credential_result_incomplete'
+            return {'status': 'unknown' if received else 'failed', 'document': None,
+                    'error_code': code.upper(), 'unapplied_result': received}
+        except (TimeoutError, requests.RequestException) as exc:
+            code = 'OAUTH_NETWORK_TIMEOUT' if isinstance(exc, (TimeoutError, requests.Timeout)) else 'OAUTH_TLS_HANDSHAKE_FAILED' if isinstance(exc, requests.exceptions.SSLError) else 'OAUTH_NETWORK_UNAVAILABLE'
+            return {'status': 'unknown' if received else 'failed', 'document': None,
+                    'error_code': code, 'unapplied_result': received}
         try:
             return {'status': 'completed', 'document': _update_oauth_document(document, updates), 'error_code': ''}
         except (ValueError, TypeError, KeyError):
@@ -63,8 +65,12 @@ def execute(context, material):
         proxy = os.getenv('REG_FACTORY_PRODUCTION_PROXY', '').strip()
         if proxy:
             session.proxies.update(http=proxy, https=proxy)
-        response = session.post(OPENAI_TOKEN_URL, data={'client_id': token.get('client_id') or OPENAI_CLIENT_ID,
-            'grant_type': 'refresh_token', 'refresh_token': refresh_token, 'scope': 'openid profile email offline_access'}, timeout=timeout)
+        try:
+            response = session.post(OPENAI_TOKEN_URL, data={'client_id': token.get('client_id') or OPENAI_CLIENT_ID,
+                'grant_type': 'refresh_token', 'refresh_token': refresh_token, 'scope': 'openid profile email offline_access'}, timeout=timeout)
+        except requests.RequestException as exc:
+            code = 'OAUTH_NETWORK_TIMEOUT' if isinstance(exc, requests.Timeout) else 'OAUTH_TLS_HANDSHAKE_FAILED' if isinstance(exc, requests.exceptions.SSLError) else 'OAUTH_NETWORK_UNAVAILABLE'
+            return {'status': 'failed', 'document': None, 'error_code': code}
         try:
             data = response.json() if response.content else {}
         except ValueError:
@@ -72,10 +78,12 @@ def execute(context, material):
     explicit = account_failure(data) if response.status_code >= 400 else None
     if explicit:
         return {'status': 'failed', 'document': None, 'error_code': explicit['error_code'].upper()}
-    if response.status_code in {400, 401}:
-        return {'status': 'failed', 'document': None, 'error_code': 'RT_REJECTED'}
+    code = error_code(data)
+    if response.status_code in {400, 401} and code in {'invalid_grant', 'invalid_token', 'refresh_token_reused', 'refresh_token_expired', 'refresh_token_revoked'}:
+        return {'status': 'failed', 'document': None, 'error_code': code.upper()}
     if response.status_code != 200 or not isinstance(data, dict) or not data.get('access_token'):
-        return {'status': 'unknown', 'document': None, 'error_code': 'RT_RESULT_UNKNOWN'}
+        code = 'RATE_LIMIT_EXCEEDED' if response.status_code == 429 else 'OAUTH_SERVICE_UNAVAILABLE' if response.status_code >= 500 else 'OAUTH_RESPONSE_INVALID' if response.status_code == 200 else 'OAUTH_REQUEST_REJECTED'
+        return {'status': 'failed', 'document': None, 'error_code': code}
     updates = {k: data[k] for k in ('access_token', 'refresh_token', 'id_token', 'expires_in') if k in data}
     combined = {**token, **updates}
     try:
@@ -103,8 +111,4 @@ def main():
 
 
 if __name__ == '__main__':
-    try:
-        main()
-    except Exception:
-        print(json.dumps({'status': 'unknown', 'document': None, 'error_code': 'ASSET_EXECUTION_UNKNOWN'}))
-        sys.exit(75)
+    main()

@@ -13,6 +13,8 @@ package mail
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -28,11 +30,14 @@ type Runner struct {
 	Conn mailClient
 	wake chan struct{}
 
-	mu        sync.Mutex
-	lastError string
-	lastOK    time.Time
-	lastIdle  time.Time
-	lastBatch int
+	mu           sync.Mutex
+	lastError    string
+	lastOK       time.Time
+	lastIdle     time.Time
+	lastBatch    int
+	graphToken   string
+	graphExpiry  time.Time
+	graphRefresh string
 }
 
 func (a *App) newRunner(src Source) *Runner {
@@ -84,8 +89,18 @@ func (r *Runner) tick(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	client, err := r.ensureClient(ctx)
-	if err == nil {
+	var client mailClient
+	switch r.Src.Transport {
+	case "", TransportIMAP:
+		client, err = r.ensureClient(ctx)
+	case TransportGraph, TransportPOP3:
+		op, cancel := context.WithTimeout(ctx, 60*time.Second)
+		err = r.pollTransport(op)
+		cancel()
+	default:
+		err = fmt.Errorf("不支持此收件协议：%s", r.Src.Transport)
+	}
+	if err == nil && client != nil {
 		op, cancel := context.WithTimeout(ctx, 60*time.Second)
 		stop := context.AfterFunc(op, func() { _ = client.Close() })
 		err = r.catchUp(op, client)
@@ -111,13 +126,13 @@ func (r *Runner) tick(ctx context.Context) error {
 		return err
 	}
 	var pending int
-	if err = r.App.DB.db.QueryRow("SELECT count(*) FROM mail_sync_requests WHERE source_id=? AND state='pending'", r.Src.ID).Scan(&pending); err != nil {
+	if err = r.App.DB.ex.QueryRow("SELECT count(*) FROM mail_sync_requests WHERE source_id=? AND state='pending'", r.Src.ID).Scan(&pending); err != nil {
 		return err
 	}
 	if pending > 0 {
 		return nil
 	}
-	if r.Src.Idle && client.SupportsIdle() {
+	if client != nil && r.Src.Idle && client.SupportsIdle() {
 		_, err = client.WaitForMail(ctx, idleWindow, recheckEvery, r.wake)
 		return err
 	}
@@ -240,9 +255,6 @@ func (r *Runner) catchUp(ctx context.Context, client mailClient) error {
 		return err
 	}
 	r.Src.LastUID = highest
-	if r.App.Cfg.RetentionDays > 0 {
-		_ = r.App.DB.PruneOlderThan(r.App.Cfg.RetentionDays)
-	}
 	return r.markOK(stored)
 }
 
@@ -302,8 +314,10 @@ func (r *Runner) safeError(err error) string {
 		return ""
 	}
 	message := err.Error()
-	if r.Src.Password != "" {
-		message = strings.ReplaceAll(message, r.Src.Password, "[redacted]")
+	for _, secret := range []string{r.Src.Password, r.Src.RefreshToken, r.Src.APIKey, r.Src.JWT, r.graphToken, r.graphRefresh} {
+		if secret != "" {
+			message = strings.ReplaceAll(message, secret, "[redacted]")
+		}
 	}
 	if len(message) > 400 {
 		message = message[:400]
@@ -319,7 +333,9 @@ type managedRunner struct {
 }
 
 func sameSource(a, b Source) bool {
-	return a.Host == b.Host && a.Port == b.Port && a.Username == b.Username && a.Password == b.Password && a.Folder == b.Folder && a.Idle == b.Idle && a.IntervalSeconds == b.IntervalSeconds && a.HeartbeatSeconds == b.HeartbeatSeconds
+	// Graph reads its latest RT at each poll; normal token rotation must not
+	// restart the source or discard the cached AT. Account/protocol changes do.
+	return a.Host == b.Host && a.Port == b.Port && a.Username == b.Username && a.Password == b.Password && a.Folder == b.Folder && a.Idle == b.Idle && a.IntervalSeconds == b.IntervalSeconds && a.HeartbeatSeconds == b.HeartbeatSeconds && a.Transport == b.Transport && a.CredentialMode == b.CredentialMode && a.ClientID == b.ClientID && a.Endpoint == b.Endpoint
 }
 
 func (a *App) notifySources() {
@@ -358,6 +374,10 @@ func (a *App) RunSources(ctx context.Context) {
 	}()
 	timer := time.NewTicker(time.Second)
 	defer timer.Stop()
+	// One retention job for all sources/transports, rather than a full-store
+	// cleanup after every individual IMAP batch.
+	retention := time.NewTicker(time.Hour)
+	defer retention.Stop()
 	for {
 		sources, err := a.DB.ListSources(true)
 		if err == nil {
@@ -393,6 +413,12 @@ func (a *App) RunSources(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-timer.C:
+		case <-retention.C:
+			if a.Cfg.RetentionDays > 0 {
+				if err := a.DB.PruneOlderThan(a.Cfg.RetentionDays); err != nil {
+					log.Printf("[mail] scheduled retention failed: %v", err)
+				}
+			}
 		case <-a.changed:
 			for _, worker := range active {
 				select {

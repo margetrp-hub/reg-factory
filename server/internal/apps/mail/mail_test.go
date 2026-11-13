@@ -2,8 +2,37 @@ package mail
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/tiantianGPU/reg-factory/server/internal/testutil/testdatabase"
 )
+
+func TestMailboxSeedFailureIsVisibleAndRecoveryKeepsSavedSource(t *testing.T) {
+	cfg := Config{DBPath: testdatabase.DSN(t, t.TempDir()), IMAPHost: "imap.example.test", IMAPUser: "owner@example.test"}
+	if app, err := New(cfg); err == nil {
+		app.Close()
+		t.Fatal("invalid source seed silently ignored")
+	} else if !strings.Contains(err.Error(), "密码") {
+		t.Fatal("missing source failure reason", err)
+	}
+	cfg.IMAPPass = "fixture-password"
+	app, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.Close()
+	cfg.IMAPUser, cfg.IMAPPass = "different@example.test", "different-password"
+	app, err = New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.Close()
+	sources, err := app.DB.ListSources(false)
+	if err != nil || len(sources) != 1 || sources[0].Username != "owner@example.test" || sources[0].Password != "fixture-password" {
+		t.Fatal("deployment seed replaced saved login", err)
+	}
+}
 
 func TestExtractCode(t *testing.T) {
 	cases := map[string]string{

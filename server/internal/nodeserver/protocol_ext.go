@@ -109,6 +109,29 @@ func (h *Handler) refreshFailureCode(taskID string) string {
 		if events[i].Stream != "stdout" || json.Unmarshal([]byte(events[i].Line), &result) != nil || result.Result != "failed" {
 			continue
 		}
+		if result.Schema == "account.failure.v2" {
+			switch result.Code {
+			case "account_deactivated", "account_banned", "workspace_deactivated", "deactivated_workspace":
+				return strings.ToUpper(result.Code)
+			case "platform_authorization_unsupported", "credential_task_busy", "credential_document_ambiguous",
+				"credential_not_found", "refresh_token_required", "credential_save_failed", "credential_login_material_invalid",
+				"invalid_grant", "invalid_token", "refresh_token_reused", "refresh_token_expired", "refresh_token_revoked",
+				"oauth_service_unavailable", "oauth_response_invalid", "oauth_request_rejected", "oauth_callback_invalid",
+				"phone_required", "add_phone_failed", "add_phone_requires_sms_client", "email_otp_rejected_429",
+				"email_otp_not_found", "email_otp_provider_required", "email_otp_verification_failed",
+				"oauth_cloudflare_challenge", "oauth_callback_not_found", "oauth_callback_timeout", "login_continue_failed",
+				"choose_account_failed", "about_you_failed", "oauth_authorization_failed", "authorization_browser_error",
+				"credential_result_incomplete", "credential_identity_mismatch", "credential_worker_exited",
+				"mfa_totp_verification_failed", "mfa_challenge_rejected", "mfa_totp_secret_required",
+				"mfa_totp_factor_not_available", "mfa_primary_factor_required", "mfa_totp_code_unavailable",
+				"invalid_username_or_password", "rate_limit_exceeded", "oauth_tls_handshake_failed",
+				"oauth_certificate_verification_failed", "oauth_network_timeout", "oauth_network_unavailable",
+				"oauth_login_check_http_error", "oauth_login_check_invalid_response":
+				return "WORK_ACCOUNT_" + strings.ToUpper(result.Code)
+			default:
+				return "WORK_ACCOUNT_FAILURE_REASON_INVALID"
+			}
+		}
 		if result.Schema != "account.failure.v1" {
 			return fallback
 		}

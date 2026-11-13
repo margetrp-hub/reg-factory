@@ -1,8 +1,8 @@
 package mail
 
-// Store is the IC 邮箱 app's own SQLite database. It lives next to regd's data
-// (same /data volume) but in a separate file so the app can be dropped or
-// rebuilt without touching reg-factory's own tables.
+// Store owns the local mail_sources/mail_pool/message tables in MAIL_DB.
+// Deployed nodes use their local PostgreSQL; the SQLite opener remains for
+// isolated fixtures and explicitly read historical data, never a PG fallback.
 //
 // Two schema decisions matter at a few thousand mailboxes:
 //   - alias_key / sort_ts are materialised columns; LOWER(x) = ? or
@@ -31,7 +31,7 @@ import (
 // ErrNotFound is returned when a row is absent.
 var ErrNotFound = errors.New("not found")
 
-// DB wraps the sqlite handle with the queries the app needs.
+// DB owns mailbox queries and serializes source configuration with result writes.
 type DB struct {
 	dialect storepkg.Dialect
 	ex      *storepkg.Execer
@@ -39,7 +39,7 @@ type DB struct {
 
 	db   *sql.DB
 	path string
-	mu   sync.Mutex // writers serialise; readers are concurrent (WAL)
+	mu   sync.Mutex // source updates and ingestion writes share the same ownership check
 }
 
 // OpenDB prepares the app database.
@@ -47,7 +47,7 @@ type DB struct {
 //
 // 参数可以是 SQLite 文件路径，也可以是 PG DSN：
 //
-//	/data/icmail.db
+//	/data/mail_pool.db
 //	host=127.0.0.1 port=5433 dbname=regfactory user=postgres password=xxx
 //
 // 两种后端返回同一个 *DB。PG 模式下不执行 SQLite 专属的建表 SQL，
@@ -484,7 +484,8 @@ func (d *DB) CountsByTag() (map[string]int, error) {
 
 // --- sources ---------------------------------------------------------------
 
-// Source is one IMAP account + folder.
+// Source owns one mailbox and its selected transport; credentials never go in
+// address-pool rows. The same source may receive mail for multiple aliases.
 type Source struct {
 	ID               int64
 	Name             string
@@ -551,6 +552,55 @@ func (d *DB) UpsertSource(src Source) (Source, error) {
 			return Source{}, err
 		}
 	}
+	var old Source
+	if id != 0 {
+		var err error
+		old, err = d.getSource(id)
+		if err != nil {
+			return Source{}, err
+		}
+		if src.Password == "" {
+			src.Password = old.Password
+		}
+		if src.RefreshToken == "" {
+			src.RefreshToken = old.RefreshToken
+		}
+		if src.ClientID == "" {
+			src.ClientID = old.ClientID
+		}
+	}
+	src.Transport = defaultStr(src.Transport, TransportIMAP)
+	src.Folder = defaultStr(src.Folder, "INBOX")
+	if strings.TrimSpace(src.Name) == "" || strings.TrimSpace(src.Username) == "" {
+		return Source{}, errors.New("请填写来源名称和登录账号")
+	}
+	switch src.Transport {
+	case TransportIMAP, TransportPOP3:
+		src.CredentialMode = "password"
+		if src.Host == "" || src.Password == "" || strings.ContainsAny(src.Host, " /\\\r\n") || strings.ContainsAny(src.Username+src.Password, "\r\n") {
+			return Source{}, errors.New("请填写邮件服务器和应用专用密码")
+		}
+		if src.Port == 0 {
+			if src.Transport == TransportPOP3 {
+				src.Port = 995
+			} else {
+				src.Port = 993
+			}
+		}
+		if src.Port < 1 || src.Port > 65535 {
+			return Source{}, errors.New("邮件端口应为 1–65535")
+		}
+		if src.Transport == TransportPOP3 {
+			src.Idle = false
+		}
+	case TransportGraph:
+		src.CredentialMode, src.Idle = "oauth_refresh", false
+		if src.ClientID == "" || src.RefreshToken == "" {
+			return Source{}, errors.New("请填写 Microsoft Client ID 和邮箱 Refresh Token")
+		}
+	default:
+		return Source{}, errors.New("请选择 IMAP、POP3 或 Microsoft Graph 收信；临时邮箱 API 在邮箱来源配置中管理")
+	}
 	if id == 0 {
 		err := d.ex.QueryRow(`INSERT INTO mail_sources(
 			name,host,port,username,password,folder,enabled,idle,
@@ -569,14 +619,10 @@ func (d *DB) UpsertSource(src Source) (Source, error) {
 			return Source{}, err
 		}
 	} else {
-		old, err := d.getSource(id)
-		if err != nil {
-			return Source{}, err
-		}
-		if src.Password == "" {
-			src.Password = old.Password
-		}
-		changed := old.Username != src.Username || old.Folder != defaultStr(src.Folder, "INBOX") || old.Host != src.Host || old.Port != defaultInt(src.Port, 993)
+		var err error
+		// OAuth application/credential changes re-authorize the same mailbox.
+		// Only a changed message namespace invalidates its existing cursor.
+		changed := old.Username != src.Username || old.Folder != src.Folder || old.Host != src.Host || old.Port != defaultInt(src.Port, 993) || old.Transport != src.Transport
 		if changed {
 			var count int
 			if err = d.ex.QueryRow("SELECT count(*) FROM mail_messages WHERE source_id=?", id).Scan(&count); err != nil {
@@ -721,8 +767,23 @@ func (d *DB) Cursor(src Source, lastUID *uint32, lastOK *time.Time, lastErr stri
 		sets = append(sets, "last_error = NULL")
 	}
 	args = append(args, src.ID)
-	_, err := d.ex.Exec("UPDATE mail_sources SET "+strings.Join(sets, ", ")+" WHERE id = ?", args...)
-	return err
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = d.ex.ExecTxArgs(tx, "UPDATE mail_sources SET "+strings.Join(sets, ", ")+" WHERE id = ?", args...); err != nil {
+		return err
+	}
+	if lastOK != nil {
+		// Successful access is the recovery fact for expired mailbox login.
+		// Administrative pause, parent shutdown and platform bans stay separate.
+		if _, err = d.ex.ExecTxArgs(tx, `UPDATE mail_pool SET state='ready',last_error='',last_error_code=''
+ WHERE source_id=? AND state='auth_failed'`, src.ID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 var ErrSourceChanged = errors.New("收件来源已变更或停用，原连接停止写入；新配置由收件器自动接续")
@@ -828,35 +889,6 @@ FROM mail_messages WHERE alias_key IS NOT NULL AND alias_key != '' GROUP BY alia
 
 // --- aliases / sources management -----------------------------------------
 
-// AliasState 是别名 + 计数 + 状态的联表视图。
-type AliasState struct {
-	HME       string  `json:"hme"`
-	State     string  `json:"state"`
-	Manual    bool    `json:"manual"`
-	Total     int     `json:"total"`
-	RiskHits  int     `json:"riskHits"`
-	LastTag   string  `json:"lastTag"`
-	LastTS    float64 `json:"lastTs"`
-	UpdatedAt float64 `json:"updatedAt"`
-}
-
-// ListAliases retains the original API over the persistent address pool.
-func (d *DB) ListAliases(ctx context.Context) ([]AliasState, error) {
-	out := []AliasState{}
-	for offset := 0; ; offset += 100 {
-		page, total, err := d.PoolPage(ctx, "", "", 0, 100, offset)
-		if err != nil {
-			return nil, err
-		}
-		for _, m := range page {
-			out = append(out, AliasState{HME: m.Email, State: m.State, Manual: m.Manual, Total: m.Total, RiskHits: m.RiskHits, LastTS: m.LastAt, LastTag: m.LastTag, UpdatedAt: m.UpdatedAt})
-		}
-		if offset+len(page) >= total {
-			return out, nil
-		}
-	}
-}
-
 var addrInHeader = regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`)
 
 // extractAddresses 从 To 头里取出邮箱（兼容 "Name <a@b.com>, c@d.com"）。
@@ -871,33 +903,6 @@ func extractAddresses(header string) []string {
 		}
 	}
 	return out
-}
-
-// SetAliasState 更新别名状态（active / paused / blocked）。
-func (d *DB) SetAliasState(ctx context.Context, hme, state string) error {
-	hme = strings.ToLower(strings.TrimSpace(hme))
-	if !looksLikeEmail(hme) || (state != "active" && state != "paused" && state != "blocked") {
-		return errors.New("邮箱或状态无效")
-	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	tx, err := d.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if _, err = d.ex.ExecTxArgs(tx, storepkg.UpsertIgnore(d.dialect, "INSERT INTO mail_pool(email,origin,created_at) VALUES(?,'manual',?)"), hme, float64(time.Now().Unix())); err != nil {
-		return err
-	}
-	_, err = d.ex.ExecTxArgs(tx, `
-INSERT INTO mail_alias_state(alias_hme, state, manual, updated_at)
-VALUES(?,?,1,?)
-ON CONFLICT(alias_hme) DO UPDATE SET state=excluded.state, manual=1, updated_at=excluded.updated_at`,
-		hme, state, float64(time.Now().UnixNano())/1e9)
-	if err != nil {
-		return err
-	}
-	return tx.Commit()
 }
 
 // SetSourceEnabled 启停一个 IMAP 源。

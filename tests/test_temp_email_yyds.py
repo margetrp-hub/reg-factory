@@ -23,6 +23,12 @@ class FakeSession:
         self.responses = list(responses)
         self.calls = []
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        pass
+
     def get(self, url, **kwargs):
         self.calls.append(("GET", url, copy.deepcopy(kwargs)))
         return self.responses.pop(0)
@@ -149,7 +155,7 @@ class YydsMailTests(unittest.TestCase):
             FakeResponse(status_code=404, data={"error": "not found"}, text="not found"),
         ])
 
-        with self.assertRaisesRegex(RuntimeError, "YYDS fetch 404"):
+        with self.assertRaisesRegex(RuntimeError, "YYDS 取信失败.*404"):
             temp_email._yyds_fetch(
                 "box-1", "a@example.com", "mail-token", "AC-test", None, sess,
             )

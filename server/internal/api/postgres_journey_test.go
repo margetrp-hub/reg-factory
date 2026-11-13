@@ -58,7 +58,7 @@ func TestPostgresMailboxAndAssetReceiptJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer app.Close()
-	source, err := app.DB.UpsertSource(mail.Source{Name: "synthetic", Host: "mail.example.test", Password: "synthetic-secret", Enabled: true})
+	source, err := app.DB.UpsertSource(mail.Source{Name: "synthetic", Host: "mail.example.test", Username: "fixture@example.test", Password: "synthetic-secret", Enabled: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,10 @@ func TestPostgresMailboxAndAssetReceiptJourney(t *testing.T) {
 			t.Fatalf("mail state %s: %v", state, err)
 		}
 	}
-	if err = app.DB.SetAliasState(ctx, "manual@example.test", "paused"); err != nil {
+	if _, err = app.DB.ImportMailboxes(ctx, source.ID, []string{"manual@example.test"}); err != nil {
+		t.Fatal(err)
+	}
+	if err = app.DB.SetMailbox(ctx, "manual@example.test", source.ID, "paused"); err != nil {
 		t.Fatal(err)
 	}
 	if items, total, err := app.DB.PoolPage(ctx, "fixture", "", 0, 25, 0); err != nil || total != 1 || len(items) != 1 {
@@ -112,7 +115,7 @@ func TestPostgresMailboxAndAssetReceiptJourney(t *testing.T) {
 	s := New(cfg, settings.NewEnv(filepath.Join(root, "settings.env")), st, manager, auth.New(cfg), "fixture", app)
 	r := gin.New()
 	s.Register(r)
-	for _, base := range []string{"/api/apps/mail", "/api/apps/icmail"} {
+	for _, base := range []string{"/api/apps/mail"} {
 		for _, authenticated := range []bool{false, true} {
 			req := httptest.NewRequest("GET", base+"/pool", nil)
 			if authenticated {

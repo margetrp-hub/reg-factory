@@ -411,10 +411,27 @@
         "key": "OUTLOOK_GRAPH_RECOVERY_PROVIDER",
         "type": "choice",
         "choices": [
+          "icmail",
+          "moemail",
           "yyds",
+          "gptmail",
+          "cfmail",
+          "icloud",
+          "remail",
           "custom",
           "outlook"
         ],
+        "labels": {
+          "icmail": "内置邮箱池",
+          "moemail": "MoeMail",
+          "yyds": "YYDS Mail",
+          "gptmail": "GPTMail",
+          "cfmail": "CFMail",
+          "icloud": "iCloud API",
+          "remail": "Remail",
+          "custom": "自定义邮箱 API",
+          "outlook": "已有 Outlook 辅助邮箱"
+        },
         "default": "yyds",
         "help": "Graph 辅助邮箱提供方；outlook 使用下方用户自有邮箱并通过 Graph API 收码",
         "label": "Outlook 辅助邮箱来源",
@@ -1213,6 +1230,12 @@
           "icloud",
           "remail"
         ],
+        "labels": {
+          "pool": "Outlook 邮箱池",
+          "icmail": "内置邮箱池",
+          "icloud": "iCloud API",
+          "remail": "Remail"
+        },
         "default": "pool",
         "help": "注册默认邮箱来源；icmail 使用内置地址池。已有账号授权优先使用保存的邮箱来源，无来源及邮箱专用凭据时沿用此项的内置池选择。邮箱登录在邮箱池→收件来源维护。",
         "label": "ChatGPT 邮箱来源",
@@ -1237,17 +1260,27 @@
         "key": "TEMP_EMAIL_PROVIDER",
         "type": "choice",
         "choices": [
+          "icmail",
+          "moemail",
           "yyds",
           "gptmail",
-          "moemail",
           "cfmail",
           "icloud",
-          "icmail",
           "remail",
           "custom"
         ],
+        "labels": {
+          "icmail": "内置邮箱池",
+          "moemail": "MoeMail",
+          "yyds": "YYDS Mail",
+          "gptmail": "GPTMail",
+          "cfmail": "CFMail",
+          "icloud": "iCloud API",
+          "remail": "Remail",
+          "custom": "自定义邮箱 API"
+        },
         "default": "gptmail",
-        "help": "Claude/Grok 默认临时邮箱 provider(需配好对应 key)，任务表单也可临时指定。",
+        "help": "API 邮箱与内置邮箱池共用来源目录；各平台任务按自己的模式选择，取信时始终沿用申请邮箱时的来源。",
         "label": "临时邮箱服务商",
         "smart": true,
         "advanced": false,
@@ -1647,6 +1680,51 @@
         "help": "opus 网关 key",
         "label": "Opus 模型 API 密钥",
         "smart": true,
+        "advanced": false
+      }
+    ]
+  },
+  {
+    "group": "邮箱 · 内置邮箱池",
+    "area": "mail",
+    "items": [
+      {
+        "key": "MAIL_ADMIN_KEY",
+        "label": "额外管理密钥",
+        "secret": true,
+        "apply": "restart",
+        "help": "可选；正常使用面板登录。独立调用管理接口时使用额外密钥。",
+        "advanced": false
+      },
+      {
+        "key": "MAIL_RETENTION_DAYS",
+        "label": "邮件保留天数",
+        "type": "int",
+        "default": 90,
+        "apply": "restart",
+        "help": "所有收件来源共用保留规则，每小时清理过期正文；不删除地址、凭据和手动状态。",
+        "advanced": false
+      },
+      {
+        "key": "MAIL_TURNSTILE_SITE_KEY",
+        "label": "公开取码站点密钥",
+        "apply": "restart",
+        "help": "公开取码页使用的 Turnstile Site Key。",
+        "advanced": false
+      },
+      {
+        "key": "MAIL_TURNSTILE_SECRET_KEY",
+        "label": "公开取码验证密钥",
+        "secret": true,
+        "apply": "restart",
+        "help": "公开取码请求的 Turnstile Secret Key。",
+        "advanced": false
+      },
+      {
+        "key": "MAIL_TURNSTILE_EXPECTED_HOSTNAME",
+        "label": "公开取码域名",
+        "apply": "restart",
+        "help": "核对验证码来源的域名，不包含协议与路径。",
         "advanced": false
       }
     ]

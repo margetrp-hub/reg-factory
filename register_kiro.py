@@ -17,6 +17,7 @@ import urllib.parse
 import uuid
 
 import requests as standard_requests
+from schema.mail_settings import MAIL_PROVIDERS
 
 try:
     from curl_cffi import requests as http_requests
@@ -639,7 +640,7 @@ def main():
     )
     parser.add_argument(
         "--temp-provider",
-        choices=("", "yyds", "remail", "gptmail", "moemail", "cfmail", "icloud", "icmail", "custom"),
+        choices=("", *MAIL_PROVIDERS),
         default="",
         help="--email-provider temp 时覆盖 TEMP_EMAIL_PROVIDER（如 yyds、gptmail、remail、custom）",
     )
@@ -661,7 +662,7 @@ def main():
         provider = "custom" if args.email_provider == "custom" else (args.temp_provider.strip() or None)
         for _ in range(max(1, args.count)):
             try:
-                mailbox = create_mailbox(provider=provider)
+                mailbox = create_mailbox(provider=provider, platform="kiro")
                 accounts.append((mailbox["email"], "", "", "", mailbox))
                 print(f"[kiro] mailbox allocated provider={mailbox.get('provider')}: {mailbox['email']}")
             except Exception as exc:

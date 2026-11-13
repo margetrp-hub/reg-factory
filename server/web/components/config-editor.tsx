@@ -233,7 +233,7 @@ export function ConfigEditor({ scope, area }: { scope: "system" | "node"; area?:
           className="sg-config-workspace min-w-0 [&>.card-head]:flex-wrap [&>.card-head>div]:flex-wrap"
           actions={
             <>
-              {!isNode && <Link className="btn-ghost" href={categoryId === "mail" ? "/apps/icmail/" : "/production/"}>{categoryId === "mail" ? "返回邮箱池" : "返回生产中心"}</Link>}
+              {!isNode && <Link className="btn-ghost" href={categoryId === "mail" ? "/apps/mail/" : "/production/"}>{categoryId === "mail" ? "返回邮箱池" : "返回生产中心"}</Link>}
               <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
                 <input type="checkbox" checked={reveal} onChange={(e) => setReveal(e.target.checked)} /> 显示密钥
               </label>
@@ -337,7 +337,7 @@ export function ConfigEditor({ scope, area }: { scope: "system" | "node"; area?:
 
         <div className="flex flex-wrap gap-2">
           <Link className="btn-ghost inline-flex" href={isNode ? "/nodes/" : "/nodes/config/"}>{isNode ? "节点通信状态" : "节点连接与密钥"}</Link>
-          {!isNode && categoryId === "mail" && <Link className="btn-ghost inline-flex" href="/apps/icmail/sources/">管理收件来源</Link>}
+          {!isNode && categoryId === "mail" && <Link className="btn-ghost inline-flex" href="/apps/mail/sources/">管理收件来源</Link>}
         </div>
       </div>
 

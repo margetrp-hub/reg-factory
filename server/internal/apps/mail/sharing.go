@@ -105,10 +105,14 @@ func (a *App) ShareSnapshot(ref string) (email, platform, kind, role, status str
 		err = e
 		return
 	}
-	src, e := a.DB.getSource(box.SourceID)
-	if e != nil {
+	if box.SourceID == 0 {
 		doc = map[string]any{"email": email}
 		platform, kind, role, status = box.Provider, "material", "address", box.State
+		return
+	}
+	src, e := a.DB.getSource(box.SourceID)
+	if e != nil {
+		err = e
 		return
 	}
 	platform, kind, role, status = box.Provider, src.Transport, box.Role, box.State
@@ -132,7 +136,7 @@ func (a *App) ShareSnapshot(ref string) (email, platform, kind, role, status str
 	doc["username"] = src.Username
 	doc["source_enabled"] = src.Enabled
 	switch kind {
-	case "imap":
+	case TransportIMAP, TransportPOP3:
 		doc["host"], doc["port"], doc["password"], doc["folder"], doc["ssl"] = src.Host, src.Port, src.Password, src.Folder, true
 	case "graph", "outlook":
 		kind = "graph"

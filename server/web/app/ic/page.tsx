@@ -4,7 +4,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
-const BASE = "/api/apps/icmail/public";
+const BASE = "/api/apps/mail/public";
 
 type CodeResult = { email: string; code: string; receivedAt: number; ageSeconds: number; scanned: number };
 

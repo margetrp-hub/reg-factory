@@ -1,4 +1,8 @@
-"""Read the built-in mailbox pool through regd; never copy its login settings."""
+"""Read every built-in mailbox provider through regd's single local mail API.
+
+The persisted provider identifier ``icmail`` remains an account-material value;
+it is not an alternate route or an external iCloud mailbox API.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -14,9 +18,11 @@ import requests
 class MailboxError(RuntimeError):
     pass
 
+class MailboxUnavailable(MailboxError):
+    pass
 
 def _get(path, **params):
-    address = os.environ.get("REG_FACTORY_ICMAIL_ADDR") or os.environ.get("REGD_ADDR") or "127.0.0.1:8800"
+    address = os.environ.get("REG_FACTORY_MAIL_ADDR") or os.environ.get("REGD_ADDR") or "127.0.0.1:8800"
     parsed = urlsplit("http://" + address)
     host = parsed.hostname or ""
     if host in {"0.0.0.0", "::", "localhost"}:
@@ -28,24 +34,24 @@ def _get(path, **params):
     if not local or parsed.username or parsed.password or parsed.path:
         raise MailboxError("内置邮箱只连接本节点 regd，请检查节点监听地址")
     host = f"[{host}]" if ":" in host else host
-    key = os.environ.get("REG_FACTORY_ICMAIL_KEY") or os.environ.get("REG_FACTORY_PANEL_PASSWORD", "")
+    key = os.environ.get("REG_FACTORY_MAIL_KEY") or os.environ.get("REG_FACTORY_PANEL_PASSWORD", "")
     if not key and os.environ.get("REG_FACTORY_ALLOW_ANONYMOUS", "").lower() not in {"1", "true"}:
         raise MailboxError("内置邮箱缺少本节点访问凭据，请从 SG 任务入口执行")
     with requests.Session() as session:
         session.trust_env = False
         try:
-            response = session.get(f"http://{host}:{parsed.port or 8800}/api/apps/icmail{path}",
+            response = session.get(f"http://{host}:{parsed.port or 8800}/api/apps/mail{path}",
                 params=params, headers={"X-API-Key": key}, timeout=(3, 8), allow_redirects=False)
         except requests.RequestException:
             raise MailboxError("内置邮箱连接失败，请检查本节点服务后重试") from None
         if response.status_code in {401, 403}:
             raise MailboxError("内置邮箱访问未授权，请检查节点配置")
-        if response.status_code == 409:
-            raise MailboxError("邮箱未登记、已暂停或来源不可用，请在邮箱池重配原地址与收件来源")
-        if response.status_code != 200:
-            raise MailboxError(f"内置邮箱读取失败（HTTP {response.status_code}），请重试")
         try:
             body = response.json()
+            if response.status_code == 409:
+                raise MailboxUnavailable((body.get("error") or {}).get("message") or "邮箱不可用，请检查邮箱池")
+            if response.status_code != 200:
+                raise MailboxError(f"内置邮箱读取失败（HTTP {response.status_code}），请重试")
             if body.get("ok") is not True or not isinstance(body.get("data"), dict):
                 raise ValueError()
             return body["data"]
@@ -53,14 +59,14 @@ def _get(path, **params):
             raise MailboxError("内置邮箱返回无效，请检查本节点服务") from None
 
 
-def bind(email):
+def bind(email, platform="chatgpt"):
     """Bind an existing identity before sending OTP; this never allocates mail."""
     identity = str(email or "").strip().lower()
-    snapshot = _get("/workflow/mailbox", email=identity)
+    snapshot = _get("/workflow/mailbox", email=identity, platform=platform)
     if snapshot.get("email") != identity:
         raise MailboxError("内置邮箱返回的身份不一致")
     print("  [mail] 使用内置邮箱池，已绑定原邮箱；等待本次新邮件", flush=True)
-    return {"id": identity, "email": identity, "provider": "icmail",
+    return {"id": identity, "email": identity, "provider": "icmail", "platform": platform,
             "cursor": int(snapshot["cursor"]), "source_id": int(snapshot["source_id"]),
             "started_at": time.time()}
 
@@ -76,19 +82,23 @@ def allocate(platform="chatgpt", email=""):
     else:
         offset = 0
         while True:
-            page = _get("/pool", state="active", limit=100, offset=offset)
+            page = _get("/workflow/candidates", platform=platform, offset=offset)
             items = page.get("items") or []
             candidates.extend(item["email"] for item in items
                 if item.get("sourceEnabled") and item.get("sourceId") and item.get("origin") != "discovered")
             offset += len(items)
             if not items or offset >= int(page.get("total", 0)):
                 break
-    with emails._lock, file_lock(f"{emails.EMAILS_FILE}.icmail.reserve"):
+    with emails._lock, file_lock(f"{emails.EMAILS_FILE}.mail_pool.reserve"):
         used = emails._load_used(platform)
         for identity in candidates:
             if identity.lower() in used:
                 continue
-            mailbox = bind(identity)
+            try:
+                mailbox = bind(identity, platform)
+            except MailboxUnavailable:
+                if email: raise
+                continue
             emails.mark_registration_started(platform, identity)
             print(f"  [mail] 内置邮箱已登记本次注册占用：{identity}", flush=True)
             return mailbox
@@ -99,7 +109,7 @@ def read_messages(mailbox, received_after=None):
     # Mail Date headers have second precision; the captured ID excludes old mail
     # even when a newly sent message shares this same second.
     after = int(max(float(mailbox.get("started_at") or 0), float(received_after or 0)))
-    snapshot = _get("/workflow/mailbox", email=mailbox["email"], cursor=mailbox.get("cursor", 0), after=after)
+    snapshot = _get("/workflow/mailbox", email=mailbox["email"], platform=mailbox["platform"], cursor=mailbox.get("cursor", 0), after=after)
     if snapshot.get("email") != mailbox["email"] or snapshot.get("source_id") != mailbox.get("source_id"):
         raise MailboxError("邮箱收件来源已变化，请在原任务重新授权后取码")
     return snapshot.get("messages") or []

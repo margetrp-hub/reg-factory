@@ -121,7 +121,6 @@ RUN set -eux; \
 
 ENV REGD_ADDR=0.0.0.0:8800 \
     REGD_APP_ROOT=/app \
-    REGD_DB=/data/regd.db \
     REGD_PYTHON=python3 \
     REG_FACTORY_DATA_DIR=/data \
     REG_FACTORY_ENV_FILE=/data/.env \

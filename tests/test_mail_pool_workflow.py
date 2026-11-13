@@ -11,10 +11,10 @@ from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
-from common import emails, icmail
+from common import emails, mail_pool
 
 
-class ICMailWorkflowTests(unittest.TestCase):
+class MailPoolWorkflowTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
@@ -32,7 +32,7 @@ class ICMailWorkflowTests(unittest.TestCase):
                 if self.headers.get("X-API-Key") != "test-secret":
                     self.send_response(401); self.end_headers(); return
                 status = 200
-                if parsed.path.endswith("/pool"):
+                if parsed.path.endswith("/workflow/candidates"):
                     data = {"items": [{"email": "person@example.test", "sourceId": 1,
                         "sourceEnabled": True, "origin": "imported"}], "total": 1}
                 elif not test.enabled:
@@ -50,8 +50,8 @@ class ICMailWorkflowTests(unittest.TestCase):
         thread = threading.Thread(target=self.server.serve_forever, daemon=True); thread.start()
         self.addCleanup(self.server.server_close); self.addCleanup(self.server.shutdown)
         env = patch.dict(os.environ, {"REG_FACTORY_DATA_DIR": self.directory.name,
-            "REG_FACTORY_ICMAIL_ADDR": f"127.0.0.1:{self.server.server_port}",
-            "REG_FACTORY_ICMAIL_KEY": "test-secret", "HTTP_PROXY": "http://unreachable.invalid:1"})
+            "REG_FACTORY_MAIL_ADDR": f"127.0.0.1:{self.server.server_port}",
+            "REG_FACTORY_MAIL_KEY": "test-secret", "HTTP_PROXY": "http://unreachable.invalid:1"})
         env.start(); self.addCleanup(env.stop)
         pool = patch.object(emails, "EMAILS_FILE", str(Path(self.directory.name) / "emails.txt"))
         pool.start(); self.addCleanup(pool.stop)
@@ -71,8 +71,8 @@ class ICMailWorkflowTests(unittest.TestCase):
             registration = register_chatgpt.allocate_chatgpt_registration_mailbox()
         mailbox = registration["mailbox"]
         self.mail("222222")
-        self.assertEqual(asyncio.run(icmail.poll_code(mailbox, max_wait=.2)), "222222")
-        with self.assertRaises(icmail.MailboxError): icmail.allocate()
+        self.assertEqual(asyncio.run(mail_pool.poll_code(mailbox, max_wait=.2)), "222222")
+        with self.assertRaises(mail_pool.MailboxError): mail_pool.allocate()
         record = login_record({"email": mailbox["email"], "email_provider": "icmail"})
         record = parse_account_line(canonical_account_line(record))
         self.assertEqual(record["provider"], "icmail")
@@ -80,33 +80,55 @@ class ICMailWorkflowTests(unittest.TestCase):
         self.assertEqual(asyncio.run(provider.prepare()), "icmail-pool")
         self.mail("333333")
         self.assertEqual(asyncio.run(provider(record["email"], time.time())), "333333")
-        with self.assertRaises(icmail.MailboxError): asyncio.run(provider("other@example.test", time.time()))
+        with self.assertRaises(mail_pool.MailboxError): asyncio.run(provider("other@example.test", time.time()))
         self.enabled = False
-        with self.assertRaises(icmail.MailboxError): asyncio.run(provider.prepare())
+        with self.assertRaises(mail_pool.MailboxError): asyncio.run(provider.prepare())
         self.enabled = True
         asyncio.run(provider.prepare())
-        self.assertIsNone(asyncio.run(icmail.poll_code(provider.icmail, max_wait=.03, poll_interval=.01)))
+        self.assertIsNone(asyncio.run(mail_pool.poll_code(provider.icmail, max_wait=.03, poll_interval=.01)))
         self.mail("444444")
         self.assertEqual(asyncio.run(provider(record["email"], time.time())), "444444")
-        self.assertTrue(all(path.startswith("/api/apps/icmail/") for path, _ in self.requests))
+        self.assertTrue(all(path.startswith("/api/apps/mail/") for path, _ in self.requests))
 
     def test_concurrent_registration_reserves_only_once(self):
         def claim():
-            try: return icmail.allocate()["email"]
-            except icmail.MailboxError: return None
+            try: return mail_pool.allocate()["email"]
+            except mail_pool.MailboxError: return None
         with ThreadPoolExecutor(max_workers=2) as executor:
             results = list(executor.map(lambda _: claim(), range(2)))
         self.assertEqual(results.count("person@example.test"), 1)
 
+    def test_unavailable_candidate_does_not_block_the_next_mailbox(self):
+        candidates = {"items": [{"email": email, "sourceId": 1, "sourceEnabled": True,
+            "origin": "imported"} for email in ("paused@example.test", "person@example.test")], "total": 2}
+        original_get = mail_pool._get
+
+        def read(path, **params):
+            if path == "/workflow/candidates":
+                return candidates
+            if params.get("email") == "paused@example.test":
+                raise mail_pool.MailboxUnavailable("paused after listing")
+            return original_get(path, **params)
+
+        with patch.object(mail_pool, "_get", side_effect=read):
+            self.assertEqual(mail_pool.allocate("kiro")["email"], "person@example.test")
+        self.assertEqual(self.requests[-1][1]["platform"], ["kiro"])
+
+    def test_source_failure_is_reported_without_allocating_another_mailbox(self):
+        with patch.object(mail_pool, "_get", side_effect=mail_pool.MailboxError("source unavailable")):
+            with self.assertRaisesRegex(mail_pool.MailboxError, "source unavailable"):
+                mail_pool.allocate("grok")
+        self.assertFalse(emails._load_used("grok"))
+
     def test_other_registration_modes_share_pool_and_fresh_message_adapter(self):
         from common.temp_email import create_mailbox, fetch_messages
         self.mail("111111", age=30)
-        mailbox = create_mailbox(provider="icmail")
+        mailbox = create_mailbox(provider="icmail", platform="claude")
         self.mail("222222")
         messages = fetch_messages(mailbox["id"], "icmail", email=mailbox["email"], token=mailbox["token"])
         self.assertEqual(len(messages), 1)
         self.assertEqual(messages[0]["extracted"]["codes"], ["222222"])
-        with self.assertRaises(icmail.MailboxError): icmail.allocate("chatgpt")
+        with self.assertRaises(mail_pool.MailboxError): mail_pool.allocate("chatgpt")
 
     def test_exported_credentials_preserve_mailbox_source_for_next_authorization(self):
         from common.session_export import build_cpa_codex_json
@@ -121,8 +143,8 @@ class ICMailWorkflowTests(unittest.TestCase):
         self.assertEqual(record["provider"], "icloud")
 
     def test_rejects_remote_target_before_sending_panel_key(self):
-        with patch.dict(os.environ, {"REG_FACTORY_ICMAIL_ADDR": "example.invalid:8800"}):
-            with self.assertRaises(icmail.MailboxError): icmail.bind("person@example.test")
+        with patch.dict(os.environ, {"REG_FACTORY_MAIL_ADDR": "example.invalid:8800"}):
+            with self.assertRaises(mail_pool.MailboxError): mail_pool.bind("person@example.test")
         self.assertEqual(self.requests, [])
 
     def test_mail_defaults_and_cleared_secret_match_catalog(self):

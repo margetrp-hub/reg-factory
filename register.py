@@ -26,6 +26,7 @@ if sys.platform == "win32":
         sys.stdin.reconfigure(encoding="utf-8")
 
 import requests
+from schema.mail_settings import MAIL_PROVIDERS
 from patchright.async_api import async_playwright
 
 from bitbrowser import BitBrowser
@@ -6833,7 +6834,7 @@ async def main():
     )
     parser.add_argument(
         "--provider",
-        choices=("google", "yyds", "gptmail", "cfmail", "moemail", "icloud", "icmail", "remail", "custom"),
+        choices=("google", *MAIL_PROVIDERS),
         default=None,
         help="temporary email provider; yyds uses YYDS_API_KEY",
     )

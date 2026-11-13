@@ -35,7 +35,11 @@ Core的 `X-Admin-API-Key` 和客户开发者Bearer属于Aishop平台，不是SG�
 
 ### 内置邮箱执行与配置来源
 
-内置邮箱的注册/授权取信使用 `GET /api/apps/icmail/workflow/mailbox`，沿用面板认证，不能使用公开验证码入口替代。`email` 必须为完整、已登记且绑定启用来源的地址；首次不带 `cursor` 时只返回 `email/source_id/cursor/messages`（messages为空），记录该身份的最大消息编号。后续携带 `cursor` 和 Unix 秒 `after`，只返回该来源、精确收件地址、编号更新且发送时间符合条件的邮件（最多100条），不返回IMAP密码。
+注册候选使用 `GET /api/apps/mail/workflow/candidates?platform=chatgpt&offset=0`，按实际平台过滤已停用、手工暂停、平台受限、已移交和已知连接失败来源，每页最多100条。内置邮箱的注册/授权取信使用 `GET /api/apps/mail/workflow/mailbox?email=...&platform=...`，沿用面板认证，不能使用公开验证码入口替代。`email` 必须为完整、已登记且绑定启用来源的地址；首次不带 `cursor` 时只返回 `email/source_id/cursor/messages`（messages为空），记录该身份的最大消息编号。后续携带 `cursor` 和 Unix 秒 `after`，只返回该来源、精确收件地址、编号更新且发送时间符合条件的邮件（最多100条），不返回收信密码或RT。
+
+邮箱管理唯一前缀为 `/api/apps/mail`。`POST /sources` 选择 `transport=imap|pop3|graph`；秘密留空保留现值。`GET /pool/availability?email=...` 返回独立的平台及邮箱母号状态，`POST /pool/platform-state` 保存 `{email,platform,state}`，`POST /pool/parent-state` 保存 `{parent_id,state}`。平台状态允许 `unknown/registered/banned/blocked/rate_limited`；邮箱母号允许 `active/banned`。母号恢复不会解除子地址暂停或各平台限制。
+
+`POST /api/registry/claude-http` 使用 `{email,mailbox:"icmail",proxy?,timeout?}` 读取上述邮箱池，或 `{email,magic_link,...}` 使用已取得的链接。Graph 的 Client ID/RT 与 IMAP/POP3 密码只在来源中保存；此注册请求不再另行接收邮箱凭据或按邮箱后缀选择协议。
 
 非法参数400；未认证401；未登记、暂停、阻止或来源停用409；读取错误500。worker每次轮询复核来源，变更时结束本次等待并提示重配后重新授权。邮箱分配继续使用原跨进程占用账本；账号授权只绑定地址，不改变注册占用。消息时间和编号在查询分页前过滤，避免旧邮件或异常Date遮住本次验证码。
 

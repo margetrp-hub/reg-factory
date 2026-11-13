@@ -3,7 +3,8 @@
 import { ReactNode, useEffect, useRef, useState } from "react";
 import { Drawer } from "@/components/drawer";
 import { Badge, ErrorNote, Field } from "@/components/ui";
-import { MAIL_STATES, Mailbox, MailCode, MailSource, MailRequestError, mailRequest, mailTime } from "@/lib/icmail";
+import { MAIL_STATES, Mailbox, MailCode, MailSource, MailRequestError, mailRequest, mailTime, useMailData } from "@/lib/mail";
+import { PLATFORMS } from "@/lib/task-catalog";
 
 function MailForm({ title, subtitle, dirty, onClose, submit, label = "保存", children }: { title: string; subtitle?: string; dirty: boolean; onClose: () => void; submit: () => Promise<void>; label?: string; children: ReactNode }) {
   const [busy, setBusy] = useState(false);
@@ -28,22 +29,20 @@ function MailForm({ title, subtitle, dirty, onClose, submit, label = "保存", c
 }
 
 export function SourceEditor({ source, onClose, onSaved }: { source?: MailSource; onClose: () => void; onSaved: () => void }) {
-  const initial = { id: source?.id || 0, name: source?.name || "", host: source?.host || "", port: source?.port || 993, username: source?.username || "", password: "", folder: source?.folder || "INBOX", enabled: source?.enabled ?? true, idle: source?.idle ?? true, intervalSeconds: source?.intervalSeconds || 10, heartbeatSeconds: source?.heartbeatSeconds || 60 };
+  const initial = { id: source?.id || 0, name: source?.name || "", transport: source?.transport || "imap", host: source?.host || "", port: source?.port || 993, username: source?.username || "", password: "", clientID: source?.clientID || "", refreshToken: "", folder: source?.folder || "INBOX", enabled: source?.enabled ?? true, idle: source?.idle ?? true, intervalSeconds: source?.intervalSeconds || 10, heartbeatSeconds: source?.heartbeatSeconds || 60 };
   const [draft, setDraft] = useState(initial);
   const change = (key: keyof typeof draft, value: string | number | boolean) => setDraft(old => ({ ...old, [key]: value }));
-  return <MailForm title={source ? "编辑收件来源" : "新增收件来源"} subtitle="保存后自动应用连接设置。应用专用密码留空表示保留；已有收信的账号、服务器或文件夹需要通过新建来源更换。" dirty={JSON.stringify(draft) !== JSON.stringify(initial)} onClose={onClose} submit={async () => {
-    if (!draft.name.trim() || !draft.host.trim() || !draft.username.trim()) throw new Error("请填写名称、服务器和登录账号");
-    if (!source?.passwordSet && !draft.password) throw new Error("请填写应用专用密码");
-    if (draft.port < 1 || draft.port > 65535 || draft.intervalSeconds < 5 || draft.heartbeatSeconds < 5) throw new Error("端口需要在 1–65535 之间，间隔至少为 5 秒");
+  return <MailForm title={source ? "编辑收件来源" : "新增收件来源"} subtitle="保存后自动应用连接设置。密码或授权凭据留空表示保留；已有收信的账号、服务器或文件夹需要通过新建来源更换。" dirty={JSON.stringify(draft) !== JSON.stringify(initial)} onClose={onClose} submit={async () => {
     await mailRequest("/sources", { method: "POST", body: JSON.stringify({ ...draft, name: draft.name.trim(), host: draft.host.trim(), username: draft.username.trim() }) }); onSaved();
   }}>
     <Field label="来源名称"><input autoFocus className="field" value={draft.name} onChange={e => change("name", e.target.value)} placeholder="例如：业务收件箱" /></Field>
-    <div className="grid gap-4 sm:grid-cols-[1fr_110px]"><Field label="IMAP 服务器"><input className="field" value={draft.host} onChange={e => change("host", e.target.value)} placeholder="imap.example.com" /></Field><Field label="端口"><input className="field" type="number" min={1} max={65535} value={draft.port} onChange={e => change("port", Number(e.target.value))} /></Field></div>
+    <Field label="收信方式" hint="QQ、Gmail、网易、iCloud 等使用其支持的 IMAP 或 POP3；Microsoft 邮箱可使用 Graph 授权。"><select className="field" value={draft.transport} onChange={e => setDraft(old => ({...old, transport:e.target.value, port:e.target.value === "pop3" ? 995 : 993, idle:e.target.value === "imap"}))}><option value="imap">IMAP · 推送与轮询</option><option value="pop3">POP3 · 安全连接轮询</option><option value="graph">Microsoft Graph · 授权取信</option></select></Field>
+    {draft.transport !== "graph" && <div className="grid gap-4 sm:grid-cols-[1fr_110px]"><Field label="邮件服务器"><input className="field" value={draft.host} onChange={e => change("host", e.target.value)} placeholder={draft.transport === "pop3" ? "pop.example.com" : "imap.example.com"} /></Field><Field label="端口"><input className="field" type="number" min={1} max={65535} value={draft.port} onChange={e => change("port", Number(e.target.value))} /></Field></div>}
     <Field label="登录账号"><input className="field" value={draft.username} onChange={e => change("username", e.target.value)} autoComplete="off" /></Field>
-    <Field label="应用专用密码" hint={source?.passwordSet ? "已设置，留空保留原密码" : "使用邮箱提供商的应用专用密码"}><input className="field" type="password" value={draft.password} onChange={e => change("password", e.target.value)} autoComplete="new-password" /></Field>
-    <Field label="文件夹"><input className="field" value={draft.folder} onChange={e => change("folder", e.target.value)} /></Field>
+    {draft.transport === "graph" ? <><Field label="Client ID"><input className="field" value={draft.clientID} onChange={e => change("clientID", e.target.value)} autoComplete="off" /></Field><Field label="邮箱 Refresh Token" hint={source?.refreshTokenSet ? "已设置，留空保留；运行时自动保存更新后的授权" : "填写这一个 Microsoft 邮箱的授权资料"}><input className="field" type="password" value={draft.refreshToken} onChange={e => change("refreshToken", e.target.value)} autoComplete="new-password" /></Field></> : <Field label="应用专用密码" hint={source?.passwordSet ? "已设置，留空保留原密码" : "使用邮箱提供商的应用专用密码"}><input className="field" type="password" value={draft.password} onChange={e => change("password", e.target.value)} autoComplete="new-password" /></Field>}
+    {draft.transport !== "pop3" && <Field label="文件夹"><input className="field" value={draft.folder} onChange={e => change("folder", e.target.value)} /></Field>}
     <div className="grid gap-4 sm:grid-cols-2"><Field label="失败重连间隔（秒）"><input className="field" type="number" min={5} value={draft.intervalSeconds} onChange={e => change("intervalSeconds", Number(e.target.value))} /></Field><Field label="轮询间隔（秒）"><input className="field" type="number" min={5} value={draft.heartbeatSeconds} onChange={e => change("heartbeatSeconds", Number(e.target.value))} /></Field></div>
-    <div className="flex flex-wrap gap-5 text-sm"><label className="flex items-center gap-2"><input type="checkbox" checked={draft.enabled} onChange={e => change("enabled", e.target.checked)} />启用收件</label><label className="flex items-center gap-2"><input type="checkbox" checked={draft.idle} onChange={e => change("idle", e.target.checked)} />优先使用实时推送（IDLE）</label></div>
+    <div className="flex flex-wrap gap-5 text-sm"><label className="flex items-center gap-2"><input type="checkbox" checked={draft.enabled} onChange={e => change("enabled", e.target.checked)} />启用收件</label>{draft.transport === "imap" && <label className="flex items-center gap-2"><input type="checkbox" checked={draft.idle} onChange={e => change("idle", e.target.checked)} />优先使用实时推送（IDLE）</label>}</div>
   </MailForm>;
 }
 
@@ -62,12 +61,38 @@ export function ImportMailboxes({ sources, onClose, onSaved }: { sources: MailSo
 }
 
 export function MailboxEditor({ mailbox, sources, onClose, onSaved }: { mailbox: Mailbox; sources: MailSource[]; onClose: () => void; onSaved: () => void }) {
-  const [state, setState] = useState(mailbox.state);
+  const [state, setState] = useState(mailbox.manualState);
   const [source, setSource] = useState(mailbox.sourceId);
-  return <MailForm title="邮箱设置" subtitle={mailbox.email} dirty={state !== mailbox.state || source !== mailbox.sourceId} onClose={onClose} submit={async () => { await mailRequest("/pool/mailbox", { method: "POST", body: JSON.stringify({ email: mailbox.email, state, source_id: source }) }); onSaved(); }}>
+  return <MailForm title="邮箱设置" subtitle={mailbox.email} dirty={state !== mailbox.manualState || source !== mailbox.sourceId} onClose={onClose} submit={async () => { await mailRequest("/pool/mailbox", { method: "POST", body: JSON.stringify({ email: mailbox.email, state, source_id: source }) }); onSaved(); }}>
     <Field label="收件来源"><SourceSelect sources={sources} value={source} onChange={setSource} /></Field>
     <Field label="取码状态" hint="暂停或阻止后停止提供验证码，收信与历史仍保留。"><select className="field" value={state} onChange={e => setState(e.target.value)}>{Object.entries(MAIL_STATES).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></Field>
+    <MailboxAvailability mailbox={mailbox} onSaved={onSaved} />
   </MailForm>;
+}
+
+function MailboxAvailability({ mailbox, onSaved }: { mailbox: Mailbox; onSaved: () => void }) {
+  const [refresh, setRefresh] = useState(0);
+  const { data, error } = useMailData<{ platforms: { platform: string; state: string }[]; parentId: string; parentState: string }>(`/pool/availability?email=${encodeURIComponent(mailbox.email)}`, refresh, 0);
+  const [scope, setScope] = useState(PLATFORMS[0].slug);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [saveError, setSaveError] = useState("");
+  const parent = scope === "parent";
+  const current = parent ? (data?.parentState === "banned" ? "banned" : "active") : (data?.platforms.find(item => item.platform === scope)?.state || "unknown");
+  const options = parent ? { active: "可用", banned: "邮箱母号停用" } : { unknown: "未标记限制", registered: "已注册", banned: "账号封禁", blocked: "平台不接受此地址", rate_limited: "平台暂时限制" };
+  const save = async () => {
+    setBusy(true); setSaveError("");
+    try {
+      await mailRequest(parent ? "/pool/parent-state" : "/pool/platform-state", { method: "POST", body: JSON.stringify(parent ? { parent_id: data!.parentId, state: selected } : { email: mailbox.email, platform: scope, state: selected }) });
+      setSelected(null); setRefresh(value => value + 1); onSaved();
+    } catch (err) { setSaveError((err as Error).message); }
+    finally { setBusy(false); }
+  };
+  return <section className="space-y-3 border-t border-border pt-4"><h3 className="text-sm font-semibold">使用范围</h3><p className="sg-description">平台限制只影响所选平台。邮箱母号停用影响关联收件地址；恢复后仍保留各地址的暂停与平台限制。</p>
+    <Field label="应用范围"><select className="field" value={scope} disabled={busy} onChange={e => { setScope(e.target.value); setSelected(null); setSaveError(""); }}>{PLATFORMS.map(platform => <option key={platform.slug} value={platform.slug}>{platform.name}</option>)}{data?.parentId && <option value="parent">邮箱母号 · {data.parentId}</option>}</select></Field>
+    <Field label="使用状态"><select className="field" disabled={!data || busy} value={selected ?? current} onChange={e => setSelected(e.target.value)}>{Object.entries(options).map(([key,label]) => <option value={key} key={key}>{label}</option>)}</select></Field>
+    <button type="button" className="btn-ghost" disabled={!data || busy || selected === null || selected === current} onClick={() => void save()}>{busy ? "保存中…" : "更新使用状态"}</button><ErrorNote message={saveError || error} />
+  </section>;
 }
 
 export function CodeLookup({ email, onClose }: { email: string; onClose: () => void }) {
@@ -122,7 +147,7 @@ export function SyncMail({ sources, sourceId, pending, onPending, onClose }: { s
       const original = await mailRequest<{ total: number }>(`/sync?request_id=${encodeURIComponent(request.request_id)}`);
       if (!original.total) await mailRequest("/sync", { method: "POST", body: JSON.stringify(request) });
       savePending(null);
-      window.location.assign(`/apps/icmail/runs/?request=${encodeURIComponent(request.request_id)}`);
+      window.location.assign(`/apps/mail/runs/?request=${encodeURIComponent(request.request_id)}`);
     } catch (err) {
       if (err instanceof MailRequestError && err.status >= 400 && err.status < 500) { savePending(null); setError(err.message); }
       else setError("尚未确认受理结果。请求编号已保留，请核对原请求，避免重复发起。" + (err as Error).message);

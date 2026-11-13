@@ -209,7 +209,7 @@ def create_mailbox_retry(provider, tries=4):
     last = None
     for i in range(tries):
         try:
-            return create_mailbox(provider=provider)
+            return create_mailbox(provider=provider, platform="grok")
         except Exception as e:
             last = e
             print(f"  [temp-email] 建号失败 (try {i+1}/{tries}): {str(e)[:70]}")

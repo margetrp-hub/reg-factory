@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
 
@@ -21,19 +20,20 @@ import (
 )
 
 const (
-	inventoryOfferDomain = "work-inventory-offer-v1\n"
-	teamBusinessDomain   = "account-node-team-business-v1\n"
-	coreIntakeDomain     = "account-node-core-asset-intake-v1\n"
-	teamBusinessSchema   = "account-node.team-business.v1"
-	teamReceiptSchema    = "account-node.team-business-receipt.v1"
-	teamArtifactSchema   = "account-node.team-handoff-artifact.v1"
-	coreIntakeSchema     = "account-node.core-asset-intake.v1"
-	coreReceiptSchema    = "account-node.core-asset-intake-receipt.v1"
+	teamBusinessDomain = "account-node-team-business-v1\n"
+	coreIntakeDomain   = "account-node-core-asset-intake-v1\n"
+	teamBusinessSchema = "account-node.team-business.v1"
+	teamReceiptSchema  = "account-node.team-business-receipt.v1"
+	teamArtifactSchema = "account-node.team-handoff-artifact.v1"
+	coreIntakeSchema   = "account-node.core-asset-intake.v1"
+	coreReceiptSchema  = "account-node.core-asset-intake-receipt.v1"
 )
 
 var uuidLike = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$`)
 
-// inventoryRelay handles the Work inventory relay protocol. Work authenticates
+// inventoryRelay carries task-produced assets and custody events, not Plus
+// stock discovery. REG account listings use the signed library endpoint.
+// Work authenticates
 // the outer envelope with the node request key; the returned business documents
 // are signed with BusinessKey so Team can verify them independently.
 func (h *Handler) inventoryRelay(c *gin.Context) {
@@ -64,8 +64,6 @@ func (h *Handler) inventoryRelay(c *gin.Context) {
 		response, err = h.replayCentral(data)
 	case "production_sources":
 		response, err = h.productionSources(payload, data)
-	case "offer":
-		response, err = h.inventoryOffer(payload, data)
 	case "event":
 		response, err = h.inventoryEvent(data)
 	default:
@@ -132,90 +130,6 @@ func inventoryDigest(payload map[string]any) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
-func (h *Handler) inventoryOffer(request map[string]any, data map[string]any) (map[string]any, error) {
-	if len(data) != 2 {
-		return nil, perr("WORK_INVENTORY_REQUEST_INVALID", http.StatusUnprocessableEntity)
-	}
-	cursor := ls(data["cursor"])
-	limit := int(li(data["limit"]))
-	if len(cursor) > 36 || limit < 1 || limit > 50 {
-		return nil, perr("WORK_INVENTORY_REQUEST_INVALID", http.StatusUnprocessableEntity)
-	}
-	// Manual Team JSON may arrive after regd started.  Migrate and project it
-	// before taking the offer snapshot so the next Team poll sees it without a
-	// restart or a separate panel sync action.
-	root := strings.TrimSpace(os.Getenv("REG_FACTORY_DATA_DIR"))
-	if root == "" {
-		root = "/data"
-	}
-	assets := assetstore.New(root)
-	_, _ = assets.Migrate(root)
-	if stored, listErr := assets.List(); listErr == nil {
-		seeds := make([]store.AccountSeed, 0, len(stored))
-		for _, asset := range stored {
-			seeds = append(seeds, store.AccountSeed{
-				Ref: asset.Ref, Platform: asset.Platform, Kind: asset.Kind,
-				Identity: asset.Email, SecretRef: "assets/" + asset.Path,
-			})
-		}
-		if len(seeds) > 0 {
-			_, _ = h.st.UpsertAccounts(seeds)
-		}
-	}
-	rows, _, err := h.st.LibraryAccounts("", "", "", 1, 1000)
-	if err != nil {
-		return nil, perr("WORK_INVENTORY_LIBRARY_FAILED", http.StatusInternalServerError)
-	}
-	sort.Slice(rows, func(i, j int) bool { return SubjectID(rows[i].Ref) < SubjectID(rows[j].Ref) })
-	items := make([]map[string]any, 0, limit)
-	next := ""
-	for _, account := range rows {
-		accountID := SubjectID(account.Ref)
-		if cursor != "" && accountID <= cursor {
-			continue
-		}
-		// A claimed/joined source is permanently out of the offer pool. Keep
-		// the check here even when an older database has not refreshed status.
-		if account.Claimed || account.JoinStatus == "joined" || account.JoinStatus == "switched" {
-			continue
-		}
-		status := account.LibraryStatus
-		// A newly imported document has no historical liveness projection yet.
-		// The document itself is the source-side proof for this offer; retain only
-		// explicit terminal invalid/used states so an unknown or pending record
-		// does not starve the whole node until a background scan runs.
-		if status == "used" || status == "invalid" || account.Status == "banned" ||
-			account.Status == "expired" || account.Status == "invalid" || account.Status == "quarantined" {
-			continue
-		}
-		document, documentErr := h.accountDocument(account.Ref)
-		if documentErr != nil || !plusDocument(document) {
-			continue
-		}
-		version := account.Version
-		if version < 1 {
-			version = 1
-		}
-		items = append(items, map[string]any{"account_id": accountID, "resource_version": version, "json_kind": "plus"})
-		next = accountID
-		if len(items) == limit {
-			break
-		}
-	}
-	if len(items) < limit {
-		next = ""
-	}
-	issued := time.Now().Unix()
-	body := map[string]any{
-		"schema": teamOfferSchema, "node_id": h.config().NodeID,
-		"request_id": ls(request["request_id"]), "issued_at": issued, "expires_at": issued + 120,
-		"items": items, "cursor": next,
-	}
-	return signInventory(body, h.config().BusinessKey, inventoryOfferDomain)
-}
-
-const teamOfferSchema = "work.inventory-offer.v1"
-
 var teamBusinessFields = map[string]bool{
 	"schema": true, "issuer": true, "node_id": true, "event_id": true, "event_type": true,
 	"account_id": true, "source_asset_id": true, "team_asset_uuid": true, "state": true,
@@ -262,7 +176,7 @@ func (h *Handler) inventoryBusiness(event map[string]any) (map[string]any, error
 		return nil, perr("WORK_INVENTORY_EVENT_INVALID", http.StatusUnprocessableEntity)
 	}
 	state := ls(pending["state"])
-	if state != "prepared" && state != "stocked" && state != "reserved" && state != "sold" && state != "used" && state != "delivered" && state != "quarantined" && state != "retired" {
+	if state != "prepared" && state != "stocked" && state != "reserved" && state != "sold" && state != "used" && state != "delivered" && state != "quarantined" && state != "retired" && state != "released" {
 		return nil, perr("WORK_INVENTORY_STATE_INVALID", http.StatusUnprocessableEntity)
 	}
 	digest, err := inventoryDigest(pending)
@@ -292,20 +206,22 @@ func (h *Handler) inventoryBusiness(event map[string]any) (map[string]any, error
 	if account.Version != expectedVersion {
 		return nil, perr("WORK_INVENTORY_RESOURCE_VERSION_CONFLICT", http.StatusConflict)
 	}
-	document, err := h.accountDocument(accountRef)
-	if err != nil {
-		return nil, perr("WORK_INVENTORY_ARTIFACT_UNAVAILABLE", http.StatusConflict)
-	}
 	responsePayload := map[string]any{
 		"schema":   teamReceiptSchema,
 		"event_id": pending["event_id"], "event_type": pending["event_type"], "node_id": pending["node_id"],
 		"issuer": pending["issuer"], "account_id": pending["account_id"], "source_asset_id": pending["source_asset_id"],
 		"team_asset_uuid": pending["team_asset_uuid"], "state": pending["state"], "revision": pending["revision"],
 		"customer_expires_at": pending["customer_expires_at"], "resource_version": expectedVersion + 1,
-		"ever_used": state == "sold" || state == "used" || state == "delivered", "business_locked": true,
+		"ever_used": state == "sold" || state == "used" || state == "delivered", "business_locked": state != "released",
 		"request_sha256": digest,
 	}
 	if state == "prepared" {
+		// Only preparation exports credentials. Lifecycle delivery and release
+		// must not depend on a still-readable credential file.
+		document, err := h.accountDocument(accountRef)
+		if err != nil {
+			return nil, perr("WORK_INVENTORY_ARTIFACT_UNAVAILABLE", http.StatusConflict)
+		}
 		artifact := map[string]any{"schema": teamArtifactSchema}
 		for _, key := range []string{"event_id", "event_type", "node_id", "issuer", "account_id", "source_asset_id", "team_asset_uuid", "state", "revision", "customer_expires_at", "resource_version", "ever_used", "business_locked", "request_sha256"} {
 			artifact[key] = responsePayload[key]
@@ -488,30 +404,6 @@ func normalizeDocument(payload map[string]any, fallbackEmail string) map[string]
 		return nil
 	}
 	return document
-}
-
-func plusDocument(document map[string]any) bool {
-	if document == nil {
-		return false
-	}
-	plan := strings.ToLower(strings.TrimSpace(ls(document["plan_type"])))
-	if plan == "" {
-		for _, section := range []string{"account", "profile", "payload", "credentials", "oauth", "tokens"} {
-			if nested, ok := document[section].(map[string]any); ok {
-				plan = strings.ToLower(strings.TrimSpace(ls(nested["plan_type"])))
-				if plan == "" {
-					plan = strings.ToLower(strings.TrimSpace(ls(nested["chatgpt_plan_type"])))
-				}
-				if plan != "" {
-					break
-				}
-			}
-		}
-	}
-	if plan == "" {
-		return true // old SG records did not persist plan_type
-	}
-	return plan == "plus" || plan == "chatgptplus" || plan == "chatgpt_plus"
 }
 
 func materialDocument(material map[string]any) (map[string]any, error) {

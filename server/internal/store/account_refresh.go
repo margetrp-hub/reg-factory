@@ -216,7 +216,7 @@ func recordRefreshFailureState(s *Store, tx *sql.Tx, taskID, ref string) error {
 			Schema      string `json:"error_schema"`
 			Code        string `json:"error_code"`
 		}
-		if json.Unmarshal([]byte(line), &value) != nil || value.Ref != ref || value.Result != "failed" || value.Schema != "account.failure.v1" {
+		if json.Unmarshal([]byte(line), &value) != nil || value.Ref != ref || value.Result != "failed" || (value.Schema != "account.failure.v1" && value.Schema != "account.failure.v2") {
 			continue
 		}
 		switch value.Code {

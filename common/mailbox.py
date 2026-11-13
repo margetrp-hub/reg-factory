@@ -311,7 +311,7 @@ def create_graph_recovery_mailbox(provider, outlook_record=""):
         try:
             from common.temp_email import create_mailbox
 
-            return create_mailbox(provider=candidate)
+            return create_mailbox(provider=candidate, platform="outlook")
         except Exception as exc:
             errors.append(f"{candidate}: {str(exc)[:160]}")
     raise RuntimeError("no configured Graph recovery mailbox is usable: " + "; ".join(errors))

@@ -49,7 +49,7 @@ def test_authorize_does_not_replay_old_refresh_grant():
 
 
 def test_unknown_provider_result_has_distinct_exit_code():
-    assert asset_ops._emit({'result': 'unknown'}) == 75
+    assert asset_ops._emit({'result': 'unknown'}) == 1
     assert asset_ops._emit({'result': 'relogin_required'}) == 1
 
 
@@ -68,7 +68,7 @@ def test_token_exchange_explicit_rejection_preserves_state():
     assert 'private-response' not in str(caught.value)
 
 
-@pytest.mark.parametrize('exchange_started,expected,exit_code', [(False, 'failed', 1), (True, 'unknown', 75)])
+@pytest.mark.parametrize('exchange_started,expected,exit_code', [(False, 'failed', 1), (True, 'failed', 1)])
 def test_authorization_failure_releases_task_only_when_no_tokens_exchanged(tmp_path, monkeypatch, exchange_started, expected, exit_code):
     from vendor.reauth_web.engine import ReauthError
     monkeypatch.setenv('REG_FACTORY_DATA_DIR', str(tmp_path))
@@ -84,7 +84,7 @@ def test_authorization_failure_releases_task_only_when_no_tokens_exchanged(tmp_p
         result = asset_ops._reauthorize_chatgpt('import:original')
     assert result['result'] == expected and asset_ops._emit(result) == exit_code
     if expected == 'failed':
-        assert result['error_schema'] == 'account.failure.v1'
+        assert result['error_schema'] == 'account.failure.v2'
     else:
         assert 'error_schema' not in result
     assert 'private-provider-body' not in json.dumps(result) and path.read_bytes() == before
@@ -165,7 +165,8 @@ def test_fresh_authorization_persists_original_copies_but_unknown_preserves_them
     (imported / 'original.json').write_text(json.dumps({'ref': doc['ref'], 'payload': {'password': 'original-password', 'totp': 'JBSWY3DPEHPK3PXP'}}))
     (imported / 'decoy.json').write_text(json.dumps({'ref': 'another-ref', 'payload': {'email': 'original@icloud.com', 'password': 'wrong-password'}}))
     with patch('tools.chatgpt_reauthorize.authorize_document', new=AsyncMock(side_effect=TimeoutError)):
-        assert asset_ops._reauthorize_chatgpt(ref)['result'] == 'unknown'
+        failure = asset_ops._reauthorize_chatgpt(ref)
+        assert failure['result'] == 'failed' and failure['error_code'] == 'oauth_network_timeout'
     assert json.loads(path.read_text()) == doc
     with patch('tools.chatgpt_reauthorize.authorize_document', new=AsyncMock(return_value={'refresh_token': 'new', 'access_token': 'new-access'})) as authorize:
         assert asset_ops._reauthorize_chatgpt(ref)['result'] == 'refreshed'

@@ -105,7 +105,7 @@ func (m *Manager) Middleware() gin.HandlerFunc {
 		}
 		// IC 邮箱 app 的对外面：只回验证码，无需登录。
 		// 其余 /api/apps/mail/* 仍走下面的鉴权。
-		if strings.HasPrefix(path, "/api/apps/mail/public/") || strings.HasPrefix(path, "/api/apps/icmail/public/") {
+		if strings.HasPrefix(path, "/api/apps/mail/public/") {
 			c.Next()
 			return
 		}

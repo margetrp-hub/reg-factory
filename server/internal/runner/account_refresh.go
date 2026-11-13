@@ -23,11 +23,13 @@ func (m *Manager) finishRefresh(task store.Task, result, status string, code int
 	}
 	digest := ""
 	switch {
-	case status == "succeeded" && result == "refreshed":
+	case result == "refreshed":
 		if account.Platform == "chatgpt" {
 			current, err := assetstore.New(m.cfg.DataDir).ConfirmCredentialTask(task.ID, ref)
 			if err != nil {
 				status, code, message = "failed", 75, "凭据保存未确认，本次失败；可重新发起授权修复"
+				failure, _ := json.Marshal(map[string]any{"ref": ref, "result": "failed", "error_schema": "account.failure.v2", "error_code": "credential_save_failed"})
+				m.record(task.ID, "stdout", string(failure))
 			} else {
 				digest = current.ResultSHA
 			}
@@ -38,6 +40,8 @@ func (m *Manager) finishRefresh(task store.Task, result, status string, code int
 		}
 	default:
 		status, code, message = "failed", 75, "未取得可确认的成功结果，本次失败；可重新发起授权修复"
+		failure, _ := json.Marshal(map[string]any{"ref": ref, "result": "failed", "error_schema": "account.failure.v2", "error_code": "credential_result_incomplete"})
+		m.record(task.ID, "stdout", string(failure))
 	}
 	err = m.st.FinishAccountRefresh(task.ID, ref, status, code, message, digest)
 	if err == nil && (status == "succeeded" || status == "failed") && evidence.SourceSHA != "" {
@@ -128,6 +132,8 @@ func (m *Manager) settleCredential(task store.Task, result, status string, code 
 			if _, checkErr := assetstore.New(m.cfg.DataDir).ConfirmCredentialTask(task.ID, store.CredentialTaskRef(task)); checkErr != nil {
 				if status != "failed" || result == "" {
 					status, code, message = "failed", 75, "本次凭据保存未确认，可重新发起授权修复"
+					failure, _ := json.Marshal(map[string]any{"ref": store.CredentialTaskRef(task), "result": "failed", "error_schema": "account.failure.v2", "error_code": "credential_save_failed"})
+					m.record(task.ID, "stdout", string(failure))
 				}
 			} else {
 				status, code, message = "succeeded", 0, "最新凭据已确认保存"

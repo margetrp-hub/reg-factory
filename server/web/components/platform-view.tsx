@@ -8,45 +8,8 @@ import { TaskTable } from "@/components/task-table";
 import { PLATFORM_TASKS, scriptsForPlatform } from "@/lib/task-catalog";
 import { AccountSummaryStrip } from "@/components/account-summary-strip";
 
-type PlatformSpec = {
-  name: string;
-  slug: string;
-  accent: string;
-  summary: string;
-};
-
-const SPECS: Record<string, PlatformSpec> = {
-  claude: {
-    name: "Claude",
-    slug: "claude",
-    accent: "bg-[#d97757]",
-    summary: "邮箱取码 → 注册（浏览器或协议）→ sessionKey 入库 → 测活/刷新。协议路径不启浏览器。",
-  },
-  chatgpt: {
-    name: "ChatGPT",
-    slug: "chatgpt",
-    accent: "bg-[#10a37f]",
-    summary: "注册 → Codex OAuth 拿 refresh_token → 导入 SUB2API（add-phone 需接码）→ 测活。",
-  },
-  grok: {
-    name: "Grok",
-    slug: "grok",
-    accent: "bg-foreground",
-    summary: "住宅代理 → 注册（Turnstile）→ SSO 入库 → 导入 SUB2API Grok 渠道。",
-  },
-  outlook: {
-    name: "Outlook",
-    slug: "outlook",
-    accent: "bg-[#0078d4]",
-    summary: "常驻注册 → Graph 授权（辅助邮箱接码）→ RT 入库 → 解锁/恢复。",
-  },
-};
-
 export function PlatformView({ slug }: { slug: string }) {
-  const spec = useMemo<PlatformSpec>(()=>SPECS[slug] || {
-    name:PLATFORM_TASKS[slug]?.name || slug,slug,accent:"bg-foreground",
-    summary:"保留本平台全部执行模式，以及组合流程、账号记录与导出能力。",
-  },[slug]);
+  const spec = PLATFORM_TASKS[slug];
   const [accounts, setAccounts] = useState<AccountRow[]>([]);
   const [taskPage, setTaskPage] = useState<TaskPage | null>(null);
   const [summary, setSummary] = useState<AccountSummary | null>(null);
@@ -91,7 +54,7 @@ export function PlatformView({ slug }: { slug: string }) {
   return (
     <div className="sg-workspace">
       <div className="flex flex-wrap items-center gap-3">
-        <span className={`grid h-9 w-9 place-items-center rounded-md ${spec.accent} text-[13px] font-semibold text-primary-foreground`}>
+        <span className="grid h-9 w-9 place-items-center rounded-md bg-primary text-[13px] font-semibold text-primary-foreground">
           {spec.name.slice(0, 1)}
         </span>
         <div className="min-w-0 flex-1">

@@ -83,10 +83,10 @@ func MergeConfig(schema []ConfigGroup, entries []Entry, fallback func(string) st
 			entry := &list[i]
 			if DeploymentOnly(entry.Key) || entry.ReadOnly {
 				entry.ReadOnly, entry.Apply = true, "deployment"
-			} else if entry.Apply == "restart" {
+			} else if entry.Apply == "restart" && !strings.HasPrefix(entry.Key, "MAIL_") {
 				entry.Apply = "live"
 			}
-			if strings.HasPrefix(entry.Key, "ICMAIL_IMAP_") || strings.HasPrefix(entry.Key, "MAIL_IMAP_") {
+			if strings.HasPrefix(entry.Key, "MAIL_IMAP_") {
 				entry.Apply = "seed"
 				entry.ReadOnly = true
 				entry.Help = "仅在空来源库首次启动时预置收件来源；已有邮箱的登录资料请在邮箱池的收件来源中修改。"
@@ -138,7 +138,7 @@ func configSection(key, fallback string) string {
 		{"浏览器 · RoxyBrowser", []string{"ROXY_"}},
 		{"浏览器 · AdsPower", []string{"ADSPOWER_"}},
 		{"浏览器 · 通用设置", []string{"REG_FACTORY_BROWSER_", "BROWSER_", "CHROMIUM_"}},
-		{"邮箱 · IC 邮箱池", []string{"ICMAIL_", "MAIL_IMAP_"}},
+		{"邮箱 · 内置邮箱池", []string{"MAIL_"}},
 		{"邮箱 · iCloud", []string{"ICLOUD_MAIL_"}},
 		{"邮箱 · Outlook 与辅助邮箱", []string{"OUTLOOK_"}},
 		{"邮箱 · 自定义邮箱", []string{"CUSTOM_MAIL_"}},
@@ -184,7 +184,7 @@ func configArea(key string) string {
 	}{
 		{"proxy", []string{"OUTLOOK_PROXY", "CLAUDE_PROXY", "CHATGPT_PROXY", "GROK_PROXY", "KIRO_PROXY", "GITHUB_PROXY"}},
 		{"proxy", []string{"PROXY", "CLASH", "REG_FACTORY_PROXY", "REG_FACTORY_PRODUCTION_PROXY", "REG_FACTORY_RESIDENTIAL_"}},
-		{"mail", []string{"ICMAIL", "MAIL_IMAP_", "ICLOUD", "YYDS", "GPTMAIL", "CFMAIL", "MOEMAIL", "REMAIL", "CUSTOM_MAIL", "OUTLOOK", "CHATGPT_EMAIL", "CHATGPT_VERIFICATION"}},
+		{"mail", []string{"MAIL_", "ICLOUD", "YYDS", "GPTMAIL", "CFMAIL", "MOEMAIL", "REMAIL", "CUSTOM_MAIL", "OUTLOOK", "CHATGPT_EMAIL", "CHATGPT_VERIFICATION"}},
 		{"sms", []string{"SMS", "HERO", "CODEX_PHONE", "CODEX_SMS", "CODEX_ADDPHONE", "CUSTOM_SMS"}},
 		{"captcha", []string{"CAPSOLVER", "EZCAPTCHA", "YESCAPTCHA", "VISION", "VOTE", "GEMMA", "CLAUDE_VISION_", "CLAUDE_HCAPTCHA_", "CLAUDE_CAPTCHA_"}},
 		{"browser", []string{"BROWSER", "BITBROWSER", "BB_CORE_", "ADSPOWER", "CHROMIUM", "CLOAK", "ROXY", "CUSTOM_BROWSER", "REG_FACTORY_BROWSER"}},

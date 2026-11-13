@@ -33,6 +33,7 @@ from common.browser import open_and_connect, teardown, human_type, react_fill
 from common.mailbox import get_code_by_token, get_code_outlook_pw, prelogin_outlook
 from common.cookies import save_platform_cookies
 from common import emails as email_pool
+from schema.mail_settings import CHATGPT_MAIL_PROVIDERS
 from common.temp_email import create_mailbox, poll_verification_code
 from common import proxy_switch
 from common import node_quarantine
@@ -1778,7 +1779,7 @@ def _allocate_untainted_chatgpt_icloud_mailbox(max_attempts=12):
 def allocate_chatgpt_registration_mailbox():
     """Allocate the configured mailbox, falling back without reusing claimed mail."""
     if EMAIL_PROVIDER == "icmail":
-        from common.icmail import allocate
+        from common.mail_pool import allocate
         mailbox = allocate(PLATFORM, FIXED_EMAIL or "")
         return {"email": mailbox["email"], "password": "", "refresh_token": "",
                 "client_id": "", "mailbox": mailbox}
@@ -2423,7 +2424,7 @@ async def register_one(index, total, p):
                     2, min(15, _env_int("CHATGPT_VERIFICATION_POLL_INTERVAL", 5))
                 )
                 if mailbox and mailbox.get("provider") == "icmail":
-                    from common.icmail import poll_code
+                    from common.mail_pool import poll_code
                     c = await poll_code(mailbox, received_after=received_after,
                         max_wait=code_timeout, poll_interval=poll_interval,
                         exclude_codes=verification_seen_codes)
@@ -3566,7 +3567,7 @@ async def main():
     parser.add_argument("--password", default=None, help="指定邮箱密码")
     parser.add_argument("--refresh-token", default=None, help="指定 Outlook refresh_token")
     parser.add_argument("--client-id", default=None, help="指定 Outlook OAuth client_id")
-    parser.add_argument("--email-provider", choices=["pool", "icmail", "icloud", "remail"], default=None,
+    parser.add_argument("--email-provider", choices=list(CHATGPT_MAIL_PROVIDERS), default=None,
                         help="邮箱来源：pool=Outlook池，icmail=内置邮箱池，icloud/remail=外部服务商")
     two_factor = parser.add_mutually_exclusive_group()
     two_factor.add_argument("--enable-2fa", dest="enable_2fa", action="store_true",
@@ -3605,9 +3606,8 @@ async def main():
     FIXED_REFRESH_TOKEN = args.refresh_token
     FIXED_CLIENT_ID = args.client_id
     EMAIL_PROVIDER = args.email_provider or CHATGPT_EMAIL_PROVIDER or "pool"
-    if EMAIL_PROVIDER not in {"pool", "icloud", "remail"}:
-        print(f"  [config] CHATGPT_EMAIL_PROVIDER={EMAIL_PROVIDER!r} 无效，回退 pool")
-        EMAIL_PROVIDER = "pool"
+    if EMAIL_PROVIDER not in CHATGPT_MAIL_PROVIDERS:
+        parser.error(f"CHATGPT_EMAIL_PROVIDER={EMAIL_PROVIDER!r} 无效，请选择已支持的邮箱来源")
     IMPORT_C2A = args.import_c2a
     PLUS_SUBSCRIPTION = args.plus_subscription
     C2A_URL = args.c2a_url

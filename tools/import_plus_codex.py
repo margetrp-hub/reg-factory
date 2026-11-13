@@ -116,7 +116,7 @@ class MailCodeProvider:
         email = self.record.get("email") or ""
         provider = str(self.record.get("provider") or "").lower()
         if provider == "icmail":
-            from common.icmail import bind
+            from common.mail_pool import bind
             self.icmail = await asyncio.to_thread(bind, email)
             return "icmail-pool"
         if provider in {"icloud", "apple"} or is_icloud_email(email):
@@ -177,7 +177,7 @@ class MailCodeProvider:
     async def __call__(self, account_email: str, received_after: float):
         code = None
         if self.icmail is not None:
-            from common.icmail import MailboxError, poll_code
+            from common.mail_pool import MailboxError, poll_code
             if str(account_email).strip().lower() != self.icmail["email"]:
                 raise MailboxError("授权邮箱与内置邮箱绑定不一致")
             code = await poll_code(self.icmail, received_after=received_after,

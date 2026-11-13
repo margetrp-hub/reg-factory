@@ -34,27 +34,33 @@
   "platforms": [
     {
       "slug": "claude",
-      "name": "Claude"
+      "name": "Claude",
+      "summary": "邮箱链接或 Google 授权注册，保存 Claude 会话；浏览器与协议模式分别配置。"
     },
     {
       "slug": "chatgpt",
-      "name": "ChatGPT"
+      "name": "ChatGPT",
+      "summary": "注册、登录授权与 Codex 凭据管理；AT 检查、RT 刷新和登录重新授权分别执行。"
     },
     {
       "slug": "grok",
-      "name": "Grok"
+      "name": "Grok",
+      "summary": "浏览器或协议注册，邮箱验证码验证，保存并管理 Grok SSO。"
     },
     {
       "slug": "outlook",
-      "name": "Outlook"
+      "name": "Outlook",
+      "summary": "邮箱注册、Microsoft Graph 授权与账号恢复；邮箱资料可作为其他平台的收件来源。"
     },
     {
       "slug": "kiro",
-      "name": "Kiro"
+      "name": "Kiro",
+      "summary": "Builder ID 注册、邮箱验证与授权资料保存；使用账号邮箱、临时邮箱或内置邮箱池。"
     },
     {
       "slug": "github",
-      "name": "GitHub"
+      "name": "GitHub",
+      "summary": "使用现有邮箱注册、验证并保存 GitHub 账号；沿本平台任务和账号记录查看结果。"
     }
   ],
   "tools": [
@@ -237,7 +243,7 @@
         "邮箱 · 来源选择",
         "邮箱 · 收码与等待",
         "邮箱 · Outlook 与辅助邮箱",
-        "邮箱 · IC 邮箱池"
+        "邮箱 · 内置邮箱池"
       ],
       "choices": {
         "pool": {
@@ -247,7 +253,7 @@
         "icmail": {
           "label": "内置邮箱池",
           "groups": [
-            "邮箱 · IC 邮箱池"
+            "邮箱 · 内置邮箱池"
           ]
         },
         "outlook": {

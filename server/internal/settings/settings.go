@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/tiantianGPU/reg-factory/server/internal/store"
 )
 
 // Settings 是 regd 进程启动时确定的配置。
@@ -18,7 +20,7 @@ type Settings struct {
 	DataDir         string // 运行数据根，默认 /data
 	EnvFile         string // .env 路径，默认 $DataDir/.env
 	AppRoot         string // Python 代码根，默认 /app
-	DBPath          string // SQLite 路径，默认 $DataDir/regd.db
+	DBPath          string // REGD_DB：所在主机的 PostgreSQL DSN
 	Addr            string // 监听地址，默认 127.0.0.1:8800
 	Python          string // Python 解释器
 	PanelUser       string
@@ -46,7 +48,7 @@ func Load() *Settings {
 		DataDir:         dataDir,
 		EnvFile:         firstNonEmpty(os.Getenv("REG_FACTORY_ENV_FILE"), filepath.Join(dataDir, ".env")),
 		AppRoot:         firstNonEmpty(os.Getenv("REGD_APP_ROOT"), "/app"),
-		DBPath:          firstNonEmpty(os.Getenv("REGD_DB"), filepath.Join(dataDir, "regd.db")),
+		DBPath:          strings.TrimSpace(os.Getenv("REGD_DB")),
 		Addr:            firstNonEmpty(os.Getenv("REGD_ADDR"), "127.0.0.1:8800"),
 		Python:          firstNonEmpty(os.Getenv("REGD_PYTHON"), "python3"),
 		PanelUser:       firstNonEmpty(os.Getenv("REG_FACTORY_PANEL_USER"), "admin"),
@@ -82,6 +84,9 @@ func (s *Settings) Validate() error {
 	}
 	if s.PanelPass != "" && len(s.PanelPass) < 8 {
 		return errors.New("REG_FACTORY_PANEL_PASSWORD 太短（至少 8 位）")
+	}
+	if store.DialectOf(s.DBPath) != store.DialectPG {
+		return errors.New("REGD_DB 必须配置为本机 PostgreSQL；不会创建 SQLite 运行库")
 	}
 	return nil
 }
@@ -130,11 +135,10 @@ func LoadEnvFile(path string) int {
 
 // envFileOverrides 是允许 /data/.env 覆盖进程环境的 key。
 //
-// 这些 key 在 Dockerfile 里被设成固定值（如 REGD_DB=/data/regd.db），
-// 由部署文件在启动时覆盖，运行中只读：
+// 基础设施连接由部署文件在启动时确定，运行中只读：
 //
-//	· REGD_DB    主库位置，切 SQLite ↔ PostgreSQL
-//	· MAIL_DB    邮件库位置
+//	· REGD_DB    主库 PostgreSQL DSN
+//	· MAIL_DB    邮件库 PostgreSQL DSN
 //	· REGD_ADDR  监听地址
 var envFileOverrides = map[string]bool{
 	"REGD_DB":   true,
@@ -319,7 +323,7 @@ func DeploymentOnly(key string) bool {
 		"REG_FACTORY_ALLOW_ANONYMOUS", "TZ", "PATH", "HOME", "PYTHONPATH":
 		return true
 	}
-	return strings.HasPrefix(key, "ICMAIL_") || strings.HasPrefix(key, "MAIL_IMAP_")
+	return strings.HasPrefix(key, "MAIL_IMAP_")
 }
 
 func (s *Settings) RuntimeInt(key string, fallback, minimum, maximum int) int {

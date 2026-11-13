@@ -48,7 +48,7 @@ func TestHandoffTableCategoriesPaginationAndIndependentPages(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { mailApp.Close() })
-	source, err := mailApp.DB.UpsertSource(mail.Source{Name: "fixture", Host: "imap.example.test", Enabled: true})
+	source, err := mailApp.DB.UpsertSource(mail.Source{Name: "fixture", Username: "source-login", Host: "imap.example.test", Password: "fixture", Enabled: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestHandoffTableCategoriesPaginationAndIndependentPages(t *testing.T) {
 	if _, err = mailApp.DB.ImportMailboxes(context.Background(), source.ID, addresses); err != nil {
 		t.Fatal(err)
 	}
-	s := &Server{st: st, icApp: mailApp, sharing: &centralasset.Sharing{Store: st}}
+	s := &Server{st: st, mailApp: mailApp, sharing: &centralasset.Sharing{Store: st}}
 	if err = s.sharing.Init(); err != nil {
 		t.Fatal(err)
 	}

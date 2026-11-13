@@ -109,7 +109,7 @@ func TestCurrentCredentialJourneyThroughPythonWorker(t *testing.T) {
 	if imported.Code != 200 {
 		t.Fatal("standalone import failed", imported.Code)
 	}
-	for _, path := range []string{"/api/health", "/api/accounts?platform=chatgpt", "/api/assets/export?ref=import:local@example.test", "/api/config"} {
+	for _, path := range []string{"/api/health", "/api/accounts?platform=chatgpt", "/api/assets/export?ref=import:chatgpt:local@example.test", "/api/config"} {
 		if response := request("GET", path, ""); response.Code != 200 {
 			t.Fatal("standalone route failed", path, response.Code)
 		}
