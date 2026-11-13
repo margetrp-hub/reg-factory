@@ -1,7 +1,7 @@
 import unittest
 from pathlib import Path
 
-from webui.scripts import SCRIPTS
+from schema.scripts import SCRIPTS
 
 
 ROOT = Path(__file__).resolve().parents[1]

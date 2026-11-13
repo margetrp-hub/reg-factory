@@ -14,7 +14,7 @@ from common.session_export import (
     export_kiro_rs_credentials,
     save_kiro_token,
 )
-from webui.scripts import ENV_SCHEMA, SCRIPTS
+from schema.scripts import ENV_SCHEMA, SCRIPTS
 
 
 class KiroCryptoTests(unittest.TestCase):

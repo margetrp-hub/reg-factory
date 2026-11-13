@@ -12,7 +12,7 @@ from common.file_lock import append_line
 from common.fingerprint import browser_fingerprint
 from common.task_context import activate_worker
 from tools import extract_graph_tokens
-from webui.scripts import SCRIPTS
+from schema.scripts import SCRIPTS
 
 
 class RegistrationConcurrencyTests(unittest.TestCase):
@@ -163,7 +163,7 @@ class RegistrationConcurrencyTests(unittest.TestCase):
     def test_github_has_an_independent_proxy_override(self):
         keys = {
             item["key"]
-            for group in __import__("webui.scripts", fromlist=["ENV_SCHEMA"]).ENV_SCHEMA
+            for group in __import__("schema.scripts", fromlist=["ENV_SCHEMA"]).ENV_SCHEMA
             for item in group["items"]
         }
         self.assertIn("GITHUB_PROXY_MODE", keys)

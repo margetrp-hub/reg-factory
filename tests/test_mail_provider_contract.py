@@ -105,3 +105,10 @@ class MailProviderContractTests(unittest.TestCase):
                 temp_email.create_mailbox(provider="icmail,gptmail")
             temp_email._CREATE["icmail"].assert_not_called()
             temp_email._CREATE["gptmail"].assert_not_called()
+
+    def test_claude_link_reader_preserves_provider_failure(self):
+        import register_claude_http
+        with patch.object(register_claude_http, "fetch_messages", side_effect=RuntimeError("MoeMail 取信失败（HTTP 403）")), \
+                patch.object(register_claude_http.time, "sleep", side_effect=AssertionError("failed read must not wait for OTP")):
+            with self.assertRaisesRegex(RuntimeError, "MoeMail.*403"):
+                register_claude_http.poll_temp_magic_link({"id": "fixture", "provider": "moemail"}, max_wait=1)

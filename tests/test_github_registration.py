@@ -5,7 +5,7 @@ from register_github import (
     CLIENT_INTEGRITY, PAGE_BLANK, RESTRICTED, classify_github_entry, parse_github_restriction,
     prepare_github_egress, should_close_github_profile,
 )
-from webui.scripts import SCRIPTS
+from schema.scripts import SCRIPTS
 
 
 class GitHubRegistrationTests(unittest.TestCase):

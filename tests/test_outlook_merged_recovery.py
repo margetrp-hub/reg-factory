@@ -7,19 +7,22 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import register_outlook_standalone
 import unlock_outlook
 from common import asset_scanner
-from webui.scripts import SCRIPTS
+from schema.scripts import SCRIPTS
 
 
 class OutlookMergedRecoveryTests(unittest.IsolatedAsyncioTestCase):
-    def test_webui_exposes_one_combined_recovery_task(self):
+    def test_catalog_exposes_password_authorization_entry(self):
         ids = [item["id"] for item in SCRIPTS]
         self.assertIn("unlock_outlook", ids)
         self.assertNotIn("extract_graph_tokens", ids)
 
         recovery = next(item for item in SCRIPTS if item["id"] == "unlock_outlook")
         self.assertIn("Graph", recovery["title"])
-        statuses = next(arg for arg in recovery["args"] if arg["flag"] == "--statuses")
-        self.assertEqual(statuses["default"], ["unlock", "expired", "unknown"])
+        self.assertEqual(recovery["file"], "tools/authorize_outlook.py")
+        flags = {arg["flag"] for arg in recovery["args"]}
+        self.assertIn("--input", flags)
+        self.assertIn("--concurrency", flags)
+        self.assertNotIn("--statuses", flags)
 
     def test_registration_and_recovery_share_the_same_press_implementation(self):
         self.assertIs(

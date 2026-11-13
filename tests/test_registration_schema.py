@@ -256,8 +256,9 @@ class RegistrationSchemaTests(unittest.TestCase):
             for group in ENV_SCHEMA
             for item in group["items"]
         }
-        self.assertTrue(claude_items["CLAUDE_VISION_API_BASE"]["required"])
-        self.assertTrue(claude_items["CLAUDE_VISION_API_KEY"]["required"])
+        for key in ("CLAUDE_VISION_API_BASE", "CLAUDE_VISION_API_KEY"):
+            self.assertFalse(claude_items[key].get("required", False))
+            self.assertEqual(claude_items[key]["when"], {"CLAUDE_VISION_SOURCE": ["auto", "custom"]})
 
     def test_claude_graph_reader_receives_client_and_timestamp(self):
         with patch("common.mailbox.get_link_by_token", return_value="https://claude.ai/magic-link#ok") as reader:

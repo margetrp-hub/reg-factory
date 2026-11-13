@@ -138,7 +138,10 @@ def check_refresh_token(refresh_token, client_id=DEFAULT_CLIENT_ID,
 
 def _get_access_token(refresh_token, client_id=DEFAULT_CLIENT_ID,
                       scope="https://graph.microsoft.com/Mail.Read"):
-    return check_refresh_token(refresh_token, client_id, scope)["access_token"] or None
+    result = check_refresh_token(refresh_token, client_id, scope)
+    if not result["ok"]:
+        raise GraphMailboxAccessError(result["reason"], permanent=result["permanent"])
+    return result["access_token"]
 
 
 def _graph_failure(status_code):
@@ -342,8 +345,8 @@ def poll_graph_recovery_code(mailbox, max_wait=120, poll_interval=5,
     )
 
 
-def fetch_messages(access_token, folder, top=10, *, raise_on_error=False):
-    """拉取某文件夹最新邮件，返回 [{subject, from, body, received}]"""
+def fetch_messages(access_token, folder, top=10):
+    """Read messages or report the concrete failure; only a valid empty list is empty mail."""
     headers = {"Authorization": f"Bearer {access_token}"}
     url = (
         f"https://graph.microsoft.com/v1.0/me/mailFolders/{folder}/messages"
@@ -354,20 +357,16 @@ def fetch_messages(access_token, folder, top=10, *, raise_on_error=False):
     sess = _ms_session()
     try:
         r = _graph_get(sess, url, headers)
-    except GraphMailboxAccessError as exc:
-        print(f"  [mail] {folder} unreadable: {exc.reason}")
-        if raise_on_error:
-            raise
-        return []
-    try:
         if r.status_code != 200:
-            failure = _graph_failure(r.status_code)
-            print(f"  [mail] {folder} unreadable: HTTP {r.status_code}")
-            if raise_on_error:
-                raise GraphMailboxAccessError(**failure)
-            return []
+            raise GraphMailboxAccessError(**_graph_failure(r.status_code))
+        try:
+            payload = r.json()
+        except ValueError:
+            raise GraphMailboxAccessError("graph_invalid_response") from None
+        if not isinstance(payload, dict) or not isinstance(payload.get("value"), list):
+            raise GraphMailboxAccessError("graph_invalid_response")
         out = []
-        for m in r.json().get("value", []):
+        for m in payload["value"]:
             out.append({
                 "subject": m.get("subject", ""),
                 "from": (m.get("from", {}).get("emailAddress", {}) or {}).get("address", ""),
@@ -375,11 +374,8 @@ def fetch_messages(access_token, folder, top=10, *, raise_on_error=False):
                 "received": m.get("receivedDateTime", ""),
             })
         return out
-    except GraphMailboxAccessError:
-        raise
-    except Exception as e:
-        print(f"  [mail] fetch {folder} parse error: {e}")
-        return []
+    finally:
+        sess.close()
 
 
 def _message_too_old(message, received_after):
@@ -416,21 +412,15 @@ def get_code_by_token(
     received_after: epoch 秒；只接收**该时刻之后**到达的邮件。resend 后传"重发时刻"，避免取到
       已被 OpenAI 作废的旧码(resend 会令旧码失效、收件箱里却还躺着→取旧码必报"不正确")。"""
     token = _get_access_token(refresh_token, client_id)
-    if not token:
-        return None
 
     pat = re.compile(code_regex)
     excluded = {str(code) for code in (exclude_codes or ())}
     start = time.time()
     while time.time() - start < max_wait:
         for folder in GRAPH_FOLDERS:
-            try:
-                messages = fetch_messages(token, folder, top=10, raise_on_error=True)
-            except GraphMailboxAccessError as exc:
-                if exc.permanent:
-                    raise
-                print(f"  [mail] transient {folder} read failure: {exc.reason}")
-                continue
+            # The transport already retries transient reads. Exhaustion belongs
+            # to this execution, not another round of waiting for an OTP.
+            messages = fetch_messages(token, folder, top=10)
             for m in messages:
                 subj = (m["subject"] or "").lower()
                 frm = (m["from"] or "").lower()
@@ -448,7 +438,7 @@ def get_code_by_token(
                         code = _first_group(mm)
                         if str(code) in excluded:
                             continue
-                        print(f"  [mail] code found in {folder} (from={m['from']}): {code}")
+                        print(f"  [mail] 已从 {folder} 取得本次验证码")
                         return code
         elapsed = int(time.time() - start)
         print(f"  [mail] waiting for code (inbox+junk)... ({elapsed}s/{max_wait}s)")
@@ -477,20 +467,12 @@ def get_link_by_token(
 ):
     """轮询 inbox+junk，匹配邮件后提取链接（可用 must_contain 过滤目标链接，如 'verify_email'）。"""
     token = _get_access_token(refresh_token, client_id)
-    if not token:
-        return None
     pat = re.compile(link_regex)
 
     start = time.time()
     while time.time() - start < max_wait:
         for folder in GRAPH_FOLDERS:
-            try:
-                messages = fetch_messages(token, folder, top=10, raise_on_error=True)
-            except GraphMailboxAccessError as exc:
-                if exc.permanent:
-                    raise
-                print(f"  [mail] transient {folder} read failure: {exc.reason}")
-                continue
+            messages = fetch_messages(token, folder, top=10)
             for m in messages:
                 subj = (m["subject"] or "").lower()
                 frm = (m["from"] or "").lower()
@@ -507,7 +489,7 @@ def get_link_by_token(
                     link = match.group(0)
                     if must_contain and must_contain not in link:
                         continue
-                    print(f"  [mail] link found in {folder}: {link[:80]}...")
+                    print(f"  [mail] 已从 {folder} 取得本次登录链接")
                     return link
         elapsed = int(time.time() - start)
         print(f"  [mail] waiting for link (inbox+junk)... ({elapsed}s/{max_wait}s)")

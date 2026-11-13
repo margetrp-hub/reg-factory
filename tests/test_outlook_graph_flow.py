@@ -7,7 +7,7 @@ import outlook_reg_loop
 from common import browser as browser_helpers
 from tools import extract_graph_tokens
 import register_outlook_standalone
-from webui import scripts as webui_scripts
+from schema import scripts as catalog
 
 
 class OutlookGraphFlowTests(unittest.IsolatedAsyncioTestCase):
@@ -83,7 +83,7 @@ class OutlookGraphFlowTests(unittest.IsolatedAsyncioTestCase):
     def test_outlook_max_press_defaults_to_five_everywhere(self):
         self.assertEqual(outlook_reg_loop.DEFAULT_MAX_PRESS, "5")
         outlook_entry = next(
-            item for item in webui_scripts.SCRIPTS
+            item for item in catalog.SCRIPTS
             if item.get("id") == "outlook_reg_loop"
         )
         max_press = next(
@@ -96,7 +96,7 @@ class OutlookGraphFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(outlook_reg_loop.DEFAULT_MIN_SUCCESS_RATE, 10.0)
         self.assertEqual(outlook_reg_loop.DEFAULT_SUCCESS_RATE_WINDOW, 20)
         outlook_entry = next(
-            item for item in webui_scripts.SCRIPTS
+            item for item in catalog.SCRIPTS
             if item.get("id") == "outlook_reg_loop"
         )
         count = next(
@@ -133,16 +133,11 @@ class OutlookGraphFlowTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(trip)
 
-    def test_outlook_recovery_config_is_prominent_and_supports_owned_mailbox(self):
-        group = next(
-            item for item in webui_scripts.ENV_SCHEMA
-            if item["group"] == "Outlook 自注册"
-        )
-        self.assertEqual(group["notice_level"], "warning")
-        self.assertIn("Graph RT", group["notice"])
-        self.assertIn("outlook-recovery", {test["target"] for test in group["tests"]})
+    def test_outlook_recovery_config_supports_owned_mailbox(self):
+        # Shared mailbox fields now belong to the capability catalog; their
+        # behavior must not depend on an obsolete page's group title.
         recovery = {
-            item["key"]: item for item in group["items"]
+            item["key"]: item for group in catalog.ENV_SCHEMA for item in group["items"]
         }
         self.assertEqual(recovery["OUTLOOK_GRAPH_RECOVERY_EMAIL"]["type"], "bool")
         self.assertEqual(recovery["OUTLOOK_GRAPH_RECOVERY_EMAIL"]["default"], "true")

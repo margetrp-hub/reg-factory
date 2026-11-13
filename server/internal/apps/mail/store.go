@@ -42,16 +42,8 @@ type DB struct {
 	mu   sync.Mutex // source updates and ingestion writes share the same ownership check
 }
 
-// OpenDB prepares the app database.
-// OpenDB 打开邮件库。
-//
-// 参数可以是 SQLite 文件路径，也可以是 PG DSN：
-//
-//	/data/mail_pool.db
-//	host=127.0.0.1 port=5433 dbname=regfactory user=postgres password=xxx
-//
-// 两种后端返回同一个 *DB。PG 模式下不执行 SQLite 专属的建表 SQL，
-// 表由 pg_schema.sql 建好，migrate() 只做 ALTER ADD COLUMN（两边通用）。
+// OpenDB creates the mail schema in the configured local database. Runtime
+// configuration accepts PostgreSQL only; the file opener serves isolated tests.
 func OpenDB(path string) (*DB, error) {
 	if storepkg.DialectOf(path) == storepkg.DialectPG {
 		return openPGDB(path)
@@ -71,8 +63,7 @@ func openPGDB(dsn string) (*DB, error) {
 		handle.Close()
 		return nil, err
 	}
-	// PG 下 ensurePool/ensureSync 的 CREATE TABLE IF NOT EXISTS 是空操作
-	// （表已存在），只会在缺表时尝试建 —— 那种情况说明 pg_schema.sql 没跑。
+	// Fresh PostgreSQL installs initialize these tables through the same owner.
 	if err := db.ensurePool(); err != nil {
 		handle.Close()
 		return nil, err
@@ -503,22 +494,11 @@ type Source struct {
 	LastIdleAt       *time.Time
 	LastError        string
 
-	// ---- 多 provider / 多 transport ----
-	//
-	// CredentialMode 决定凭证存在哪个字段：
-	//   password        Password
-	//   oauth_refresh   RefreshToken + ClientID
-	//   jwt             JWT
-	//   api_key         APIKey
-	//   none            Inbucket 这类无需凭证的
-	//
-	// Transport 决定怎么取信：
-	//   imap / pop3     Host:Port + 凭证
-	//   graph           Microsoft Graph API（refresh_token 换 access_token）
-	//   outlook         Outlook REST
-	//   cloudmail       自建（Endpoint + JWT）
-	//   luckmail        商业 API（Endpoint + APIKey）
-	//   inbucket        自建 SMTP（Endpoint）
+	// Supported source transports are IMAP/POP3 with an app password, or
+	// Microsoft Graph with ClientID + RefreshToken. Temporary API providers
+	// belong to the worker catalog, not imaginary source runner implementations.
+	// Endpoint/JWT/APIKey/Meta retain previously saved material for export;
+	// they do not advertise additional executable source protocols.
 	CredentialMode string
 	Transport      string
 	Endpoint       string
@@ -535,7 +515,7 @@ func (s Source) Addr() string {
 	return fmt.Sprintf("%s:%d", s.Host, s.Port)
 }
 
-// UpsertSource seeds (or updates) one IMAP account by name.
+// UpsertSource owns validation and secret-preserving saves for all transports.
 func (d *DB) UpsertSource(src Source) (Source, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()

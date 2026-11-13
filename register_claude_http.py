@@ -290,22 +290,19 @@ def poll_temp_magic_link(mailbox: dict, *, max_wait=120, poll_interval=5) -> str
     consumed = mailbox.setdefault("_consumed_protocol_links", set())
     deadline = time.monotonic() + max(1, int(max_wait))
     while time.monotonic() < deadline:
-        try:
-            messages = fetch_messages(
-                mailbox["id"], mailbox["provider"], email=mailbox.get("email"),
-                token=mailbox.get("token", ""), api_key=mailbox.get("api_key"),
-                base_url=mailbox.get("base_url"),
-            )
-            for message in messages:
-                candidates = [message]
-                candidates.extend((message.get("extracted") or {}).get("links") or [])
-                for candidate in candidates:
-                    link = extract_magic_link(candidate if isinstance(candidate, str) else json.dumps(candidate))
-                    if link and link not in consumed:
-                        consumed.add(link)
-                        return link
-        except Exception:
-            pass
+        messages = fetch_messages(
+            mailbox["id"], mailbox["provider"], email=mailbox.get("email"),
+            token=mailbox.get("token", ""), api_key=mailbox.get("api_key"),
+            base_url=mailbox.get("base_url"),
+        )
+        for message in messages:
+            candidates = [message]
+            candidates.extend((message.get("extracted") or {}).get("links") or [])
+            for candidate in candidates:
+                link = extract_magic_link(candidate if isinstance(candidate, str) else json.dumps(candidate))
+                if link and link not in consumed:
+                    consumed.add(link)
+                    return link
         time.sleep(max(0.5, float(poll_interval)))
     return None
 

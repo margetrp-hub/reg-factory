@@ -205,9 +205,35 @@ class MailboxTests(unittest.TestCase):
             patch.object(mailbox, "_ms_session", return_value=session),
             self.assertRaisesRegex(mailbox.GraphMailboxAccessError, "graph_http_403"),
         ):
-            mailbox.fetch_messages(
-                "access", "junkemail", raise_on_error=True
-            )
+            mailbox.fetch_messages("access", "junkemail")
+
+    def test_invalid_graph_response_is_not_an_empty_inbox(self):
+        response = MagicMock(status_code=200)
+        response.json.side_effect = ValueError("invalid response with private contents")
+        session = MagicMock()
+        session.get.return_value = response
+        with patch.object(mailbox, "_ms_session", return_value=session):
+            with self.assertRaisesRegex(mailbox.GraphMailboxAccessError, "graph_invalid_response"):
+                mailbox.fetch_messages("access", "inbox")
+        session.close.assert_called_once()
+
+    def test_rejected_refresh_reports_reason_before_waiting_for_mail(self):
+        with patch.object(mailbox, "check_refresh_token", return_value={
+                "ok": False, "access_token": "", "reason": "invalid_grant", "permanent": True}), \
+                patch.object(mailbox, "fetch_messages") as reader:
+            for fn in (mailbox.get_code_by_token, mailbox.get_link_by_token):
+                with self.subTest(reader=fn.__name__), self.assertRaisesRegex(mailbox.GraphMailboxAccessError, "invalid_grant"):
+                    fn("owner@example.test", "fixture-rt", max_wait=1)
+            reader.assert_not_called()
+
+    def test_exhausted_mail_read_returns_cause_without_starting_another_wait(self):
+        with patch.object(mailbox, "_get_access_token", return_value="access"), \
+                patch.object(mailbox, "fetch_messages", side_effect=mailbox.GraphMailboxAccessError("graph_network_error")), \
+                patch.object(mailbox.time, "sleep") as sleep:
+            for fn in (mailbox.get_code_by_token, mailbox.get_link_by_token):
+                with self.subTest(reader=fn.__name__), self.assertRaisesRegex(mailbox.GraphMailboxAccessError, "graph_network_error"):
+                    fn("owner@example.test", "fixture-rt", max_wait=.01)
+            sleep.assert_not_called()
 
     def test_mailbox_access_requires_inbox_and_junk(self):
         response_profile = MagicMock(status_code=200)
