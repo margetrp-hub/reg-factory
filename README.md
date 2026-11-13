@@ -60,4 +60,4 @@ Go编译的前端复制与schema生成顺序见部署文档。构建成功不等
 
 本项目基于 [tiantianGPU/reg-factory](https://github.com/tiantianGPU/reg-factory) 持续整合；上游便携包及教程不代表本仓SG发行。第三方代码保留各目录的许可证与来源记录，例如[Plus适配来源](vendor/chatgpt_plus/UPSTREAM.md)、[GoPay来源](vendor/gopay_engine/UPSTREAM.md)。
 
-仅用于经授权的操作。密钥、账号、Cookie、Token、日志及数据卷与源码分离，不提交到仓库。SG独立SQLite任务/索引库不是Aishop Next七组件的运行库；主系统PostgreSQL-only规则不要求删除SG数据。当前凭据及结果保留/清理责任见架构文档。
+仅用于经授权的操作。密钥、账号、Cookie、Token、日志及数据卷与源码分离，不提交到仓库。SG任务、生产和邮箱索引使用SG本机PostgreSQL；旧SQLite快照不参与运行。当前凭据及结果保留/清理责任见架构文档。

@@ -24,7 +24,7 @@ func TestImportedAccountsRemainVisibleAfterSyncWithStableTimes(t *testing.T) {
 	route.GET("/accounts", s.listAccounts)
 	var inputs []string
 	for i := 0; i < 10; i++ {
-		inputs = append(inputs, fmt.Sprintf("new-%02d@example.test----private-password", i))
+		inputs = append(inputs, fmt.Sprintf("new-%02d@example.test----private-password----JBSWY3DPEHPK3PXP", i))
 	}
 	raw, _ := json.Marshal(map[string]any{"platform": "chatgpt", "accounts": strings.Join(inputs, "\n")})
 	request := httptest.NewRequest("POST", "/import", strings.NewReader(string(raw)))
@@ -79,6 +79,12 @@ func TestImportedAccountsRemainVisibleAfterSyncWithStableTimes(t *testing.T) {
 	if len(after) != 10 || after[0].CreatedAt != before[0].CreatedAt || after[0].ImportedAt != before[0].ImportedAt {
 		t.Fatal("sync changed import time or batch", after)
 	}
+	for _, account := range after {
+		password, totp, err := st.GetCredential(account.Ref)
+		if err != nil || password != "private-password" || totp != "JBSWY3DPEHPK3PXP" {
+			t.Fatal("imported login material missing after sync", err)
+		}
+	}
 	if rows := read("platform=chatgpt&limit=10"); len(rows) != 10 || rows[0].Ref == "old" {
 		t.Fatal("new imports buried", rows)
 	}
@@ -92,6 +98,82 @@ func TestImportedAccountsRemainVisibleAfterSyncWithStableTimes(t *testing.T) {
 	a, err := st.GetAccount(before[0].Ref)
 	if err != nil || a.CreatedAt != before[0].CreatedAt {
 		t.Fatal(a, err)
+	}
+}
+
+func TestImportRetryPreservesLoginMaterial(t *testing.T) {
+	root := t.TempDir()
+	st := testdatabase.Open(t, root)
+	s := &Server{st: st, assets: assetstore.New(root)}
+	r := gin.New()
+	r.POST("/import", s.importAccounts)
+	for _, line := range []string{"retry@example.test----private-password----JBSWY3DPEHPK3PXP", "retry@example.test"} {
+		raw, _ := json.Marshal(map[string]string{"accounts": line})
+		req := httptest.NewRequest("POST", "/import", strings.NewReader(string(raw)))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != 200 {
+			t.Fatal(w.Code, w.Body.String())
+		}
+		password, totp, err := st.GetCredential("import:retry@example.test")
+		if err != nil || password != "private-password" || totp != "JBSWY3DPEHPK3PXP" {
+			t.Fatal("retry lost stored login material", err)
+		}
+		asset, err := s.assets.Get("import:retry@example.test")
+		if err != nil || asset.Payload["password"] != password || asset.Payload["totp"] != totp {
+			t.Fatal("export disagrees with production login material", err)
+		}
+	}
+	if err := st.WithdrawAccount("import:retry@example.test"); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("POST", "/import", strings.NewReader(`{"accounts":"retry@example.test----replacement"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	password, _, err := st.GetCredential("import:retry@example.test")
+	if w.Code != 409 || err != nil || password != "private-password" {
+		t.Fatal("transferred source was mutated", w.Code, err)
+	}
+}
+
+func TestImportDatabaseFailureCanRetryWithoutDuplicate(t *testing.T) {
+	if os.Getenv("REG_FACTORY_TEST_POSTGRES_DSN") == "" {
+		t.Skip("requires disposable PostgreSQL")
+	}
+	root := t.TempDir()
+	st := testdatabase.Open(t, root)
+	s := &Server{st: st, assets: assetstore.New(root)}
+	r := gin.New()
+	r.POST("/import", s.importAccounts)
+	if _, err := st.Execer().Exec("ALTER TABLE account_credentials ADD CONSTRAINT synthetic_import_failure CHECK (ref <> 'import:db-retry@example.test')"); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []int{500, 200, 200} {
+		req := httptest.NewRequest("POST", "/import", strings.NewReader(`{"accounts":"db-retry@example.test----private-password----JBSWY3DPEHPK3PXP"}`))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != want || strings.Contains(w.Body.String(), "private-password") {
+			t.Fatal(w.Code, w.Body.String())
+		}
+		if want == 500 {
+			if !strings.Contains(w.Body.String(), "import_save_failed") {
+				t.Fatal("missing visible save failure")
+			}
+			if _, err := st.Execer().Exec("ALTER TABLE account_credentials DROP CONSTRAINT synthetic_import_failure"); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	accounts, err := st.ListAccounts("", "", "", 100)
+	if err != nil || len(accounts) != 1 {
+		t.Fatal("retry duplicated account", err)
+	}
+	password, totp, err := st.GetCredential("import:db-retry@example.test")
+	if err != nil || password != "private-password" || totp != "JBSWY3DPEHPK3PXP" {
+		t.Fatal("retry did not restore production login material", err)
 	}
 }
 

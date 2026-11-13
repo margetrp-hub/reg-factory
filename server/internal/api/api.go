@@ -1030,13 +1030,28 @@ func (s *Server) importAccounts(c *gin.Context) {
 	}
 	for _, row := range rows {
 		ref := "import:" + strings.ToLower(row.email)
+		if transferred, err := s.st.TransferredAccount(platform, row.email); err != nil || transferred {
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "import_save_failed"})
+			} else {
+				c.JSON(http.StatusConflict, gin.H{"error": "ASSET_SOURCE_TRANSFERRED"})
+			}
+			return
+		}
 		if err := s.st.SaveCredential(ref, row.password, row.totp); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "import_save_failed", "detail": "账号资料保存失败，请核对列表后重试"})
 			return
 		}
+		// Export the merged current login, including fields omitted on retry.
+		// Production and handoff must read the same password/2FA material.
+		password, totp, err := s.st.GetCredential(ref)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "import_save_failed"})
+			return
+		}
 		if err := s.assets.Put(assetstore.Asset{
 			Ref: ref, Platform: platform, Kind: kind, Email: row.email, Source: "import",
-			Payload: map[string]any{"password": row.password, "totp": row.totp},
+			Payload: map[string]any{"password": password, "totp": totp},
 		}); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "import_save_failed", "detail": "账号资料保存失败，请核对列表后重试"})
 			return
