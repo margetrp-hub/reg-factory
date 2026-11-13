@@ -32,6 +32,7 @@ func TestWorkflowPythonClientWithRealMailboxAPI(t *testing.T) {
 		c.Next()
 	})
 	a.Register(router.Group("/api/apps/mail"))
+	a.Register(router.Group("/api/apps/icmail")) // Same compatibility route as the real server.
 	sequence := 0
 	router.POST("/fixture/send", func(c *gin.Context) {
 		sequence++
@@ -56,7 +57,7 @@ func TestWorkflowPythonClientWithRealMailboxAPI(t *testing.T) {
 	data := t.TempDir()
 	cmd := exec.Command(python, "-c", `
 import asyncio, os, requests
-from common import icmail, emails
+from common import icmail as mail, emails
 from tools.import_plus_codex import MailCodeProvider
 emails.EMAILS_FILE = os.path.join(os.environ['REG_FACTORY_DATA_DIR'], 'emails.txt')
 url='http://' + os.environ['REG_FACTORY_ICMAIL_ADDR']

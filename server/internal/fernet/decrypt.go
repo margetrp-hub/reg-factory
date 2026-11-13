@@ -1,4 +1,4 @@
-package nodeserver
+package fernet
 
 import (
 	"crypto/aes"
@@ -14,8 +14,8 @@ import (
 // fernetDecrypt is the inverse of fernetEncrypt and accepts both raw and
 // padded URL-safe Fernet keys/tokens. Artifact keys are shared with Team, so
 // this implementation intentionally follows the standard Fernet wire format.
-func fernetDecrypt(key, token []byte, maxAge time.Duration) ([]byte, error) {
-	rawKey, err := decodeFernetKey(key)
+func Decrypt(key, token []byte, maxAge time.Duration) ([]byte, error) {
+	rawKey, err := DecodeKey(key)
 	if err != nil {
 		return nil, err
 	}
@@ -70,7 +70,7 @@ func fernetDecrypt(key, token []byte, maxAge time.Duration) ([]byte, error) {
 	return plain[:len(plain)-pad], nil
 }
 
-func decodeFernetKey(value []byte) ([]byte, error) {
+func DecodeKey(value []byte) ([]byte, error) {
 	for _, encoding := range []*base64.Encoding{base64.RawURLEncoding, base64.URLEncoding} {
 		if decoded, err := encoding.DecodeString(string(value)); err == nil && len(decoded) == 32 {
 			return decoded, nil

@@ -190,7 +190,54 @@ func (s *Store) FinishAccountRefresh(taskID, ref, status string, code int, messa
 			return err
 		}
 	}
+	if status == "failed" && code == 1 {
+		if err = recordRefreshFailureState(s, tx, taskID, ref); err != nil {
+			return err
+		}
+	}
 	return tx.Commit()
+}
+
+// Only explicit structured evidence can change account/workspace availability.
+// Keep the original credential and terminal task in the same transaction.
+func recordRefreshFailureState(s *Store, tx *sql.Tx, taskID, ref string) error {
+	rows, err := s.ex.QueryTx(tx, `SELECT line FROM events WHERE task_id=? AND stream='stdout' ORDER BY id DESC LIMIT 100`, taskID)
+	if err != nil {
+		return err
+	}
+	state := ""
+	for rows.Next() {
+		var line string
+		if err = rows.Scan(&line); err != nil {
+			break
+		}
+		var value struct {
+			Ref, Result string
+			Schema      string `json:"error_schema"`
+			Code        string `json:"error_code"`
+		}
+		if json.Unmarshal([]byte(line), &value) != nil || value.Ref != ref || value.Result != "failed" || value.Schema != "account.failure.v1" {
+			continue
+		}
+		switch value.Code {
+		case "account_deactivated", "account_banned":
+			state = "banned"
+		case "workspace_deactivated", "deactivated_workspace":
+			state = "workspace_deactivated"
+		}
+		break
+	}
+	if err == nil {
+		err = rows.Err()
+	}
+	rows.Close()
+	if err != nil || state == "" {
+		return err
+	}
+	_, err = s.ex.ExecTxArgs(tx, `UPDATE accounts SET status=?,liveness_status=?,health_checked_at=?,liveness_checked_at=?,health_message=?
+ WHERE ref=? AND claimed=0 AND health_checked_at<=COALESCE((SELECT started_at FROM tasks WHERE id=?),'')`,
+		state, state, now(), now(), "上游明确返回："+state, ref, taskID)
+	return err
 }
 
 // UnfinishedCredentials is consumed before generic restart recovery or queue

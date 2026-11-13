@@ -23,6 +23,11 @@ func TestAccessCheckNeverExchangesRefreshToken(t *testing.T) {
 		{401, `{"error":"invalid_token"}`, "needs_refresh"},
 		{403, `<html>challenge</html>`, "unknown"},
 		{403, `{"error":{"code":"account_deactivated"}}`, "banned"},
+		{401, `{"error":{"code":"account_banned"}}`, "banned"},
+		{401, `{"error":{"code":"workspace_deactivated"}}`, "workspace_deactivated"},
+		{403, `{"detail":{"code":"deactivated_workspace"}}`, "workspace_deactivated"},
+		{401, `{"error":{"message":"account_banned workspace_deactivated"}}`, "needs_refresh"},
+		{403, `{"error":"workspace_deactivated"}`, "workspace_deactivated"},
 		{429, `{}`, "unknown"}, {503, `{}`, "unknown"}, {200, `<html>login</html>`, "unknown"},
 	} {
 		t.Run(tc.status+tc.body, func(t *testing.T) {

@@ -32,6 +32,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from common import credential_versions as versions
+from common.oauth_errors import account_failure, error_code
 
 PLATFORMS = ("claude", "chatgpt", "grok", "kiro", "outlook")
 OPENAI_TOKEN_URL = "https://auth.openai.com/oauth/token"
@@ -47,9 +48,9 @@ def _emit(payload: dict) -> int:
     # The runner maps the process exit code to the Work receipt.  Returning
     # zero for relogin/unknown made a refresh look successful even though no
     # new credential document was written.
-    if payload.get("result") in {"unknown", "relogin_required", "banned", "failed"}:
+    if payload.get("result") in {"unknown", "relogin_required", "banned", "workspace_deactivated", "failed"}:
         return 1
-    if "result" not in payload and payload.get("status") in {"unknown", "error", "expired", "banned"}:
+    if "result" not in payload and payload.get("status") in {"unknown", "error", "expired", "banned", "workspace_deactivated"}:
         return 1
     return 0
 
@@ -67,8 +68,8 @@ def _normalize_status(status: str) -> str:
         return "ok"
     if value in {"expired", "restricted", "abuse_locked"}:
         return "expired"
-    if value in {"banned", "invalid", "dead"}:
-        return "banned"
+    if value in {"banned", "workspace_deactivated", "invalid", "dead"}:
+        return value
     if value in {"error"}:
         return "unknown"
     return "unknown"
@@ -189,9 +190,24 @@ def _subject_id(ref: str) -> str:
     return f"{raw[:8]}-{raw[8:12]}-{raw[12:16]}-{raw[16:20]}-{raw[20:32]}"
 
 
+def _primary_account(value: dict) -> dict:
+    if not isinstance(value, dict):
+        raise ValueError('ASSET_DOCUMENT_AMBIGUOUS')
+    if 'accounts' in value:
+        accounts = value['accounts']
+        if not isinstance(accounts, list) or len(accounts) != 1 or not isinstance(accounts[0], dict):
+            raise ValueError('ASSET_DOCUMENT_AMBIGUOUS')
+        return _primary_account(accounts[0])
+    if isinstance(value.get('payload'), dict):
+        return _primary_account(value['payload'])
+    return value
+
+
 def _json_email(value: object) -> str:
     if not isinstance(value, dict):
         return ""
+    if 'accounts' in value:
+        return _json_email(_primary_account(value))
     for key in ("email", "account_email", "user_email", "username", "login"):
         candidate = value.get(key)
         if isinstance(candidate, str) and "@" in candidate:
@@ -207,13 +223,24 @@ def _json_email(value: object) -> str:
 def _token_map(value: object) -> dict | None:
     if not isinstance(value, dict):
         return None
+    if 'accounts' in value:
+        return _token_map(_primary_account(value))
+    candidates = []
     for key in ("payload", "credentials", "oauth", "token", "tokens"):
         nested = value.get(key)
-        if isinstance(nested, dict) and any(
-            nested.get(name) for name in ("refresh_token", "refreshToken", "oauth_refresh_token")
-        ):
-            return nested
-    return value if any(value.get(name) for name in ("refresh_token", "refreshToken", "oauth_refresh_token")) else None
+        found = _token_map(nested)
+        if found is not None:
+            candidates.append(found)
+    if any(value.get(name) for name in ("refresh_token", "refreshToken", "oauth_refresh_token")):
+        candidates.append(value)
+    if not candidates:
+        return None
+    def bundle(item):
+        return tuple(item.get(k) or item.get(alias) or item.get('oauth_' + k) for k, alias in (
+            ('access_token', 'accessToken'), ('refresh_token', 'refreshToken'), ('id_token', 'idToken')))
+    if any(bundle(item) != bundle(candidates[0]) for item in candidates[1:]):
+        raise ValueError('ASSET_DOCUMENT_AMBIGUOUS')
+    return candidates[0]
 
 
 def _credential_dirs(root=None) -> list[Path]:
@@ -346,26 +373,31 @@ def _atomic_json_write(path: Path, document: dict) -> None:
 
 def _update_oauth_document(document: dict, tokens: dict) -> dict:
     """Update the existing JSON shape without dropping mailbox metadata."""
-    primary = document.get("payload") if isinstance(document.get("payload"), dict) else document
+    primary = _primary_account(document)
+    _token_map(document)  # Reject conflicting sessions before changing any field.
     targets: list[dict] = []
-    for candidate in (primary, document):
-        if isinstance(candidate, dict) and candidate not in targets:
-            targets.append(candidate)
-    for parent in list(targets):
-        for key in ("credentials", "oauth", "token", "tokens"):
-            nested = parent.get(key)
-            if isinstance(nested, dict) and nested not in targets:
-                targets.append(nested)
+    def visit(parent):
+        if any(key in parent for key in ('access_token', 'accessToken', 'oauth_access_token', 'refresh_token', 'refreshToken', 'oauth_refresh_token')):
+            targets.append(parent)
+        for key in ('payload', 'credentials', 'oauth', 'token', 'tokens'):
+            if isinstance(parent.get(key), dict):
+                visit(parent[key])
+        if 'accounts' in parent:
+            visit(_primary_account(parent))
+    visit(document)
+    if not targets:
+        targets.append(primary.get('credentials') if isinstance(primary.get('credentials'), dict) else primary)
     for target in targets:
         access_key = "accessToken" if "accessToken" in target and "access_token" not in target else "access_token"
         refresh_key = "refreshToken" if "refreshToken" in target and "refresh_token" not in target else "refresh_token"
-        if "access_token" in target or "accessToken" in target or target is primary:
-            target[access_key] = tokens["access_token"]
+        target[access_key] = tokens["access_token"]
         if "oauth_access_token" in target:
             target["oauth_access_token"] = tokens["access_token"]
-        if tokens.get("refresh_token") and ("refresh_token" in target or "refreshToken" in target or target is primary):
+        if tokens.get("refresh_token"):
             target[refresh_key] = tokens["refresh_token"]
-        if tokens.get("id_token") and (target is primary or "id_token" in target or "idToken" in target):
+            if 'oauth_refresh_token' in target:
+                target['oauth_refresh_token'] = tokens['refresh_token']
+        if tokens.get("id_token"):
             target["id_token" if "id_token" in target or "idToken" not in target else "idToken"] = tokens["id_token"]
         if "expires_in" in target:
             target["expires_in"] = tokens.get("expires_in")
@@ -659,8 +691,11 @@ def _refresh_chatgpt(ref: str, email: str = "") -> dict:
             return {"ref": ref, "result": "unknown", "message": f"刷新成功但 JSON 写回失败：{type(exc).__name__}"}
         return {"ref": ref, "result": "refreshed", "expires_in": expires_in,
                 "updated_files": len(written), "message": "最新凭据已保存，原账号引用已同步"}
-    code = str(payload.get("error") or "") if isinstance(payload, dict) else ""
-    if response.status_code in {400, 401} and code in {"invalid_grant", "invalid_token", "account_deactivated", "account_banned"}:
+    explicit = account_failure(payload) if response.status_code >= 400 else None
+    if explicit:
+        return {'ref': ref, 'result': 'failed', 'error_schema': 'account.failure.v1', **explicit}
+    code = error_code(payload)
+    if response.status_code in {400, 401} and code in {"invalid_grant", "invalid_token"}:
         return {"ref": ref, "result": "relogin_required", "message": f"refresh_token 无效（{code or response.status_code}）"}
     return {"ref": ref, "result": "unknown", "message": f"OAuth HTTP {response.status_code}"}
 
@@ -737,7 +772,7 @@ def _reauthorize_chatgpt(ref: str, email: str = "", timeout: int = 600) -> dict:
     except Exception as exc:
         from vendor.reauth_web.engine import ERROR_HINTS, ReauthError
         evidence = exc.evidence if isinstance(exc, ReauthError) else {}
-        if evidence.get("stage") == "authorize" and evidence.get("token_exchange_started") is False:
+        if evidence.get("stage") == "authorize" and (evidence.get("token_exchange_started") is False or evidence.get('token_exchange_rejected') is True):
             code = evidence.get("error_code")
             reason = ERROR_HINTS.get(code, "登录授权未完成，请查看执行日志")
             return {"ref": ref, "result": "failed", "message": f"SG重新授权失败：{reason}；原凭据保留",

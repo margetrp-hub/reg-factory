@@ -7,7 +7,47 @@ import hashlib
 import os
 import secrets
 import time
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
+
+
+def _workspace_id(document):
+    value = document.get('payload', document)
+    for item in (value, value.get('credentials') or {}):
+        for key in ('workspace_account_id', 'chatgpt_account_id', 'account_id'):
+            if item.get(key):
+                return str(item[key])
+    return ''
+
+
+async def _drive_authorization(page, url, **kwargs):
+    """Stop on an explicit provider refusal; never classify page prose as a ban."""
+    from common.oauth_codex import drive_authorize
+    from common.oauth_errors import account_failure
+    from vendor.reauth_web.engine import ReauthError, failure_evidence
+    refused = asyncio.get_running_loop().create_future()
+    async def observe(response):
+        if urlsplit(response.url).hostname not in {'auth.openai.com', 'chatgpt.com'} or not 400 <= response.status < 500:
+            return
+        try:
+            explicit = account_failure(await response.json())
+        except Exception:
+            return
+        if explicit and not refused.done():
+            refused.set_result((explicit, response.status))
+    page.on('response', observe)
+    drive = asyncio.create_task(drive_authorize(page, url, **kwargs))
+    try:
+        await asyncio.wait({drive, refused}, return_when=asyncio.FIRST_COMPLETED)
+        if refused.done():
+            explicit, status = refused.result()
+            raise ReauthError(explicit['message'], evidence=failure_evidence({'error': explicit['error_code'], 'status': status}))
+        return await drive
+    finally:
+        page.remove_listener('response', observe)
+        refused.cancel()
+        if not drive.done():
+            drive.cancel()
+        await asyncio.gather(drive, return_exceptions=True)
 
 
 def login_record(document: dict) -> dict:
@@ -46,13 +86,13 @@ def _claims(token: str) -> dict:
 def validate_identity(document: dict, tokens: dict) -> None:
     value = document.get("payload", document)
     expected_email = str(value.get("email") or document.get("email") or "").lower()
-    expected_workspace = str(value.get("workspace_account_id") or value.get("chatgpt_account_id") or value.get("account_id") or "")
+    expected_workspace = _workspace_id(document)
     claims = [_claims(str(tokens.get(k) or "")) for k in ("access_token", "id_token")]
     emails = {str(c.get("email") or (c.get("https://api.openai.com/profile") or {}).get("email") or "").lower() for c in claims} - {""}
     workspaces = {str((c.get("https://api.openai.com/auth") or {}).get("chatgpt_account_id") or "") for c in claims} - {""}
-    if not expected_email or expected_email not in emails:
+    if not expected_email or emails != {expected_email}:
         raise ValueError("OAuth account identity mismatch")
-    if expected_workspace and expected_workspace not in workspaces:
+    if expected_workspace and workspaces != {expected_workspace}:
         raise ValueError("OAuth workspace identity mismatch")
 
 
@@ -64,7 +104,7 @@ async def authorize_document(document: dict, *, timeout: int = 600, on_tokens=No
         return await asyncio.to_thread(_authorize_protocol, document, record, timeout, on_tokens, on_progress)
     from patchright.async_api import async_playwright
     from common.browser import open_and_connect, teardown
-    from common.oauth_codex import drive_authorize, REDIRECT_URI
+    from common.oauth_codex import REDIRECT_URI
     from tools.import_plus_codex import MailCodeProvider
     from common.proxy_switch import browser_proxy_fields
 
@@ -101,13 +141,13 @@ async def authorize_document(document: dict, *, timeout: int = 600, on_tokens=No
             else:
                 mail = MailCodeProvider(record, context, page, max_wait=min(timeout, 150))
             await mail.prepare()
-            code, callback_state, _ = await asyncio.wait_for(drive_authorize(
+            code, callback_state, _ = await asyncio.wait_for(_drive_authorization(
                 page, url, timeout=timeout, account_email=record["email"],
                 allow_phone=False, email_code_provider=mail,
                 totp_secret=record.get("two_factor") or "",
                 account_password=record.get("account_password") or "",
-                prefer_team=bool(value.get("workspace_account_id")),
-                workspace_id=str(value.get("workspace_account_id") or value.get("chatgpt_account_id") or value.get("account_id") or ""),
+                prefer_team=bool(_workspace_id(document)),
+                workspace_id=_workspace_id(document),
             ), timeout=timeout + 30)
             if not code or callback_state != state:
                 raise RuntimeError("OAuth callback incomplete")
@@ -133,7 +173,7 @@ def _authorize_protocol(document: dict, record: dict, timeout: int, on_tokens=No
     value = document.get("payload", document)
     settings = Settings(data_dir=Path(os.environ.get("REG_FACTORY_DATA_DIR") or "."),
         proxy=os.environ.get("REG_FACTORY_PRODUCTION_PROXY", "").strip(), account_timeout_seconds=timeout,
-        extra={"workspace_id": str(value.get("workspace_account_id") or value.get("chatgpt_account_id") or value.get("account_id") or "")})
+        extra={"workspace_id": _workspace_id(document)})
     account = AccountLine(email=record["email"], password=record["account_password"],
         totp_secret=record["two_factor"], raw="")
     print("[reauthorize] SG启动原账号密码/TOTP协议授权", flush=True)
@@ -177,6 +217,17 @@ def _exchange(code: str, verifier: str, client_id: str, redirect_uri: str) -> di
             "grant_type": "authorization_code", "code": code, "code_verifier": verifier,
             "client_id": client_id, "redirect_uri": redirect_uri,
         }, timeout=30)
+        if isinstance(response.status_code, int) and 400 <= response.status_code < 500:
+            from common.oauth_errors import account_failure
+            from vendor.reauth_web.engine import ReauthError, failure_evidence
+            try:
+                explicit = account_failure(response.json())
+            except ValueError:
+                explicit = None
+            if explicit:
+                evidence = failure_evidence({'error': explicit['error_code'], 'status': response.status_code})
+                evidence.update(token_exchange_started=True, token_exchange_rejected=True)
+                raise ReauthError(explicit['message'], evidence=evidence)
         response.raise_for_status()
         tokens = response.json()
         if not tokens.get("access_token") or not tokens.get("refresh_token"):

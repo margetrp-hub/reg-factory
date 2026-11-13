@@ -19,6 +19,9 @@ func TestRefreshFailureReceiptReasonAndHistoricalDigest(t *testing.T) {
 		exit                                 int
 	}{
 		{"new", "account.failure.v1", "mfa_totp_verification_failed", "stdout", "WORK_ACCOUNT_MFA_TOTP_VERIFICATION_FAILED", 1},
+		{"banned", "account.failure.v1", "account_banned", "stdout", "ACCOUNT_BANNED", 1},
+		{"workspace", "account.failure.v1", "workspace_deactivated", "stdout", "WORKSPACE_DEACTIVATED", 1},
+		{"workspace-alias", "account.failure.v1", "deactivated_workspace", "stdout", "DEACTIVATED_WORKSPACE", 1},
 		{"legacy", "", "mfa_totp_verification_failed", "stdout", "WORK_ACCOUNT_REFRESH_FAILED", 1},
 		{"untrusted", "account.failure.v1", "provider-private", "stdout", "WORK_ACCOUNT_REFRESH_FAILED", 1},
 		{"stderr", "account.failure.v1", "mfa_totp_verification_failed", "stderr", "WORK_ACCOUNT_REFRESH_FAILED", 1},

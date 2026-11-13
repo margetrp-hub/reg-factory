@@ -21,6 +21,7 @@ from typing import Callable
 import requests
 
 from common import asset_store
+from common.oauth_errors import account_failure
 
 
 PLATFORMS = ("outlook", "chatgpt", "claude", "grok", "kiro")
@@ -31,6 +32,7 @@ STATUSES = (
     "normal",
     "unlock",
     "banned",
+    "workspace_deactivated",
     "expired",
     "restricted",
     "invalid",
@@ -54,17 +56,6 @@ REPORT_CACHE_SECONDS = 5.0
 
 _REPORT_CACHE_LOCK = threading.Lock()
 _REPORT_CACHE: dict[tuple[str, str], tuple[float, dict]] = {}
-
-_BANNED_MARKERS = (
-    "account_deactivated",
-    "account deactivated",
-    "account_disabled",
-    "account disabled",
-    "account suspended",
-    "your account has been suspended",
-    "your account has been banned",
-)
-
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -433,12 +424,16 @@ def _web_session(platform: str = "") -> requests.Session:
 
 
 def _response_status(response, service: str) -> dict | None:
-    text = (response.text or "")[:3000].lower()
+    try:
+        explicit = account_failure(json.loads(response.text)) if 400 <= response.status_code < 500 else None
+    except ValueError:
+        explicit = None
+    if explicit:
+        return {'status': explicit['source_status'], 'detail': explicit['message'],
+                'evidence': f"{service}:{response.status_code}:{explicit['error_code']}"}
     if response.status_code == 401:
         return {"status": "expired", "detail": f"{service} 登录凭据已过期", "evidence": f"{service}:401"}
     if response.status_code == 403:
-        if any(marker in text for marker in _BANNED_MARKERS):
-            return {"status": "banned", "detail": f"{service} 明确返回账号停用", "evidence": f"{service}:403"}
         return {"status": "restricted", "detail": f"{service} HTTP 403，可能为账号风控或出口限制", "evidence": f"{service}:403"}
     if response.status_code == 429:
         return {"status": "restricted", "detail": f"{service} 请求限流", "evidence": f"{service}:429"}

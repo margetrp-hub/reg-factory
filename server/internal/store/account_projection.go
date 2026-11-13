@@ -11,7 +11,7 @@ const accountProjectionPrefix = `WITH account_raw AS (
 ), account_facts AS (
  SELECT account_raw.*, CASE WHEN platform<>'chatgpt' AND library_state NOT IN ('used','leased')
  THEN CASE WHEN status='ok' THEN 'available'
- WHEN status IN ('banned','invalid','expired','relogin_required','needs_refresh') THEN 'invalid'
+ WHEN status IN ('banned','workspace_deactivated','invalid','expired','relogin_required','needs_refresh') THEN 'invalid'
  ELSE 'pending' END ELSE library_state END AS display_state FROM account_raw
 ), account_ranked AS (
  SELECT account_facts.*,

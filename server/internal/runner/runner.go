@@ -66,6 +66,7 @@ type cpuSample struct {
 
 type proc struct {
 	cmd      *exec.Cmd
+	cancel   context.CancelFunc // Go-hosted tasks use context cancellation
 	taskID   string
 	stopping bool
 }
@@ -338,6 +339,9 @@ func (m *Manager) Submit(task store.Task) error {
 }
 
 func (m *Manager) launch(task store.Task, weight int) error {
+	if task.Script == "central_asset" {
+		return m.launchCentral(task, weight)
+	}
 	argv, cwd, env, err := m.buildArgv(task)
 	if err != nil {
 		return err
@@ -424,20 +428,12 @@ func (m *Manager) launch(task store.Task, weight int) error {
 	var wg sync.WaitGroup
 	var refreshResult string // written only by stdout pump; read after wg.Wait
 	var refreshMessage string
-	var centralResult map[string]any
 	pump := func(reader io.Reader, stream string) {
 		defer wg.Done()
 		scanner := bufio.NewScanner(reader)
 		scanner.Buffer(make([]byte, 0, 64*1024), 512*1024)
 		for scanner.Scan() {
 			text := scanner.Text()
-			if task.Script == "central_asset" && stream == "stdout" {
-				var value map[string]any
-				if json.Unmarshal([]byte(text), &value) == nil && value["schema"] == "aishop.asset-delivery.v1" {
-					centralResult = value
-				}
-				continue
-			}
 			if credentialRef != "" && stream == "stdout" {
 				var stage struct {
 					Schema string `json:"schema"`
@@ -504,22 +500,7 @@ func (m *Manager) launch(task store.Task, weight int) error {
 				status = "failed"
 			}
 		}
-		if task.Script == "central_asset" {
-			if centralResult != nil {
-				finishErr := m.finishCentral(task, centralResult)
-				if finishErr != nil {
-					m.record(task.ID, "system", "中央结果等待补交，不重复执行外部操作")
-					if current, e := m.st.GetTask(task.ID); e == nil && current.Status == "running" {
-						_ = m.st.Finish(task.ID, "waiting_asset", 75, "ASSET_RESULT_DELIVERY_PENDING")
-					}
-					m.st.DeferCentral(task.ID)
-				}
-			} else {
-				_ = m.st.Finish(task.ID, "waiting_asset", 75, "ASSET_RESULT_DELIVERY_PENDING")
-			}
-			m.Wake()
-			return
-		} else if isChatGPTCredential(task) {
+		if isChatGPTCredential(task) {
 			var finishErr error
 			status, code, message, finishErr = m.settleCredential(task, refreshResult, status, code, message)
 			if finishErr != nil {
@@ -575,6 +556,10 @@ func (m *Manager) Stop(taskID string) error {
 		return errors.New("任务不在运行中")
 	}
 	m.mu.Unlock()
+	if entry.cancel != nil {
+		entry.cancel()
+		return nil
+	}
 	return killGroup(entry.cmd.Process.Pid, 5*time.Second)
 }
 
@@ -596,7 +581,11 @@ func (m *Manager) StopAll() []string {
 		entry := m.procs[id]
 		m.mu.Unlock()
 		if entry != nil {
-			_ = killGroup(entry.cmd.Process.Pid, 5*time.Second)
+			if entry.cancel != nil {
+				entry.cancel()
+			} else {
+				_ = killGroup(entry.cmd.Process.Pid, 5*time.Second)
+			}
 		}
 	}
 	return ids
@@ -633,7 +622,7 @@ func (m *Manager) buildArgv(task store.Task) ([]string, string, []string, error)
 	// even if its restart-only settings have since been edited in the env file.
 	baseEnv = append(baseEnv, "REG_FACTORY_ICMAIL_ADDR="+m.cfg.Addr, "REG_FACTORY_ICMAIL_KEY="+m.cfg.PanelPass)
 	// raw 任务：ArgsJSON 直接是参数数组，脚本为 tools/<script>.py
-	if task.Script == "asset_ops" || task.Script == "change_password" || task.Script == "import_free_json" || task.Script == "central_asset" {
+	if task.Script == "asset_ops" || task.Script == "change_password" || task.Script == "import_free_json" {
 		var argvTail []string
 		if err := json.Unmarshal([]byte(task.ArgsJSON), &argvTail); err != nil {
 			return nil, "", nil, fmt.Errorf("raw 参数无效: %w", err)

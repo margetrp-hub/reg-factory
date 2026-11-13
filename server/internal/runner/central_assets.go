@@ -5,36 +5,50 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
-	"os/exec"
-	"path/filepath"
+	"os"
 	"sync"
 	"time"
 
 	"aishop-next/execution-go/nodeassets"
+	"github.com/tiantianGPU/reg-factory/server/internal/centralasset"
 	"github.com/tiantianGPU/reg-factory/server/internal/store"
 )
 
-// Verify the interpreter, exported SDK and actual durable journal, without
-// touching any account or upstream. Cache only a short readiness observation.
+// The Go host validates its configuration and actual durable storage without
+// launching Python or touching an account/upstream.
 func (m *Manager) CentralRuntimeCheck() error {
 	m.centralCheckMu.Lock()
 	defer m.centralCheckMu.Unlock()
 	if !m.centralCheckedAt.IsZero() && time.Since(m.centralCheckedAt) < 30*time.Second {
 		return m.centralCheckErr
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, m.cfg.Python, filepath.Join(m.cfg.AppRoot, "tools", "central_asset.py"), "--check-config")
-	cmd.Dir = m.cfg.AppRoot
-	raw, err := cmd.Output()
-	var result map[string]any
-	if err != nil || json.Unmarshal(raw, &result) != nil || result["configured"] != true {
-		m.centralCheckErr = errors.New("ASSET_RUNTIME_UNAVAILABLE")
-	} else {
-		m.centralCheckErr = nil
+	cfg, err := centralasset.FromEnvironment(m.cfg.DataDir, os.Environ())
+	if err == nil {
+		err = cfg.VerifyWritable()
 	}
+	m.centralCheckErr = err
 	m.centralCheckedAt = time.Now()
 	return m.centralCheckErr
+}
+
+func (m *Manager) centralOperation(task store.Task) (*centralasset.Operation, error) {
+	p, err := CentralContext(task)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := centralasset.FromEnvironment(m.cfg.DataDir, os.Environ())
+	if err != nil {
+		return nil, err
+	}
+	op, err := centralasset.New(cfg, p)
+	if err != nil {
+		return nil, err
+	}
+	op.Progress = func(stage string) {
+		actions := map[string]string{"asset_claim": "领取原授权中央资料", "asset_read": "读取指定凭据版本", "asset_execution": "执行平台操作", "asset_result_save": "密封保存原执行结果", "asset_writeback": "提交原结果并核对中央回执"}
+		_ = m.st.Stage(task.ID, store.StageEvent{Stage: stage, Status: "running", Action: actions[stage]})
+	}
+	return op, nil
 }
 
 func CentralContext(task store.Task) (map[string]any, error) {
@@ -95,17 +109,11 @@ func (m *Manager) settleCentral(task store.Task, value map[string]any) error {
 	}
 	_ = m.st.Stage(task.ID, store.StageEvent{Stage: "asset_writeback", Status: state, Action: "中央资料回库与原任务结果确认"})
 	if state == "completed" || state == "failed" || state == "closed" {
-		argv, cwd, env, e := m.buildArgv(task)
+		op, e := m.centralOperation(task)
 		if e != nil {
 			return e
 		}
-		raw, _ := json.Marshal(receipt)
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		cmd := exec.CommandContext(ctx, argv[0], append(argv[1:], "--ack", string(raw))...)
-		cmd.Dir = cwd
-		cmd.Env = env
-		if e = cmd.Run(); e != nil {
+		if e = op.Acknowledge(receipt); e != nil {
 			return errors.New("ASSET_JOURNAL_CLEANUP_PENDING")
 		}
 		return m.st.AcknowledgeCentral(task.ID)
@@ -142,6 +150,16 @@ func (m *Manager) finishCentral(task store.Task, value map[string]any) error {
 }
 
 func (m *Manager) ReplayCentral(task store.Task) error {
+	// Callers may hold an old stopped/interrupted snapshot. Check the current
+	// scheduler fact before creating recovery evidence for an absent result.
+	current, err := m.st.GetTask(task.ID)
+	if err != nil {
+		return err
+	}
+	if current.Status == "queued" || current.Status == "running" || current.Status == "stopping" {
+		return errors.New("ASSET_EXECUTION_STILL_ACTIVE")
+	}
+	task = current
 	if !m.beginCentral(task.ID) {
 		return nil
 	}
@@ -149,26 +167,15 @@ func (m *Manager) ReplayCentral(task store.Task) error {
 	if p, e := m.st.CentralReceipt(task.ID); e == nil && (p["state"] == "completed" || p["state"] == "failed" || p["state"] == "closed") {
 		return m.settleCentral(task, p)
 	}
-	argv, cwd, env, err := m.buildArgv(task)
+	op, err := m.centralOperation(task)
 	if err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
 	defer cancel()
-	started := "started"
-	if task.StartedAt == "" {
-		started = "unstarted"
-	}
-	cmd := exec.CommandContext(ctx, argv[0], append(argv[1:], "--replay", "--interrupted", started)...)
-	cmd.Dir = cwd
-	cmd.Env = env
-	raw, err := cmd.Output()
+	value, err := op.Replay(ctx, task.StartedAt != "")
 	if err != nil {
-		return errors.New("ASSET_RESULT_DELIVERY_PENDING")
-	}
-	var value map[string]any
-	if len(raw) > 16384 || json.Unmarshal(raw, &value) != nil {
-		return errors.New("ASSET_RESULT_DELIVERY_PENDING")
+		return err
 	}
 	return m.settleCentral(task, value)
 }

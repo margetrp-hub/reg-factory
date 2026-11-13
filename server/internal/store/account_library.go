@@ -18,7 +18,7 @@ const accountLibraryStatusSQL = `CASE
  OR EXISTS (SELECT 1 FROM inventory_relay_bindings b WHERE b.account_ref=accounts.ref)
  OR EXISTS (SELECT 1 FROM production_results p WHERE p.account_ref=accounts.ref OR p.source_ref=accounts.ref) THEN 'used'
  WHEN ` + activeAccountRefreshSQL + ` THEN 'leased'
- WHEN oauth_status='failed' OR liveness_status IN ('dead','banned','invalid') THEN 'invalid'
+ WHEN oauth_status='failed' OR liveness_status IN ('dead','banned','workspace_deactivated','invalid') THEN 'invalid'
  WHEN oauth_status='completed' AND liveness_status='alive' AND join_status='none' THEN 'available'
  ELSE 'pending' END`
 
@@ -33,8 +33,8 @@ func (s *Store) recordATHealth(tx *sql.Tx, ref, status, message, checkedAt strin
 		liveness = "alive"
 	case "needs_refresh", "expired", "relogin_required":
 		liveness = "needs_refresh"
-	case "banned", "invalid":
-		liveness = "dead"
+	case "banned", "workspace_deactivated", "invalid":
+		liveness = status
 	}
 	result, err := s.ex.ExecTxArgs(tx, `UPDATE accounts SET status=?,health_checked_at=?,health_message=?,updated_at=?,
  oauth_status=CASE WHEN ?='ok' AND kind='oauth' THEN 'completed' ELSE oauth_status END,

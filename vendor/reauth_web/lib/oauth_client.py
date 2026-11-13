@@ -3244,6 +3244,7 @@ class OAuthClient:
 
     def _exchange_code_for_tokens(self, code, code_verifier, user_agent, impersonate):
         """用 authorization code 换取 tokens"""
+        self.token_exchange_rejection = ''
         url = f"{self.oauth_issuer}/oauth/token"
 
         payload = {
@@ -3270,10 +3271,14 @@ class OAuthClient:
             if r.status_code == 200:
                 return r.json()
             else:
-                self._log(f"换取 tokens 失败: {r.status_code} - {r.text[:200]}")
+                details = self._remember_oauth_http_failure(r, request_url=url)
+                from common.oauth_errors import ACCOUNT_STATES
+                code = details.get('code')
+                self.token_exchange_rejection = code if 400 <= r.status_code < 500 and code in ACCOUNT_STATES else ''
+                self._log(f"换取 tokens 失败: HTTP {r.status_code}")
 
         except Exception as e:
-            self._log(f"换取 tokens 异常: {e}")
+            self._log(f"换取 tokens 异常: {type(e).__name__}")
 
         return None
 

@@ -103,6 +103,10 @@ PHONE_FAILURES = {
 PHONE_MESSAGE = "该账号被要求手机号验证｜本站不提供手机号，请换其他方式处理"
 
 ERROR_HINTS = {
+    "account_deactivated": "上游明确返回账号封禁/停用，刷新不能恢复账号",
+    "account_banned": "上游明确返回账号封禁，刷新不能恢复账号",
+    "workspace_deactivated": "上游明确返回空间停用，请核对原工作区",
+    "deactivated_workspace": "上游明确返回空间停用，请核对原工作区",
     "mfa_totp_verification_failed": "账号两步验证未通过，请核对当前有效的 2FA 资料",
     "mfa_challenge_rejected": "账号两步验证请求被拒绝，请核对登录验证方式",
     "oauth_tls_handshake_failed": "登录校验连接的 TLS 握手失败，网络重试已用尽",
@@ -263,6 +267,12 @@ def _reauth_with_clients(account, settings, chatgpt_client, oauth_client, *, on_
         getattr(chatgpt_client, "impersonate", "") or None,
     )
     if not isinstance(tokens, dict) or not tokens.get("access_token"):
+        from common.oauth_errors import ACCOUNT_STATES
+        code = getattr(oauth_client, 'token_exchange_rejection', '')
+        if code in ACCOUNT_STATES:
+            evidence = failure_evidence({'error': code, 'status': getattr(oauth_client, 'last_oauth_status', 0)})
+            evidence.update(token_exchange_started=True, token_exchange_rejected=True)
+            raise ReauthError(ERROR_HINTS[code], evidence=evidence)
         raise ReauthError("token 交换失败，请稍后重试")
 
     session = {

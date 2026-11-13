@@ -10,5 +10,5 @@ export function AccountNavigation({slug, active, accountsHref, checksHref, runHr
   </nav>;
 }
 
-export const CHECK_LABELS: Record<string,string> = {ok:"AT 有效",banned:"账号停用",invalid:"凭据无效",expired:"凭据过期",needs_refresh:"AT 待刷新",unknown:"结果待核对",relogin_required:"需重新授权",pending:"未执行",running:"检查中"};
-export const checkTone = (status: string) => status === "ok" ? "ok" : ["banned","invalid","expired","relogin_required"].includes(status) ? "bad" : ["needs_refresh","unknown"].includes(status) ? "warn" : "neutral";
+export const CHECK_LABELS: Record<string,string> = {ok:"AT 有效",banned:"账号封禁",workspace_deactivated:"空间停用",invalid:"凭据无效",expired:"凭据过期",needs_refresh:"AT 待刷新",unknown:"结果待核对",relogin_required:"需重新授权",pending:"未执行",running:"检查中"};
+export const checkTone = (status: string) => status === "ok" ? "ok" : ["banned","workspace_deactivated","invalid","expired","relogin_required"].includes(status) ? "bad" : ["needs_refresh","unknown"].includes(status) ? "warn" : "neutral";

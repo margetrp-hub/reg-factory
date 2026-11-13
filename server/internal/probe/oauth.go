@@ -15,7 +15,7 @@ import (
 const openAIUsageURL = "https://chatgpt.com/backend-api/wham/usage"
 
 type Result struct {
-	Status    string // ok / banned / needs_refresh / unknown
+	Status    string // ok / banned / workspace_deactivated / needs_refresh / unknown
 	Message   string
 	retryable bool
 }
@@ -91,6 +91,26 @@ func checkAccessTokenContext(ctx context.Context, client *http.Client, creds map
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	var payload map[string]any
 	parsed := err == nil && json.Unmarshal(raw, &payload) == nil && payload != nil
+	if parsed && resp.StatusCode >= 400 && resp.StatusCode < 500 {
+		code, _ := payload["error"].(string)
+		for _, key := range []string{"error", "detail", ""} {
+			item := payload
+			if key != "" {
+				item, _ = payload[key].(map[string]any)
+			}
+			for _, field := range []string{"code", "error_code", "type"} {
+				if value, _ := item[field].(string); code == "" {
+					code = value
+				}
+			}
+		}
+		switch strings.ToLower(strings.TrimSpace(code)) {
+		case "account_deactivated", "account_banned":
+			return Result{Status: "banned", Message: "上游明确返回账号封禁/停用"}
+		case "workspace_deactivated", "deactivated_workspace":
+			return Result{Status: "workspace_deactivated", Message: "上游明确返回空间停用"}
+		}
+	}
 	switch resp.StatusCode {
 	case http.StatusOK:
 		if !parsed {
@@ -100,11 +120,6 @@ func checkAccessTokenContext(ctx context.Context, client *http.Client, creds map
 	case http.StatusUnauthorized:
 		return Result{Status: "needs_refresh", Message: "AT 已失效或被拒绝，请刷新后复测；账号与 RT 状态尚未判定"}
 	case http.StatusForbidden:
-		detail, _ := payload["error"].(map[string]any)
-		code, _ := detail["code"].(string)
-		if code == "account_deactivated" || code == "account_banned" {
-			return Result{Status: "banned", Message: "上游明确返回账号停用"}
-		}
 		return Result{Status: "unknown", Message: "测试被上游拒绝（403），账号状态未确认"}
 	case http.StatusTooManyRequests:
 		return Result{Status: "unknown", Message: "测试被限流，请稍后重试 AT 测试"}

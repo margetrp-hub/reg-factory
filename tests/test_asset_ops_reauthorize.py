@@ -11,6 +11,31 @@ from tools.chatgpt_reauthorize import authorize_document
 import asyncio
 
 
+@pytest.mark.parametrize('code', ['account_banned', 'workspace_deactivated'])
+def test_browser_refusal_ends_original_flow_without_token_exchange(code):
+    from tools.chatgpt_reauthorize import _drive_authorization
+    from vendor.reauth_web.engine import ReauthError
+    async def run():
+        callbacks = {}
+        page = SimpleNamespace(on=lambda event, cb: callbacks.update({event: cb}), remove_listener=lambda event, cb: callbacks.pop(event))
+        cancelled = []
+        async def drive(*args, **kwargs):
+            # Provider prose is not evidence, nor is a third-party response.
+            await callbacks['response'](SimpleNamespace(url='https://other.invalid/', status=401, json=AsyncMock(return_value={'error': {'code': code}})))
+            await callbacks['response'](SimpleNamespace(url='https://auth.openai.com/api/accounts/password/verify', status=401, json=AsyncMock(return_value={'error': {'code': code}})))
+            try:
+                await asyncio.Future()
+            finally:
+                cancelled.append(True)
+        with patch('common.oauth_codex.drive_authorize', side_effect=drive):
+            with pytest.raises(ReauthError) as caught:
+                await asyncio.wait_for(_drive_authorization(page, 'https://auth.openai.com/oauth/authorize'), 2)
+        assert caught.value.evidence['error_code'] == code
+        assert caught.value.evidence['token_exchange_started'] is False
+        assert cancelled == [True] and not callbacks
+    asyncio.run(run())
+
+
 def jwt(claims):
     return 'head.' + base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip('=') + '.sig'
 
@@ -26,6 +51,21 @@ def test_authorize_does_not_replay_old_refresh_grant():
 def test_unknown_provider_result_has_distinct_exit_code():
     assert asset_ops._emit({'result': 'unknown'}) == 75
     assert asset_ops._emit({'result': 'relogin_required'}) == 1
+
+
+def test_token_exchange_explicit_rejection_preserves_state():
+    from tools.chatgpt_reauthorize import _exchange
+    from vendor.reauth_web.engine import ReauthError
+    from unittest.mock import MagicMock
+    response = MagicMock(status_code=401)
+    response.json.return_value = {'error': {'code': 'workspace_deactivated', 'message': 'private-response'}}
+    with patch('requests.Session') as session:
+        session.return_value.__enter__.return_value.post.return_value = response
+        with pytest.raises(ReauthError) as caught:
+            _exchange('code', 'verifier', 'client', 'http://localhost:1455/auth/callback')
+    assert caught.value.evidence['error_code'] == 'workspace_deactivated'
+    assert caught.value.evidence['token_exchange_rejected'] is True
+    assert 'private-response' not in str(caught.value)
 
 
 @pytest.mark.parametrize('exchange_started,expected,exit_code', [(False, 'failed', 1), (True, 'unknown', 75)])
@@ -68,6 +108,8 @@ def test_workspace_identity_is_checked_before_persistence():
         validate_identity(doc, {'access_token': token})
     token = jwt({'email': doc['email'], 'https://api.openai.com/auth': {'chatgpt_account_id': 'workspace-original'}})
     validate_identity(doc, {'access_token': token})
+    with pytest.raises(ValueError, match='workspace'):
+        validate_identity(doc, {'access_token': jwt({'email': doc['email'], 'https://api.openai.com/auth': {'chatgpt_account_id': 'workspace-other'}}), 'id_token': token})
 
 
 def test_password_totp_uses_supplier_protocol_and_preserves_workspace():

@@ -1,10 +1,56 @@
 package store
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
 )
+
+func TestExplicitUnavailableStatesSurviveFailureAndReadOnlyRecovery(t *testing.T) {
+	for _, state := range []string{"banned", "workspace_deactivated"} {
+		t.Run(state, func(t *testing.T) {
+			s, task := refreshFixture(t)
+			defer s.Close()
+			if _, _, err := s.QueueAccountRefresh(task, "one"); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.BeginAccountRefresh(task.ID, "one", "original-sha"); err != nil {
+				t.Fatal(err)
+			}
+			code := state
+			if state == "banned" {
+				code = "account_banned"
+			}
+			line, _ := json.Marshal(map[string]any{"ref": "one", "result": "failed", "error_schema": "account.failure.v1", "error_code": code})
+			s.AppendEvent(task.ID, "stdout", string(line))
+			if err := s.FinishAccountRefresh(task.ID, "one", "failed", 1, "explicit refusal", ""); err != nil {
+				t.Fatal(err)
+			}
+			account, _ := s.GetAccount("one")
+			if account.Status != state || account.LivenessStatus != state || account.LibraryStatus != "invalid" || account.RefreshState != "failed" {
+				t.Fatal(account)
+			}
+			if err := s.MarkATHealth("one", "ok", "recovered upstream", account.Version); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.FinishAccountRefresh(task.ID, "one", "failed", 1, "explicit refusal", ""); err != nil {
+				t.Fatal(err)
+			}
+			account, _ = s.GetAccount("one")
+			if account.Status != "ok" || account.LibraryStatus != "available" {
+				t.Fatal(account)
+			}
+			if err := s.MarkATHealth("one", state, "explicit AT response", account.Version); err != nil {
+				t.Fatal(err)
+			}
+			account, _ = s.GetAccount("one")
+			if account.Status != state || account.LivenessStatus != state || account.LibraryStatus != "invalid" {
+				t.Fatal(account)
+			}
+		})
+	}
+}
 
 func TestRefreshAutomaticallyVerifiesAfterFailureWithoutChangingCustody(t *testing.T) {
 	s, task := refreshFixture(t)

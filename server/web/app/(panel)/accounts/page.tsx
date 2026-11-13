@@ -17,6 +17,7 @@ const STATUS_LABEL: Record<string, { text: string; tone: "ok" | "warn" | "bad" |
   expired: { text: "过期", tone: "warn" },
   needs_refresh: { text: "AT 待刷新", tone: "warn" },
   banned: { text: "封禁", tone: "bad" },
+  workspace_deactivated: { text: "空间停用", tone: "bad" },
   invalid: { text: "失效", tone: "bad" },
   unknown: { text: "未测", tone: "neutral" },
 };
@@ -164,6 +165,7 @@ export default function AccountsPage() {
               <option value="expired">过期</option>
               <option value="needs_refresh">AT 待刷新</option>
               <option value="banned">封禁</option>
+              <option value="workspace_deactivated">空间停用</option>
               <option value="unknown">未测</option>
             </select>
             <button className="btn-ghost" onClick={() => setShowImport(true)}>导入账号</button>

@@ -16,8 +16,8 @@ type AccountSummary struct {
 func (s *Store) AccountSummaries(platform string) ([]AccountSummary, error) {
 	query := accountProjectionSQL + `SELECT platform, COUNT(*),
 		SUM(CASE WHEN projected_library_status='available' THEN 1 ELSE 0 END),
-		SUM(CASE WHEN projected_library_status NOT IN ('used','leased','available') AND (projected_library_status='invalid' OR status IN ('banned','invalid','expired','relogin_required','needs_refresh')) THEN 1 ELSE 0 END),
-		SUM(CASE WHEN projected_library_status='pending' AND status NOT IN ('banned','invalid','expired','relogin_required','needs_refresh') THEN 1 ELSE 0 END),
+		SUM(CASE WHEN projected_library_status NOT IN ('used','leased','available') AND (projected_library_status='invalid' OR status IN ('banned','workspace_deactivated','invalid','expired','relogin_required','needs_refresh')) THEN 1 ELSE 0 END),
+		SUM(CASE WHEN projected_library_status='pending' AND status NOT IN ('banned','workspace_deactivated','invalid','expired','relogin_required','needs_refresh') THEN 1 ELSE 0 END),
 		SUM(CASE WHEN projected_library_status='used' THEN 1 ELSE 0 END),
 		SUM(CASE WHEN projected_library_status='leased' THEN 1 ELSE 0 END), SUM(source_count)
 		FROM account_projection`

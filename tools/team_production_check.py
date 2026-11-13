@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from common.oauth_errors import account_failure
 
 def verify(document, get=None):
     token = document['access_token']
@@ -26,6 +27,13 @@ def verify(document, get=None):
         get = session.get
     response = get('https://chatgpt.com/backend-api/wham/usage',
         headers={'Authorization': 'Bearer '+token, 'ChatGPT-Account-Id': workspace}, timeout=12)
+    if 400 <= response.status_code < 500:
+        try:
+            explicit = account_failure(response.json())
+        except ValueError:
+            explicit = None
+        if explicit:
+            return {'status': 'failed', 'error_code': 'PRODUCTION_CREDENTIAL_' + explicit['error_code'].upper()}
     if response.status_code == 401:
         try:
             failure = response.json().get('error', {})

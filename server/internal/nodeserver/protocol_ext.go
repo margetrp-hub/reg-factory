@@ -113,6 +113,8 @@ func (h *Handler) refreshFailureCode(taskID string) string {
 			return fallback
 		}
 		switch result.Code {
+		case "account_deactivated", "account_banned", "workspace_deactivated", "deactivated_workspace":
+			return strings.ToUpper(result.Code)
 		case "mfa_totp_verification_failed", "mfa_challenge_rejected", "mfa_totp_secret_required",
 			"mfa_totp_factor_not_available", "mfa_primary_factor_required", "mfa_totp_code_unavailable",
 			"invalid_username_or_password", "rate_limit_exceeded", "oauth_tls_handshake_failed",

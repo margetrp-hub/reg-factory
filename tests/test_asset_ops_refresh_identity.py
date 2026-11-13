@@ -2,6 +2,26 @@ import json
 from unittest.mock import Mock, patch
 
 from tools import asset_ops
+import pytest
+
+
+@pytest.mark.parametrize('code,state', [('account_banned', 'banned'), ('workspace_deactivated', 'workspace_deactivated'), ('deactivated_workspace', 'workspace_deactivated')])
+def test_explicit_disabled_state_does_not_rotate_or_request_relogin(tmp_path, monkeypatch, code, state):
+    monkeypatch.setenv('REG_FACTORY_DATA_DIR', str(tmp_path))
+    directory = tmp_path / 'assets/chatgpt/oauth'
+    directory.mkdir(parents=True)
+    path = directory / 'original.json'
+    path.write_text(json.dumps({'ref': 'original', 'payload': {'access_token': 'old', 'refresh_token': 'original-rt'}}))
+    before = path.read_bytes()
+    response = Mock(status_code=401, content=b'json')
+    response.json.return_value = {'error': {'code': code, 'message': 'private-response'}}
+    with patch('requests.Session') as session:
+        session.return_value.post.return_value = response
+        result = asset_ops._refresh_chatgpt('original')
+        assert session.return_value.post.call_count == 1
+    assert result['result'] == 'failed' and result['source_status'] == state
+    assert result['error_schema'] == 'account.failure.v1' and result['error_code'] == code
+    assert path.read_bytes() == before and 'private-response' not in json.dumps(result)
 
 
 def test_refresh_uses_original_ref_and_preserves_other_workspace(tmp_path, monkeypatch):

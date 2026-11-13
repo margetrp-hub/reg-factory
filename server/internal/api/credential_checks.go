@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tiantianGPU/reg-factory/server/internal/assetstore"
 	"github.com/tiantianGPU/reg-factory/server/internal/probe"
 	"github.com/tiantianGPU/reg-factory/server/internal/settings"
 	"github.com/tiantianGPU/reg-factory/server/internal/store"
@@ -232,7 +233,15 @@ func (s *Server) checkCredential(ctx context.Context, batchID string, item store
 		if value, exists := settings.DeploymentValue("REG_FACTORY_PRODUCTION_PROXY"); exists {
 			proxy = value
 		}
-		result := probe.OAuthContext(ctx, asset.Payload, proxy, 30*time.Second)
+		creds, credentialErr := assetstore.OAuthDocument(asset.Payload, item.Identity)
+		if credentialErr != nil {
+			item.Message = "未找到唯一可核验凭据，请核对账号资料；未使用 RT"
+			if credentialErr.Error() == "CREDENTIAL_RESULT_INCOMPLETE" {
+				item.Status, item.Message = "needs_refresh", "缺少可核验 AT，请更新凭据；未使用 RT"
+			}
+			return item
+		}
+		result := probe.OAuthContext(ctx, creds, proxy, 30*time.Second)
 		item.Status, item.Message = result.Status, result.Message
 		current, readErr := s.assets.Get(item.Ref, item.Identity)
 		if readErr != nil || current.ResultSHA != asset.ResultSHA {
@@ -290,7 +299,7 @@ func (s *Server) checkCredential(ctx context.Context, batchID string, item store
 
 func validCheckStatus(status string) bool {
 	switch status {
-	case "ok", "needs_refresh", "banned", "invalid", "expired", "unknown", "relogin_required":
+	case "ok", "needs_refresh", "banned", "workspace_deactivated", "invalid", "expired", "unknown", "relogin_required":
 		return true
 	}
 	return false

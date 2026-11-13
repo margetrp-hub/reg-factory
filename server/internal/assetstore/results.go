@@ -137,6 +137,17 @@ func (s *Store) History(ref string) ([]Asset, error) {
 // OAuthDocument selects one whole credential set. It never fills a missing
 // refresh token with one from another session or guesses a client ID.
 func OAuthDocument(payload map[string]any, email string) (map[string]any, error) {
+	if accounts, present := payload["accounts"]; present {
+		items, ok := accounts.([]any)
+		if !ok || len(items) != 1 {
+			return nil, ErrAmbiguous
+		}
+		account, ok := items[0].(map[string]any)
+		if !ok {
+			return nil, ErrAmbiguous
+		}
+		return OAuthDocument(account, email)
+	}
 	var candidates []map[string]any
 	var visit func(map[string]any)
 	visit = func(value map[string]any) {
@@ -235,6 +246,19 @@ func OAuthDocument(payload map[string]any, email string) (map[string]any, error)
 	}
 	if value, _ := chosen["email"].(string); value == "" {
 		chosen["email"] = email
+	}
+	// Workspace metadata scopes this whole bundle; never borrow another token.
+	if credentialString(chosen, "account_id") == "" {
+		for _, key := range []string{"workspace_account_id", "chatgpt_account_id", "account_id"} {
+			value := credentialString(chosen, key)
+			if value == "" {
+				value = credentialString(payload, key)
+			}
+			if value != "" {
+				chosen["account_id"] = value
+				break
+			}
+		}
 	}
 	return chosen, nil
 }

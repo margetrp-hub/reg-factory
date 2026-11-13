@@ -8,6 +8,7 @@ SG控制面为Go regd + 内嵌Next.js页面 + Python worker，默认宿主回环
 | `server/internal/auth`、`settings` | 面板认证与配置 |
 | `server/internal/store`、`runner` | 本机PostgreSQL任务/日志/领取事实及受控Python进程 |
 | `server/internal/nodeserver` | Work签名接单、原结果与恢复 |
+| `server/internal/centralasset` | Go中央资产执行宿主、旧工件读取、加密结果及有界补传 |
 | `server/web`、`server/webdist` | Next.js源码及构建时嵌入的静态产物 |
 | `schema/scripts.py`、`server/tools/export_schema.py` | 唯一任务/配置目录及生成工具 |
 
@@ -53,7 +54,7 @@ curl -fsS http://127.0.0.1:8800/api/health
 ```
 
 默认只运行一个 `panel` 服务、一个 `reg-factory` 容器。Go 负责界面、状态和调度，
-按需启动镜像内的 Python worker；共用 `/data` 与 `/data/.env`。SG的 `REGD_DB`、`MAIL_DB` 使用所在主机的PostgreSQL DSN，沿用现役数据库和账号，不跨机写库。首次启动幂等建表，不依赖容器外手写兼容函数；测试工具仍可使用隔离SQLite。
+中央资产领取/回库和AT检查由Go执行，平台登录/RT等步骤按需启动镜像内的 Python worker；共用 `/data` 与 `/data/.env`。SG的 `REGD_DB`、`MAIL_DB` 使用所在主机的PostgreSQL DSN，沿用现役数据库和账号，不跨机写库。首次启动幂等建表，不依赖容器外手写兼容函数；测试工具仍可使用隔离SQLite。
 启动入口仍负责数据目录初始化、资产 Key 首次生成、Xvfb 和降权，不改变业务或节点密钥协议。
 
 镜像同时固定Patchright、Playwright、Camoufox和Ruyipage Python包。构建时安装Chromium及Firefox，Firefox缓存位于 `/opt/browser-cache`，可由非root运行用户访问。`BROWSER_ENGINE=patchright` 保留原浏览器供应商选择；`camoufox` 使用独立Firefox上下文。Ruyipage是不同API的工具入口，不能直接替换现有Playwright任务。自动巡检保持显式配置的关闭状态。
@@ -95,11 +96,11 @@ curl -s http://127.0.0.1:8800/api/memory
 # 日志（容器）
 sudo docker logs -f reg-factory --tail 100
 
-# 数据库（Python 运行时已内置 sqlite3）
-sudo docker exec reg-factory python3 -c \
-  'import sqlite3; print(sqlite3.connect("file:/data/regd.db?mode=ro", uri=True).execute("select id,script,status,exit_code,created_at from tasks order by created_at desc limit 10").fetchall())'
+# 主SG PostgreSQL只读查询（其他部署使用各自的数据库容器与库名）
+sudo docker exec reg-pg psql -U postgres -d regfactory -X -c \
+  'SELECT id,script,status,exit_code,created_at FROM tasks ORDER BY created_at DESC LIMIT 10'
 
-# 备份：/data 卷里含 regd.db、.env、号池、Cookie、Token
+# 备份：PostgreSQL一致性备份与/data文件卷必须一并保留
 sudo ./sg-maintenance.sh
 ```
 
@@ -114,9 +115,9 @@ sudo ./sg-maintenance.sh
 
 ## 运行约束
 
-* 执行层仍是 Python，`/app` 里的脚本需要 `REG_FACTORY_DATA_DIR`、`PYTHONPATH=/app`（entrypoint 已设）；
+* 中央资产执行宿主与AT检查为Go，平台执行器仍是Python，`/app`里的脚本需要持久目录及SDK导入路径（entrypoint已设）；
 * `scripts.schema.json` 由 `schema/scripts.py` 生成；容器构建会自动重新导出，本地直接运行需手动导出；
-* 单实例单进程（SQLite 持久化日志与任务状态），不要对同一数据目录启动多个控制面副本；
+* 单实例单进程（生产使用PostgreSQL持久化日志与任务状态），不要对同一数据目录启动多个控制面副本；
 * 默认宿主端口和 SG 监听地址都只绑 `127.0.0.1`，公网入口走 Nginx/Caddy 反代；
 * 不默认启用 `--single-process` / `--in-process-gpu`；SG资源限制及测量要求见[环境差异](README-OCI-SG.md)。
 
