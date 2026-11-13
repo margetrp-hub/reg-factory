@@ -48,8 +48,9 @@ def test_authorize_does_not_replay_old_refresh_grant():
         authorize.assert_called_once_with('original', '', 60)
 
 
-def test_unknown_provider_result_has_distinct_exit_code():
-    assert asset_ops._emit({'result': 'unknown'}) == 1
+def test_unknown_provider_result_has_distinct_exit_code(capsys):
+    assert asset_ops._emit({'result': 'unknown'}) == 75
+    assert json.loads(capsys.readouterr().out)['result'] == 'failed'
     assert asset_ops._emit({'result': 'relogin_required'}) == 1
 
 
@@ -68,7 +69,7 @@ def test_token_exchange_explicit_rejection_preserves_state():
     assert 'private-response' not in str(caught.value)
 
 
-@pytest.mark.parametrize('exchange_started,expected,exit_code', [(False, 'failed', 1), (True, 'failed', 1)])
+@pytest.mark.parametrize('exchange_started,expected,exit_code', [(False, 'failed', 1), (True, 'failed', 75)])
 def test_authorization_failure_releases_task_only_when_no_tokens_exchanged(tmp_path, monkeypatch, exchange_started, expected, exit_code):
     from vendor.reauth_web.engine import ReauthError
     monkeypatch.setenv('REG_FACTORY_DATA_DIR', str(tmp_path))

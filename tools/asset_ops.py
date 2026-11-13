@@ -41,6 +41,14 @@ OPENAI_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 
 
 def _emit(payload: dict) -> int:
+    # Keep the existing runner signal for a possibly consumed RT. The public
+    # result is still failed with a concrete reason, never an extra task state.
+    exchange_unconfirmed = payload.get("result") == "unknown" or (
+        payload.get("error_code") in {
+            "oauth_network_timeout", "oauth_tls_handshake_failed", "oauth_network_unavailable",
+            "oauth_service_unavailable", "oauth_response_invalid", "credential_save_failed",
+        } and payload.get("evidence", {}).get("token_exchange_started", True)
+    )
     if payload.get("result") in {"unknown", "relogin_required", "banned", "workspace_deactivated", "failed"}:
         payload["error_schema"] = "account.failure.v2"
         payload.setdefault("error_code", "credential_result_incomplete")
@@ -50,7 +58,7 @@ def _emit(payload: dict) -> int:
     # zero for relogin/unknown made a refresh look successful even though no
     # new credential document was written.
     if payload.get("result") == "failed":
-        return 1
+        return 75 if exchange_unconfirmed else 1
     if "result" not in payload and payload.get("status") in {"unknown", "error", "expired", "banned", "workspace_deactivated"}:
         return 1
     return 0

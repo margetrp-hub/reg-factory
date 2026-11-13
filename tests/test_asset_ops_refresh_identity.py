@@ -163,6 +163,7 @@ def test_explicit_authorization_can_recover_an_unknown_exchange(tmp_path, monkey
         exchange.return_value.post.side_effect = Timeout('synthetic loss')
         failure = asset_ops._refresh_chatgpt('current', email)
         assert failure['result'] == 'failed' and failure['error_code'] == 'oauth_network_timeout'
+        assert asset_ops._emit(failure) == 75
         assert exchange.return_value.post.call_count == 1
     from unittest.mock import AsyncMock
     with patch('tools.chatgpt_reauthorize.authorize_document', new_callable=AsyncMock) as authorize, patch.object(asset_ops, '_refresh_document_copies', return_value=['one']):
