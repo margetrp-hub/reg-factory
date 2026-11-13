@@ -479,12 +479,6 @@
         "advanced": false
       },
       {
-        "key": "CAMOUFOX_BROWSER_PATH",
-        "help": "默认从安装包与共享缓存自动发现；只在使用自定义内核时填写。",
-        "label": "Firefox 内核路径",
-        "advanced": false
-      },
-      {
         "key": "FINGERPRINT_BROWSER",
         "type": "choice",
         "choices": [
@@ -496,6 +490,11 @@
           "adspower",
           "custom_api"
         ],
+        "when": {
+          "BROWSER_ENGINE": [
+            "patchright"
+          ]
+        },
         "default": "bitbrowser",
         "help": "默认保持 BitBrowser 兼容；选择 CloakBrowser/RoxyBrowser 即使用参考项目的指纹浏览器方案。",
         "label": "指纹浏览器类型",
@@ -512,6 +511,23 @@
         "key": "REG_FACTORY_BROWSER_HELPER",
         "help": "内置 Chromium 启动器路径",
         "label": "内置浏览器启动器路径",
+        "advanced": false
+      }
+    ]
+  },
+  {
+    "group": "浏览器 · Camoufox",
+    "area": "browser",
+    "items": [
+      {
+        "key": "CAMOUFOX_BROWSER_PATH",
+        "when": {
+          "BROWSER_ENGINE": [
+            "camoufox"
+          ]
+        },
+        "help": "默认从安装包与共享缓存自动发现；只在使用自定义内核时填写。",
+        "label": "Firefox 内核路径",
         "advanced": false
       }
     ]
@@ -1040,18 +1056,48 @@
         "advanced": true
       },
       {
+        "key": "CLAUDE_VISION_SOURCE",
+        "label": "Claude 视觉识别使用",
+        "type": "choice",
+        "default": "auto",
+        "choices": [
+          "auto",
+          "primary",
+          "vote",
+          "custom"
+        ],
+        "choice_labels": {
+          "auto": "原有自动选择",
+          "primary": "公共视觉网关",
+          "vote": "公共投票网关",
+          "custom": "专用连接"
+        },
+        "help": "选择公共网关时直接复用它的地址和密钥；模型由当前流程选择。",
+        "advanced": false
+      },
+      {
         "key": "CLAUDE_VISION_API_BASE",
-        "required": true,
-        "help": "必填：Claude hCaptcha 视觉解码 API 地址；未配置无法自动通过图形验证",
+        "when": {
+          "CLAUDE_VISION_SOURCE": [
+            "auto",
+            "custom"
+          ]
+        },
+        "help": "专用连接的 API 地址；选择公共网关时无需填写。",
         "label": "Claude 视觉识别 API 地址",
         "smart": true,
         "advanced": false
       },
       {
         "key": "CLAUDE_VISION_API_KEY",
-        "required": true,
         "secret": true,
-        "help": "必填：Claude hCaptcha 视觉解码 API key",
+        "when": {
+          "CLAUDE_VISION_SOURCE": [
+            "auto",
+            "custom"
+          ]
+        },
+        "help": "专用连接的 API key；选择公共网关时无需填写。",
         "label": "Claude 视觉识别 API 密钥",
         "smart": true,
         "advanced": false
@@ -1626,7 +1672,7 @@
     ]
   },
   {
-    "group": "验证 · 视觉模型与投票",
+    "group": "验证 · 公共视觉网关",
     "area": "captcha",
     "items": [
       {
@@ -1643,7 +1689,13 @@
         "label": "主视觉模型 API 密钥",
         "smart": true,
         "advanced": false
-      },
+      }
+    ]
+  },
+  {
+    "group": "验证 · 公共投票网关",
+    "area": "captcha",
+    "items": [
       {
         "key": "VOTE_ZZ_BASE",
         "help": "投票中转网关(gemini/gpt)",
@@ -1666,7 +1718,13 @@
         "label": "GPT 投票模型密钥",
         "smart": true,
         "advanced": false
-      },
+      }
+    ]
+  },
+  {
+    "group": "验证 · 视觉模型与投票",
+    "area": "captcha",
+    "items": [
       {
         "key": "VOTE_OPUS_BASE",
         "help": "claude opus 专用网关",
@@ -1785,10 +1843,35 @@
     "area": "proxy",
     "items": [
       {
+        "key": "REG_FACTORY_PRODUCTION_PROXY_SOURCE",
+        "label": "生产与凭据修复使用",
+        "type": "choice",
+        "default": "custom",
+        "choices": [
+          "custom",
+          "direct",
+          "residential",
+          "clash"
+        ],
+        "choice_labels": {
+          "custom": "专用出口",
+          "direct": "直连",
+          "residential": "共享住宅代理",
+          "clash": "共享 Clash"
+        },
+        "help": "共用已有代理连接，不另填地址。住宅代理在任务启动时选取当前出口并固定；不轮换正在执行的会话。",
+        "advanced": false
+      },
+      {
         "key": "REG_FACTORY_PRODUCTION_PROXY",
         "label": "生产与重新授权出口",
         "secret": true,
-        "help": "账号修复、TEAM 生产与核验使用的出口。留空直连，不继承注册住宅代理。",
+        "when": {
+          "REG_FACTORY_PRODUCTION_PROXY_SOURCE": [
+            "custom"
+          ]
+        },
+        "help": "只供专用出口使用；留空直连。共享模式复用网络能力连接，不复制此值。",
         "advanced": false
       }
     ]

@@ -35,7 +35,7 @@ func TestLivenessWithOnlyRefreshTokenDoesNotExchangeOrRewriteCredentials(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := &Server{st: st, assets: assets, env: settings.NewEnv(filepath.Join(root, "config.env"))}
+	server := &Server{cfg: &settings.Settings{AppRoot: root}, st: st, assets: assets, env: settings.NewEnv(filepath.Join(root, "config.env"))}
 	router := gin.New()
 	router.POST("/test", server.accountLiveness)
 	response := httptest.NewRecorder()

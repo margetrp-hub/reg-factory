@@ -1,10 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { api, type ConfigEntry } from "@/lib/api";
 import { isNodeConfig } from "@/lib/node-config";
-import { CONFIG_CATEGORIES, CONFIG_MODES, configCategory, configSectionLabel, modeGroups } from "@/lib/config-categories";
+import { CONFIG_CATEGORIES, CONFIG_MODES, configCategory, configSectionLabel, modeGroups, matchesMode } from "@/lib/config-categories";
 import { Card, Empty, ErrorNote } from "@/components/ui";
 import { Drawer } from "@/components/drawer";
 
@@ -123,6 +123,7 @@ export function ConfigEditor({ scope, area }: { scope: "system" | "node"; area?:
   const search = query.trim().toLowerCase();
   const modeSpec = !isNode ? CONFIG_MODES[categoryId || ""] : undefined;
   const viewMode = modeSpec && Object.hasOwn(modeSpec.choices, viewModes[categoryId || ""]) ? viewModes[categoryId || ""] : Object.keys(modeSpec?.choices || {})[0];
+  const bindingKeys = [...(modeSpec?.selectors || []), ...Object.keys(modeSpec?.dependencies?.[viewMode] || {})];
   const selectedGroups = modeGroups(categoryId || "", rows.map(row => row.entry), dirty, viewMode);
   const conditionalGroups = new Set(Object.values(modeSpec?.choices || {}).flatMap(item => item.groups));
   const entries = rows.filter(row => search
@@ -130,12 +131,12 @@ export function ConfigEditor({ scope, area }: { scope: "system" | "node"; area?:
     : (isNode || row.category === categoryId) && (selectedGroups
       ? allModes || selectedGroups.has(row.group) || !conditionalGroups.has(row.group)
       : row.group === activeId)).sort((a, b) => {
-        const order = (key: string) => modeSpec?.selectors.includes(key) ? 0 : 1;
+        const order = (key: string) => bindingKeys.includes(key) ? 0 : 1;
         return order(a.entry.key) - order(b.entry.key);
       });
   const changedCategories = categories.filter(category => rows.some(row => row.category === category.id && row.entry.key in dirty));
   const advancedCount = entries.filter(row => row.entry.advanced).length;
-  const visibleEntries = entries.filter(row => search || advanced || !row.entry.advanced || row.entry.key in dirty);
+  const visibleEntries = entries.filter(row => (search || allModes || matchesMode(row.entry, rows.map(item => item.entry), dirty)) && (search || advanced || !row.entry.advanced || row.entry.key in dirty));
 
   useEffect(() => {
     if (!loaded || isNode) return;
@@ -276,7 +277,7 @@ export function ConfigEditor({ scope, area }: { scope: "system" | "node"; area?:
                   </tr>
                 </thead>
                 <tbody>
-                  {visibleEntries.map(({ entry, group, category: entryCategory }) => {
+                  {visibleEntries.map(({ entry, group, category: entryCategory }, index) => {
                     const value = dirty[entry.key] ?? entry.value;
                     const changed = entry.key in dirty;
                     const update = (next: string) => {
@@ -285,8 +286,12 @@ export function ConfigEditor({ scope, area }: { scope: "system" | "node"; area?:
                     };
                     const choices = entry.type === "bool" ? ["true", "false"] : entry.choices;
                     const placeholder = entry.secret && entry.effective_set && !entry.line ? "已配置 · 输入以更换" : entry.empty_default ? `默认 ${String(entry.default)}` : entry.default === undefined ? "请输入" : `默认 ${String(entry.default)}`;
+                    const binding = bindingKeys.includes(entry.key);
+                    const sectionStart = index === 0 || binding !== bindingKeys.includes(visibleEntries[index - 1].entry.key);
                     return (
-                      <tr key={entry.key}>
+                      <Fragment key={entry.key}>
+                      {!search && modeSpec && sectionStart && <tr><th colSpan={3} className="!py-2 !text-left">{binding ? "流程使用" : "能力连接与参数"}</th></tr>}
+                      <tr>
                         <td className="sg-config-label">
                           {(search || modeSpec) && !isNode && <p className="sg-config-breadcrumb">{search ? CONFIG_CATEGORIES.find(item => item.id === entryCategory)?.label + " / " : ""}{configSectionLabel(group)}</p>}
                           <div className="text-sm font-medium text-foreground">{entry.label || entry.key}</div>
@@ -295,7 +300,7 @@ export function ConfigEditor({ scope, area }: { scope: "system" | "node"; area?:
                           <div className="sg-config-control">{choices?.length && !entry.secret ? <select className={`field ${changed ? "border-warning/50" : ""}`} aria-label={entry.label || entry.key} disabled={busy || loading || rawOpen} value={value} onChange={event=>update(event.target.value)}>
                             <option value="">{placeholder}</option>
                             {value && !choices.includes(value) && <option value={value}>{value}（已保存）</option>}
-                            {choices.map(choice=><option key={choice} value={choice}>{entry.type==="bool" ? choice==="true" ? "开启" : "关闭" : CONFIG_MODES[entryCategory]?.selectors.includes(entry.key) ? CONFIG_MODES[entryCategory].choices[choice]?.label || choice : choice}</option>)}
+                            {choices.map(choice=><option key={choice} value={choice}>{entry.choice_labels?.[choice] || (entry.type==="bool" ? choice==="true" ? "开启" : "关闭" : CONFIG_MODES[entryCategory]?.selectors.includes(entry.key) ? CONFIG_MODES[entryCategory].choices[choice]?.label || choice : choice)}</option>)}
                           </select> : <input
                             className={`field py-1 text-[12px] ${changed ? "border-warning/50" : ""}`}
                             type={entry.secret && !reveal ? "password" : entry.type === "int" ? "number" : "text"}
@@ -314,6 +319,7 @@ export function ConfigEditor({ scope, area }: { scope: "system" | "node"; area?:
                         </td>
                         <td className="text-right text-[11px] text-warning" aria-label={changed ? "已修改" : "未修改"}>{changed ? "●" : ""}</td>
                       </tr>
+                      </Fragment>
                     );
                   })}
                 </tbody>

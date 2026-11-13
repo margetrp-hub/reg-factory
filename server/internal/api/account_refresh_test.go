@@ -54,7 +54,7 @@ func TestRefreshReconciliationTestsNewATWithoutExchangingRT(t *testing.T) {
 	previous := http.DefaultTransport
 	http.DefaultTransport = transport
 	defer func() { http.DefaultTransport = previous; transport.CloseIdleConnections() }()
-	server := &Server{st: st, assets: assets, env: settings.NewEnv(filepath.Join(root, "missing.env"))}
+	server := &Server{cfg: &settings.Settings{AppRoot: root}, st: st, assets: assets, env: settings.NewEnv(filepath.Join(root, "missing.env"))}
 	router := gin.New()
 	router.POST("/refresh/:id/reconcile", server.reconcileAccountRefresh)
 	router.POST("/refresh/:id/resolve", server.resolveAccountRefresh)

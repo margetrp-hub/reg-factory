@@ -1,13 +1,13 @@
 """Read-only verification of a frozen TEAM JSON; stdout contains no credentials."""
 import base64
 import json
-import os
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from common.oauth_errors import account_failure
+from common.proxy_switch import production_proxy
 
 def verify(document, get=None):
     token = document['access_token']
@@ -19,9 +19,7 @@ def verify(document, get=None):
         return {'status': 'failed', 'error_code': 'PRODUCTION_CREDENTIAL_EXPIRED'}
     if get is None:
         from curl_cffi import requests
-        # Verification has its own route. Registration's residential proxy is
-        # neither necessary nor an authority to change the retained artifact.
-        proxy = os.environ.get('REG_FACTORY_PRODUCTION_PROXY', '').strip()
+        proxy = production_proxy()
         session = requests.Session(impersonate='chrome', trust_env=False,
             proxies={'http': proxy, 'https': proxy} if proxy else None)
         get = session.get

@@ -20,6 +20,7 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from cryptography.fernet import Fernet, MultiFernet
 from common.production_database import connect
+from common.proxy_switch import production_proxy
 
 AUTH = 'https://api.openai.com/auth'
 PROFILE = 'https://api.openai.com/profile'
@@ -104,7 +105,7 @@ def candidates(db, root):
 class Backend:
     def __init__(self, material):
         from curl_cffi import requests
-        proxy = os.environ.get('REG_FACTORY_PRODUCTION_PROXY', '').strip()
+        proxy = production_proxy()
         self.http = requests.Session(impersonate='chrome', trust_env=False,
             proxies={'http': proxy, 'https': proxy} if proxy else None)
         self.workspace = material['workspace']

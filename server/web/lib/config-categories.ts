@@ -1,8 +1,20 @@
 import catalog from "./generated-catalog.json";
 import type { ConfigEntry } from "./api";
 
-type ConfigMode = { selectors: string[]; common: string[]; choices: Record<string, {label: string; groups: string[]}> };
+type ConfigMode = { selectors: string[]; common: string[]; choices: Record<string, {label: string; groups: string[]}>; dependencies?: Record<string, Record<string, Record<string, string[]>>> };
 export const CONFIG_MODES: Record<string, ConfigMode> = catalog.config_modes;
+
+function selectedValue(key: string, entries: ConfigEntry[], dirty: Record<string, string>): string {
+  const entry = entries.find(item => item.key === key);
+  return dirty[key] ?? entry?.effective_value ?? entry?.value ?? String(entry?.default ?? "");
+}
+
+export function matchesMode(entry: ConfigEntry, entries: ConfigEntry[], dirty: Record<string, string>): boolean {
+  return Object.entries(entry.when || {}).every(([key, choices]) => {
+    const field = entries.find(item => item.key === key);
+    return choices.includes(selectedValue(key, entries, dirty) || String(field?.default ?? ""));
+  });
+}
 
 /** Selectors and their provider settings have one schema owner and one draft. */
 export function modeGroups(category: string, entries: ConfigEntry[], dirty: Record<string, string>, viewMode?: string) {
@@ -12,11 +24,15 @@ export function modeGroups(category: string, entries: ConfigEntry[], dirty: Reco
   if (!spec.selectors.length) spec.choices[viewMode || Object.keys(spec.choices)[0]]?.groups.forEach(group => selected.add(group));
   for (const key of spec.selectors) {
     const entry = entries.find(item => item.key === key);
+    if (entry && !matchesMode(entry, entries, dirty)) continue;
     const value = dirty[key] ?? entry?.effective_value ?? entry?.value;
     const fallback = entry?.empty_default || !entry?.line ? entry?.default : "";
     for (const mode of String(value || fallback || "").split(",")) {
       spec.choices[mode.trim()]?.groups.forEach(group => selected.add(group));
     }
+  }
+  for (const [key, choices] of Object.entries(spec.dependencies?.[viewMode || ""] || {})) {
+    choices[selectedValue(key, entries, dirty)]?.forEach(group => selected.add(group));
   }
   return selected;
 }

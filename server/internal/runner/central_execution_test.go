@@ -47,6 +47,10 @@ func TestCentralATCheckRunsInGoWithoutRTOrPython(t *testing.T) {
 	http.DefaultTransport = transport
 	defer func() { http.DefaultTransport = previous; transport.CloseIdleConnections() }()
 	m := &Manager{cfg: &settings.Settings{Python: "missing-python"}}
+	missing, err := m.executeCentral(context.Background(), centralTask(scope), []string{"REG_FACTORY_PRODUCTION_PROXY_SOURCE=residential"}, map[string]any{})
+	if err != nil || missing["status"] != "failed" || missing["error_code"] != "PRODUCTION_PROXY_NOT_CONFIGURED" || calls != 0 {
+		t.Fatal("missing shared connection reached upstream", missing, err, calls)
+	}
 	value, err := m.executeCentral(context.Background(), centralTask(scope), nil, map[string]any{"document": map[string]any{"accounts": []any{map[string]any{"email": "fixture@example.invalid", "credentials": map[string]any{"access_token": "at-fixture", "refresh_token": "rt-fixture"}}}}, "recovery": map[string]any{"password": "must-not-be-used"}})
 	if err != nil || value["liveness"] != "alive" || value["document"] != nil || calls != 1 {
 		t.Fatal(value, err, calls)

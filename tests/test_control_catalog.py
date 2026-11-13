@@ -29,7 +29,7 @@ class ControlCatalogTests(unittest.TestCase):
         self.assertEqual(json.loads((ROOT / "deploy/config.schema.json").read_text(encoding="utf-8")), ENV_SCHEMA)
         fields = {item["key"]: (group, item) for group in ENV_SCHEMA for item in group["items"]}
         self.assertEqual(sum(len(group["items"]) for group in ENV_SCHEMA), len(fields))
-        self.assertEqual(len(fields), 197)
+        self.assertEqual(len(fields), 199)
         catalog = json.loads((ROOT / "server/web/lib/generated-catalog.json").read_text(encoding="utf-8"))
         self.assertEqual(catalog, {"groups": TASK_GROUPS, "platforms": PLATFORMS, "tools": EXTERNAL_LINKS,
                                    "config_modes": CONFIG_MODES})
@@ -55,6 +55,9 @@ class ControlCatalogTests(unittest.TestCase):
         self.assertEqual(concurrency["apply"], "live")
         self.assertEqual(fields["REG_FACTORY_LIVENESS_ENABLED"][1]["default"], "0")
         self.assertEqual(fields["REG_FACTORY_LIVENESS_ENABLED"][1]["apply"], "live")
+        for key in ("CLAUDE_VISION_API_BASE", "CLAUDE_VISION_API_KEY"):
+            self.assertFalse(fields[key][1].get("required", False))
+            self.assertEqual(fields[key][1]["when"], {"CLAUDE_VISION_SOURCE": ["auto", "custom"]})
 
     def test_modes_use_existing_runtime_selectors_without_dropping_providers(self):
         fields = {item["key"]: item for group in ENV_SCHEMA for item in group["items"]}

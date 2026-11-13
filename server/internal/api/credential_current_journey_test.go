@@ -69,8 +69,16 @@ func TestCurrentCredentialJourneyThroughPythonWorker(t *testing.T) {
 	}
 	app := filepath.Join(root, "worker")
 	os.MkdirAll(filepath.Join(app, "tools"), 0700)
+	os.MkdirAll(filepath.Join(app, "deploy"), 0700)
+	schema, err := os.ReadFile(filepath.Join(repo, "deploy", "config.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(app, "deploy", "config.schema.json"), schema, 0600); err != nil {
+		t.Fatal(err)
+	}
 	// Only the fixture transport changes. The released CLI and persistence code run unmodified.
-	script := fmt.Sprintf("import sys,requests\nsys.path.insert(0,%q)\nfrom tools import asset_ops,chatgpt_reauthorize\nasset_ops.OPENAI_TOKEN_URL=%q\nasync def authorize(document,**kwargs):\n s=requests.Session();s.trust_env=False\n return s.post(asset_ops.OPENAI_TOKEN_URL,data={'grant_type':'fixture_authorize'},timeout=5).json()\nchatgpt_reauthorize.authorize_document=authorize\nraise SystemExit(asset_ops.main())\n", repo, upstream.URL)
+	script := fmt.Sprintf("import sys,requests\nsys.path.insert(0,%q)\nfrom tools import asset_ops,chatgpt_reauthorize\nfrom common.proxy_switch import production_proxy\nasset_ops.OPENAI_TOKEN_URL='http://shared-capability.invalid/token'\nasync def authorize(document,**kwargs):\n s=requests.Session();s.trust_env=False;s.proxies={'http':production_proxy()}\n return s.post(asset_ops.OPENAI_TOKEN_URL,data={'grant_type':'fixture_authorize'},timeout=5).json()\nchatgpt_reauthorize.authorize_document=authorize\nraise SystemExit(asset_ops.main())\n", repo)
 	if err := os.WriteFile(filepath.Join(app, "tools", "asset_ops.py"), []byte(script), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -134,6 +142,18 @@ func TestCurrentCredentialJourneyThroughPythonWorker(t *testing.T) {
 		return store.Task{}
 	}
 	invoke := func(id string) store.Task { return invokeMode(id, "old", false) }
+	// Use the authenticated configuration entry, then the real Python worker.
+	// The synthetic upstream is an HTTP proxy: the target hostname never resolves.
+	missing := request("PUT", "/api/config", `{"updates":{"REG_FACTORY_PRODUCTION_PROXY_SOURCE":"residential","REG_FACTORY_PROXY":"","REG_FACTORY_PROXY_POOL":""}}`)
+	if missing.Code != 400 || calls.Load() != 0 {
+		t.Fatal("missing connection was accepted or called upstream", missing.Code)
+	}
+	shared, _ := json.Marshal(map[string]any{"updates": map[string]string{
+		"REG_FACTORY_PRODUCTION_PROXY_SOURCE": "residential", "REG_FACTORY_PROXY": upstream.URL, "REG_FACTORY_PROXY_POOL": "",
+	}})
+	if response := request("PUT", "/api/config", string(shared)); response.Code != 200 {
+		t.Fatal("shared configuration failed", response.Code, response.Body)
+	}
 	first := invoke("b552c0f8-0ec8-4fa9-9871-c482f7741001")
 	if first.Status != "succeeded" {
 		events, _ := st.TailEvents(first.ID, 20)
@@ -158,6 +178,12 @@ func TestCurrentCredentialJourneyThroughPythonWorker(t *testing.T) {
 		t.Fatal("failure replaced successful credentials")
 	}
 	mode.Store(0)
+	shared, _ = json.Marshal(map[string]any{"updates": map[string]string{
+		"REG_FACTORY_PRODUCTION_PROXY_SOURCE": "clash", "CLASH_PROXY": upstream.URL,
+	}})
+	if response := request("PUT", "/api/config", string(shared)); response.Code != 200 {
+		t.Fatal("connection switch failed", response.Code, response.Body)
+	}
 	last := invoke("b552c0f8-0ec8-4fa9-9871-c482f7741003")
 	if last.Status != "succeeded" || calls.Load() != 3 {
 		t.Fatal("retry failed or duplicated exchange", last.Status, calls.Load())

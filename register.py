@@ -48,6 +48,7 @@ except Exception:
 from config import (
     CLAUDE_CAPTCHA_MANUAL_TIMEOUT,
     CLAUDE_HCAPTCHA_SOLVE_RETRIES,
+    CLAUDE_VISION_SOURCE,
     CLAUDE_VISION_API_BASE,
     CLAUDE_VISION_API_KEY,
     CLAUDE_VISION_MODEL,
@@ -3852,6 +3853,15 @@ def _select_claude_vision_voter():
         print(f"  [vision] agent-captcha unavailable: {str(e)[:100]}")
         return None
     desired = (CLAUDE_VISION_MODEL or "gemini-3.6-flash").strip()
+    if CLAUDE_VISION_SOURCE != "auto":
+        base, key = {
+            "primary": (agent_captcha.VISION_API_BASE, agent_captcha.VISION_API_KEY),
+            "vote": (agent_captcha.ZZ_BASE, agent_captcha.ZZ_KEY),
+            "custom": (CLAUDE_VISION_API_BASE, CLAUDE_VISION_API_KEY),
+        }[CLAUDE_VISION_SOURCE]
+        if not base or not key:
+            raise ValueError("Claude 视觉识别所选连接未配置地址或密钥，请在配置中心补齐")
+        return base, key, desired
     if CLAUDE_VISION_API_BASE and CLAUDE_VISION_API_KEY:
         return CLAUDE_VISION_API_BASE, CLAUDE_VISION_API_KEY, desired
     gateways = (

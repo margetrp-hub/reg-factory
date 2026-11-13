@@ -8,6 +8,7 @@ import os
 import secrets
 import time
 from urllib.parse import urlencode, urlsplit
+from common.proxy_switch import production_proxy
 
 
 def _workspace_id(document):
@@ -112,6 +113,8 @@ async def authorize_document(document: dict, *, timeout: int = 600, on_tokens=No
     from tools.import_plus_codex import MailCodeProvider
     from common.proxy_switch import browser_proxy_fields
 
+    proxy = production_proxy()
+
     value = document.get("payload", document)
     verifier, state = secrets.token_urlsafe(48), secrets.token_urlsafe(32)
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
@@ -128,8 +131,8 @@ async def authorize_document(document: dict, *, timeout: int = 600, on_tokens=No
             handle, profile_id, _, context, page = await open_and_connect(
                 name="work_reauthorize_" + secrets.token_hex(6), p=playwright,
                 browser_options=browser_proxy_fields({
-                    "PROXY_MODE": "residential" if os.environ.get("REG_FACTORY_PRODUCTION_PROXY", "").strip() else "none",
-                    "REG_FACTORY_PROXY": os.environ.get("REG_FACTORY_PRODUCTION_PROXY", "").strip(),
+                    "PROXY_MODE": "residential" if proxy else "none",
+                    "REG_FACTORY_PROXY": proxy,
                 }),
             )
             if mailbox and mailbox.get('provider') in {'imap', 'qq', 'icloud', 'outlook'}:
@@ -178,7 +181,7 @@ def _authorize_protocol(document: dict, record: dict, timeout: int, on_tokens=No
 
     value = document.get("payload", document)
     settings = Settings(data_dir=Path(os.environ.get("REG_FACTORY_DATA_DIR") or "."),
-        proxy=os.environ.get("REG_FACTORY_PRODUCTION_PROXY", "").strip(), account_timeout_seconds=timeout,
+        proxy=production_proxy(), account_timeout_seconds=timeout,
         extra={"workspace_id": _workspace_id(document)})
     account = AccountLine(email=record["email"], password=record["account_password"],
         totp_secret=record["two_factor"], raw="")
@@ -216,7 +219,7 @@ def _exchange(code: str, verifier: str, client_id: str, redirect_uri: str) -> di
     import requests
     with requests.Session() as session:
         session.trust_env = False
-        proxy = os.environ.get("REG_FACTORY_PRODUCTION_PROXY", "").strip()
+        proxy = production_proxy()
         if proxy:
             session.proxies.update({"http": proxy, "https": proxy})
         response = session.post("https://auth.openai.com/oauth/token", data={

@@ -105,6 +105,27 @@ def effective_proxy_url(environ=None) -> str:
     return str(env.get("CLASH_PROXY") or "http://127.0.0.1:7897").strip()
 
 
+def production_proxy(environ=None) -> str:
+    """Reuse a connection without rotation; Go workers supply a frozen endpoint."""
+    env = os.environ if environ is None else environ
+    source = str(env.get("REG_FACTORY_PRODUCTION_PROXY_SOURCE") or "custom").strip()
+    if source == "custom":
+        return str(env.get("REG_FACTORY_PRODUCTION_PROXY") or "").strip()
+    if source == "direct":
+        return ""
+    if source == "clash":
+        proxy = str(env.get("CLASH_PROXY", "http://127.0.0.1:7897")).strip()
+        if not proxy:
+            raise ValueError("共享 Clash 未配置代理地址")
+        return proxy
+    if source == "residential":
+        proxy = direct_proxy.configured_proxy(environ=env)
+        if not proxy:
+            raise ValueError("共享住宅代理未配置地址或代理池")
+        return proxy.url
+    raise ValueError("生产与凭据修复请选择支持的出口")
+
+
 def platform_environment(environ=None, platform: str = "") -> dict:
     """Return a child environment with the selected platform egress applied."""
     env = dict(_env(environ))
