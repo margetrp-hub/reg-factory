@@ -60,6 +60,10 @@ def main():
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as out:
             out.write(new)
         shutil.copystat(path, name)
+        if os.name == "posix":
+            original = path.stat()
+            # Root-run upgrades must leave the config readable by its service user.
+            os.chown(name, original.st_uid, original.st_gid)
         os.replace(name, path)
 
 
