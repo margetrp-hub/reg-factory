@@ -1,0 +1,62 @@
+{
+  "schema": "aishop.asset-snapshot.v1",
+  "profiles": {
+    "account": {
+      "label": "账号资料",
+      "required": [],
+      "optional": [
+        "registered_platforms",
+        "email",
+        "email_account",
+        "email_password",
+        "email_2fa",
+        "platform_account",
+        "platform_password",
+        "platform_2fa",
+        "sms_enabled",
+        "sms_phone",
+        "status",
+        "credential_json"
+      ],
+      "roles": []
+    },
+    "mailbox": {
+      "label": "邮箱资料",
+      "required": [],
+      "optional": [
+        "registered_platforms",
+        "email",
+        "email_account",
+        "email_password",
+        "email_2fa",
+        "platform_account",
+        "platform_password",
+        "platform_2fa",
+        "sms_enabled",
+        "sms_phone",
+        "status",
+        "credential_json"
+      ],
+      "roles": []
+    },
+    "credential": {
+      "label": "JSON 凭据",
+      "required": [],
+      "optional": [
+        "registered_platforms",
+        "email",
+        "email_account",
+        "email_password",
+        "email_2fa",
+        "platform_account",
+        "platform_password",
+        "platform_2fa",
+        "sms_enabled",
+        "sms_phone",
+        "status",
+        "credential_json"
+      ],
+      "roles": []
+    }
+  }
+}

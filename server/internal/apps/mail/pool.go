@@ -137,6 +137,7 @@ CREATE TABLE IF NOT EXISTS mail_recipients (
 );
 CREATE INDEX IF NOT EXISTS idx_mail_recipient_email ON mail_recipients(email,message_id);
 CREATE TABLE IF NOT EXISTS mail_pool_meta (name TEXT PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS mail_transferred(email TEXT PRIMARY KEY);
 `); err != nil {
 		return err
 	}
@@ -294,7 +295,7 @@ func (d *DB) PoolPage(ctx context.Context, q, state string, sourceID int64, limi
 	if offset < 0 {
 		offset = 0
 	}
-	where := " WHERE 1=1"
+	where := " WHERE NOT EXISTS(SELECT 1 FROM mail_transferred t WHERE t.email=p.email)"
 	args := []any{}
 	if q != "" {
 		if d.dialect == storepkg.DialectPG {
@@ -322,7 +323,7 @@ func (d *DB) PoolPage(ctx context.Context, q, state string, sourceID int64, limi
 (SELECT count(*) FROM mail_recipients r JOIN mail_messages m ON m.id=r.message_id WHERE r.email=p.email AND m.primary_tag IN ('risk','banned')),
 COALESCE((SELECT max(m.sort_ts) FROM mail_recipients r JOIN mail_messages m ON m.id=r.message_id WHERE r.email=p.email),0),
 COALESCE((SELECT m.primary_tag FROM mail_recipients r JOIN mail_messages m ON m.id=r.message_id WHERE r.email=p.email ORDER BY m.sort_ts DESC,m.id DESC LIMIT 1),''),
-COALESCE(a.manual,0),COALESCE(a.updated_at,p.created_at)`+from+where+" ORDER BY p.email LIMIT CAST(? AS BIGINT) OFFSET CAST(? AS BIGINT)", append(args, limit, offset)...)
+COALESCE(a.manual,0),COALESCE(a.updated_at,p.created_at),p.provider,p.role,COALESCE(NULLIF(p.transport,''),s.transport,''),p.parent_id`+from+where+" ORDER BY p.email LIMIT CAST(? AS BIGINT) OFFSET CAST(? AS BIGINT)", append(args, limit, offset)...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -330,7 +331,7 @@ COALESCE(a.manual,0),COALESCE(a.updated_at,p.created_at)`+from+where+" ORDER BY 
 	items := []Mailbox{}
 	for rows.Next() {
 		var m Mailbox
-		if err = rows.Scan(&m.Email, &m.SourceID, &m.SourceName, &m.SourceEnabled, &m.State, &m.Origin, &m.Total, &m.RiskHits, &m.LastAt, &m.LastTag, &m.Manual, &m.UpdatedAt); err != nil {
+		if err = rows.Scan(&m.Email, &m.SourceID, &m.SourceName, &m.SourceEnabled, &m.State, &m.Origin, &m.Total, &m.RiskHits, &m.LastAt, &m.LastTag, &m.Manual, &m.UpdatedAt, &m.Provider, &m.Role, &m.Transport, &m.ParentID); err != nil {
 			return nil, 0, err
 		}
 		items = append(items, m)
@@ -341,6 +342,13 @@ COALESCE(a.manual,0),COALESCE(a.updated_at,p.created_at)`+from+where+" ORDER BY 
 var ErrMailboxUnavailable = errors.New("邮箱已暂停或阻止，暂不提供取码")
 
 func (d *DB) MailboxAvailable(email string) error {
+	var moved int
+	if err := d.ex.QueryRow(`SELECT count(*) FROM mail_transferred WHERE email=?`, strings.ToLower(strings.TrimSpace(email))).Scan(&moved); err != nil {
+		return err
+	}
+	if moved > 0 {
+		return ErrMailboxUnavailable
+	}
 	var state string
 	err := d.ex.QueryRow(`SELECT state FROM mail_alias_state WHERE alias_hme=?`, strings.ToLower(strings.TrimSpace(email))).Scan(&state)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {

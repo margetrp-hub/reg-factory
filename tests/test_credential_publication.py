@@ -73,3 +73,22 @@ def test_retry_same_task_returns_saved_result_without_using_rt(publication):
     with patch('requests.Session') as network:
         assert asset_ops._refresh_chatgpt('one')['result'] == 'refreshed'
         network.assert_not_called()
+
+
+def test_publication_retires_old_alias_tokens_but_preserves_login_and_task_evidence(publication):
+    root, path, original, updates = publication
+    alias = path.parent / 'older-alias.json'
+    old = {**original, 'ref': 'older-alias', 'credential_updated_at': '2020-01-01T00:00:00Z',
+           'payload': {**original['payload'], 'password': 'login-password', 'totp': 'login-totp'}}
+    alias.write_text(json.dumps(old))
+    pinned = root / 'asset-results/pinned.json'
+    pinned.parent.mkdir(); pinned.write_text(json.dumps(old))
+    unrelated = path.parent / 'other-user.json'
+    unrelated.write_text(json.dumps({**old, 'ref': 'other', 'email': 'other@example.test'}))
+    evidence, other = pinned.read_bytes(), unrelated.read_bytes()
+    asset_ops._refresh_document_copies('one', original['email'], path, original, updates)
+    stub = json.loads(alias.read_text())
+    assert 'refresh_token' not in stub['payload'] and stub['credential_ref'] == 'one'
+    assert stub['payload']['password'] == 'login-password' and stub['payload']['totp'] == 'login-totp'
+    assert pinned.read_bytes() == evidence and unrelated.read_bytes() == other
+    assert asset_ops._find_credential('older-alias')[1]['payload']['refresh_token'] == 'new-rt'

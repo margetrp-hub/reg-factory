@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tiantianGPU/reg-factory/server/internal/settings"
 	"gopkg.in/yaml.v3"
 )
 
@@ -293,7 +294,7 @@ func ResolveSecret(v string) string {
 	}
 	switch {
 	case strings.HasPrefix(v, "env:"):
-		return strings.TrimSpace(os.Getenv(strings.TrimPrefix(v, "env:")))
+		return strings.TrimSpace(settings.NewEnv(settings.Load().EnvFile).Effective(strings.TrimPrefix(v, "env:")))
 	case strings.HasPrefix(v, "file:"):
 		p := strings.TrimPrefix(v, "file:")
 		raw, err := os.ReadFile(p)

@@ -18,6 +18,7 @@ const values = { FINGERPRINT_BROWSER: 'bitbrowser', BITBROWSER_API: 'http://brow
   TEMP_EMAIL_PROVIDER: 'yyds', OUTLOOK_GRAPH_RECOVERY_PROVIDER: 'yyds', REG_FACTORY_LIVENESS_ENABLED: '0',
   PRIVATE_EXTRA_OPTION: 'preserved', PROXY_MODE: 'clash_auto' };
 const initialKeys = Object.keys(values);
+const deployed = {REG_FACTORY_WORK_ORIGIN:'http://work.example.test:18099',REG_FACTORY_ASSET_CENTER_ID:'production-center-test',REG_FACTORY_NODE_ID:'sg-test'};
 const requests = [], problems = [], tasks = new Map();
 let readFailure = true, saveMode = 'ok', taskMode = 'ok', saves = 0, starts = 0;
 const mime = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css', '.json': 'application/json', '.txt': 'text/x-component', '.woff2': 'font/woff2', '.svg': 'image/svg+xml' };
@@ -59,8 +60,9 @@ await context.route('**/*', async route => {
     if (readFailure) { readFailure = false; return fail(503, 'synthetic read failure'); }
     const groups = Object.fromEntries(schema.map(group => [group.group, group.items.map(item => {
       const set=Object.hasOwn(values,item.key), saved=values[item.key] || '';
-      const effective=(!set || item.empty_default && !saved.trim()) ? String(item.default ?? '') : saved;
-      return {...item, value:saved, line:set ? 1 : 0, area:group.area, effective_source:!set || item.empty_default && !saved.trim() ? 'default' : 'file', effective_value:item.secret ? '' : effective, effective_set:!!effective};
+      const seed=deployed[item.key];
+      const effective=!set && seed!==undefined ? seed : (!set || item.empty_default && !saved.trim()) ? String(item.default ?? '') : saved;
+      return {...item, value:!set && !item.secret ? effective : saved, line:set ? 1 : 0, area:group.area, effective_source:!set && seed!==undefined ? 'deployment' : !set || item.empty_default && !saved.trim() ? 'default' : 'file', effective_value:item.secret ? '' : effective, effective_set:!!effective};
     })]));
     groups.custom = [{key:'PRIVATE_EXTRA_OPTION', label:'自定义参数', value:values.PRIVATE_EXTRA_OPTION, line:1, secret:false, area:'custom'}];
     return json({path:'/synthetic/.env', groups});
@@ -115,18 +117,21 @@ try {
   await button('重新读取').click(); await page.getByRole('button',{name:'保存全部修改',exact:true}).waitFor();
   assert.equal(await value('CLOAK_LOCALE'),'en-GB'); assert.equal(saves,3);
   await button('查看全部模式配置').click();
+  assert.equal(await input('CLOAK_EXTRA_ARGS').count(),0,'advanced tuning starts collapsed');
+  await page.getByRole('button',{name:/^高级参数/}).click();
   for (const field of schema.filter(group => group.area === 'browser').flatMap(group => group.items)) assert.equal(await input(field.key).count(),1,field.key);
   await button('邮箱与取码').click();
   assert.equal(await input('YYDS_API_KEY').count(),1,'two usages share one provider configuration');
   await input('CHATGPT_EMAIL_PROVIDER').selectOption('icmail');
   await save(); await page.getByRole('button',{name:'保存全部修改',exact:true}).waitFor();
-  await page.locator('[data-config-effective="CHATGPT_EMAIL_PROVIDER"]').getByText(/保存配置 · icmail/).waitFor();
+  assert.equal(await value('CHATGPT_EMAIL_PROVIDER'),'icmail');
+  assert.equal(await page.locator('.sg-config-workspace details').count(),0);
   await button('查看全部模式配置').click();
   await input('ICLOUD_MAIL_API_BASE').fill('');
   await save(); await page.getByRole('button',{name:'保存全部修改',exact:true}).waitFor();
-  await page.locator('[data-config-effective="ICLOUD_MAIL_API_BASE"]').getByText(/默认值 · https:\/\/mail.no-replyca.xyz/).waitFor();
+  assert.equal(await input('ICLOUD_MAIL_API_BASE').getAttribute('placeholder'),'默认 https://mail.no-replyca.xyz');
   await input('CHATGPT_EMAIL_PROVIDER').selectOption('icloud'); await input('ICLOUD_MAIL_SERVICE').fill('synthetic-openai');
-  await input('CHATGPT_EMAIL_PROVIDER').selectOption('remail'); await input('REMAIL_PROJECT_ID').fill('synthetic-project');
+  await input('CHATGPT_EMAIL_PROVIDER').selectOption('remail'); await input('REMAIL_PROJECT_ID').fill('123');
   await input('CHATGPT_EMAIL_PROVIDER').selectOption('icloud'); assert.equal(await value('ICLOUD_MAIL_SERVICE'),'synthetic-openai');
   await button('浏览器').click(); assert.equal(await value('CLOAK_LOCALE'),'en-GB'); await save();
   await page.getByRole('button',{name:'保存全部修改',exact:true}).waitFor();
@@ -190,6 +195,24 @@ try {
   await page.setViewportSize({width:390,height:844});
   assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth+1),'mobile page overflow');
   await page.screenshot({path:path.join(output,'config-mobile.png'),fullPage:true});
+  await page.goto(origin+'/nodes/config/');
+  await page.getByLabel('配置对象').selectOption({label:'中央资产连接'});
+  assert.equal(await value('REG_FACTORY_WORK_ORIGIN'),deployed.REG_FACTORY_WORK_ORIGIN,'inherited actual value must be editable');
+  assert.equal(await input('REG_FACTORY_NODE_ID').count(),0,'deployment identity is not an edit control');
+  await input('REG_FACTORY_WORK_ORIGIN').fill('http://new-work.example.test:18099');
+  await page.getByRole('button',{name:'生成资产通信密钥',exact:true}).click();
+  const firstKey=await value('REG_FACTORY_ASSET_KEY');
+  assert.equal(Buffer.from(firstKey,'base64url').length,32);
+  await page.getByRole('button',{name:'生成结果暂存密钥',exact:true}).click();
+  assert.notEqual(firstKey,await value('REG_FACTORY_ASSET_JOURNAL_KEY'));
+  await save(); await page.getByRole('button',{name:'保存全部修改',exact:true}).waitFor();
+  await page.reload(); await page.getByLabel('配置对象').selectOption({label:'中央资产连接'});
+  assert.equal(await value('REG_FACTORY_WORK_ORIGIN'),'http://new-work.example.test:18099');
+  assert.equal(await value('REG_FACTORY_ASSET_KEY'),firstKey);
+  assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth+1),'node configuration mobile overflow');
+  await page.screenshot({path:path.join(output,'node-config-mobile.png'),fullPage:true});
+  await page.setViewportSize({width:1440,height:1000});
+  await page.screenshot({path:path.join(output,'node-config-desktop.png'),fullPage:true});
   await page.goto(origin+'/tasks/group/pipeline/'); await page.getByLabel('执行模式').waitFor();
   assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth+1),'mobile mode overflow');
   assert.deepEqual(problems,[]);

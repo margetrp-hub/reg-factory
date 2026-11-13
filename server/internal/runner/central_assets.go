@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
-	"os"
 	"sync"
 	"time"
 
 	"aishop-next/execution-go/nodeassets"
 	"github.com/tiantianGPU/reg-factory/server/internal/centralasset"
+	"github.com/tiantianGPU/reg-factory/server/internal/settings"
 	"github.com/tiantianGPU/reg-factory/server/internal/store"
 )
 
@@ -19,10 +19,11 @@ import (
 func (m *Manager) CentralRuntimeCheck() error {
 	m.centralCheckMu.Lock()
 	defer m.centralCheckMu.Unlock()
-	if !m.centralCheckedAt.IsZero() && time.Since(m.centralCheckedAt) < 30*time.Second {
-		return m.centralCheckErr
+	env, err := settings.WorkerEnvironment(m.cfg.EnvFile)
+	if err != nil {
+		return err
 	}
-	cfg, err := centralasset.FromEnvironment(m.cfg.DataDir, os.Environ())
+	cfg, err := centralasset.FromEnvironment(m.cfg.DataDir, env)
 	if err == nil {
 		err = cfg.VerifyWritable()
 	}
@@ -36,19 +37,37 @@ func (m *Manager) centralOperation(task store.Task) (*centralasset.Operation, er
 	if err != nil {
 		return nil, err
 	}
-	cfg, err := centralasset.FromEnvironment(m.cfg.DataDir, os.Environ())
+	env, err := settings.WorkerEnvironment(m.cfg.EnvFile)
 	if err != nil {
 		return nil, err
 	}
+	// New resolves an original admitted operation against retained bindings even
+	// when the current connection has been cleared or switched to another center.
+	cfg, _ := centralasset.FromEnvironment(m.cfg.DataDir, env)
 	op, err := centralasset.New(cfg, p)
 	if err != nil {
 		return nil, err
+	}
+	op.Restore = func(ctx context.Context, material map[string]any) (map[string]any, error) {
+		m.centralMu.Lock()
+		restore := m.assetRestorer
+		m.centralMu.Unlock()
+		if restore == nil {
+			return nil, errors.New("ASSET_RESTORE_RUNTIME_UNAVAILABLE")
+		}
+		return restore(ctx, p, material)
 	}
 	op.Progress = func(stage string) {
 		actions := map[string]string{"asset_claim": "领取原授权中央资料", "asset_read": "读取指定凭据版本", "asset_execution": "执行平台操作", "asset_result_save": "密封保存原执行结果", "asset_writeback": "提交原结果并核对中央回执"}
 		_ = m.st.Stage(task.ID, store.StageEvent{Stage: stage, Status: "running", Action: actions[stage]})
 	}
 	return op, nil
+}
+
+func (m *Manager) SetAssetRestorer(restore func(context.Context, map[string]any, map[string]any) (map[string]any, error)) {
+	m.centralMu.Lock()
+	m.assetRestorer = restore
+	m.centralMu.Unlock()
 }
 
 func CentralContext(task store.Task) (map[string]any, error) {

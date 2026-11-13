@@ -12,6 +12,7 @@ import { Badge, ErrorNote, StatusBadge } from "@/components/ui";
 import { TaskTable } from "@/components/task-table";
 import { LogView } from "@/components/log-view";
 import { Drawer } from "@/components/drawer";
+import { accountReturn } from "@/lib/account-context";
 
 const activeStatus = (status: string) => ["queued","running","stopping"].includes(status);
 const datetime = (value: string) => value ? new Date(value).toLocaleString() : "—";
@@ -52,7 +53,7 @@ export function CredentialChecks({slug, view="history"}: {slug: string; view?: "
   const accountQuery=new URLSearchParams();
   if(params.get("account_status"))accountQuery.set("status",params.get("account_status")!);
   if(params.get("account_offset"))accountQuery.set("offset",params.get("account_offset")!);
-  const accountsHref=`/platform/${slug}/accounts/${accountQuery.size ? "?"+accountQuery : ""}`;
+  const accountsHref=accountReturn(params.get("return_to"),`/platform/${slug}/accounts/${accountQuery.size ? "?"+accountQuery : ""}`);
   const link=(updates: Record<string,string | null>, target: "history" | "run" = "history")=>{
     const query=new URLSearchParams(params.toString());
     for(const [key,value] of Object.entries(updates)){if(value)query.set(key,value);else query.delete(key);}
@@ -141,7 +142,7 @@ export function CredentialChecks({slug, view="history"}: {slug: string; view?: "
     </header>
     <AccountNavigation slug={slug} active={view === "run" ? "run" : "checks"} accountsHref={accountsHref} checksHref={listHref} runHref={view === "run" ? runLink({}) : undefined}/>
     <ErrorNote message={error || actionError}/>
-    <CredentialUpdateDialog request={updateRequest} onClose={()=>setUpdateRequest(null)} onAccepted={()=>setReload(value=>value+1)}/>
+    <CredentialUpdateDialog request={updateRequest} onClose={()=>setUpdateRequest(null)} onAccepted={()=>setReload(value=>value+1)} returnTo={accountsHref}/>
     {pending && <div className="sg-inline-notice" role="status"><span>原批次提交结果尚未确认，先找回原记录。</span><button className="btn-ghost" disabled={!!busy} onClick={()=>launch([],true)}>核对原批次</button></div>}
     {!batch && !taskID && <section className="sg-task-surface">
       <header className="sg-account-toolbar"><div className="sg-segmented" aria-label="处理类型"><button aria-pressed={mode === "check"} onClick={()=>changeMode("check")}>{slug === "chatgpt" ? "可用性检查" : "报告核对"}</button><button aria-pressed={mode === "refresh"} onClick={()=>changeMode("refresh")}>凭据更新</button></div>

@@ -41,6 +41,9 @@ func (s *Server) livenessConfigWith(updates map[string]string) (livenessConfig, 
 		values[key] = value
 	}
 	value := func(key string) string {
+		if v, exists := values[key]; exists {
+			return strings.TrimSpace(v)
+		}
 		if v, exists := settings.DeploymentValue(key); exists {
 			return strings.TrimSpace(v)
 		}

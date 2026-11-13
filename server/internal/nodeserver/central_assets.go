@@ -2,43 +2,39 @@ package nodeserver
 
 import (
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"os"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tiantianGPU/reg-factory/server/internal/centralasset"
 	"github.com/tiantianGPU/reg-factory/server/internal/runner"
+	"github.com/tiantianGPU/reg-factory/server/internal/settings"
 	"github.com/tiantianGPU/reg-factory/server/internal/store"
 )
 
 func centralBinding(v *Verified) bool { _, ok := v.Params["asset_ref"]; return ok }
 
 func (h *Handler) centralReadiness() map[string]any {
-	values := map[string]string{}
-	for _, k := range []string{"NODE_ID", "NODE_KEY", "NODE_RECEIPT_KEY", "WORK_ORIGIN", "ASSET_CENTER_ID", "ASSET_KEY", "ASSET_JOURNAL_KEY"} {
-		values[k] = os.Getenv("REG_FACTORY_" + k)
-		if values[k] == "" {
-			return map[string]any{"configured": false, "error_code": "ASSET_CONFIGURATION_REQUIRED"}
-		}
+	path := h.cfg.EnvFile
+	if path == "" {
+		path = settings.Load().EnvFile
 	}
-	for _, k := range []string{"ASSET_KEY", "ASSET_JOURNAL_KEY"} {
-		b, err := base64.URLEncoding.Strict().DecodeString(values[k])
-		if err != nil || len(b) != 32 {
-			return map[string]any{"configured": false, "error_code": "ASSET_CONFIGURATION_REQUIRED"}
-		}
+	env, err := settings.WorkerEnvironment(path)
+	if err != nil {
+		return map[string]any{"configured": false, "error_code": "ASSET_CONFIGURATION_UNREADABLE"}
 	}
-	if values["ASSET_KEY"] == values["NODE_KEY"] || values["ASSET_KEY"] == values["NODE_RECEIPT_KEY"] || values["ASSET_KEY"] == values["ASSET_JOURNAL_KEY"] {
-		return map[string]any{"configured": false, "error_code": "ASSET_KEY_ISOLATION_REQUIRED"}
+	config, err := centralasset.FromEnvironment(dataDir(), env)
+	if err != nil {
+		return map[string]any{"configured": false, "error_code": err.Error()}
 	}
 	if h.mgr == nil || h.mgr.CentralRuntimeCheck() != nil {
 		return map[string]any{"configured": false, "error_code": "ASSET_RUNTIME_UNAVAILABLE"}
 	}
-	raw, _ := json.Marshal(values)
+	raw, _ := json.Marshal(config)
 	sum := sha256.Sum256(raw)
-	return map[string]any{"configured": true, "center_id": values["ASSET_CENTER_ID"], "contract": 1, "configuration_revision": hex.EncodeToString(sum[:8])}
+	return map[string]any{"configured": true, "center_id": config.CenterID, "contract": 1, "configuration_revision": hex.EncodeToString(sum[:8])}
 }
 
 func (h *Handler) acceptCentral(c *gin.Context, v *Verified, localID string) {
@@ -56,7 +52,7 @@ func (h *Handler) acceptCentral(c *gin.Context, v *Verified, localID string) {
 		h.writeAccepted(c, v)
 		return
 	}
-	task := store.Task{ID: localID, Script: "central_asset", Title: "中央资产 · " + v.Action, ArgsJSON: string(args), Actor: "work:" + h.cfg.NodeID}
+	task := store.Task{ID: localID, Script: "central_asset", Title: "中央资产 · " + v.Action, ArgsJSON: string(args), Actor: "work:" + h.config().NodeID}
 	if err := h.mgr.Submit(task); err != nil {
 		writeErr(c, perr("ASSET_TASK_UNAVAILABLE", 503))
 		return

@@ -22,6 +22,15 @@ const accountLibraryStatusSQL = `CASE
  WHEN oauth_status='completed' AND liveness_status='alive' AND join_status='none' THEN 'available'
  ELSE 'pending' END`
 
+// Discovery reports only technical readiness. Usage, allocation and reuse are
+// central production facts, not decisions made from a node's local task history.
+const accountAvailabilitySQL = `CASE
+ WHEN status IN ('banned','workspace_deactivated','invalid','expired','relogin_required','needs_refresh')
+ OR oauth_status='failed' OR liveness_status IN ('dead','banned','workspace_deactivated','invalid') THEN 'invalid'
+ WHEN platform='chatgpt' AND oauth_status='completed' AND liveness_status='alive' THEN 'available'
+ WHEN platform<>'chatgpt' AND status='ok' THEN 'available'
+ ELSE 'pending' END`
+
 var ErrCheckStale = errors.New("credential_changed_during_check")
 
 // recordATHealth writes only evidence for the tested version. An in-flight or

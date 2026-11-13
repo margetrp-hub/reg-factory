@@ -21,6 +21,7 @@ import (
 
 // Config 是节点身份与行为配置。
 type Config struct {
+	EnvFile string
 	Enabled bool
 	NodeID  string
 	Key     []byte
@@ -35,25 +36,26 @@ type Config struct {
 
 // receiptKey 返回签发回执使用的密钥（未单独配置时复用请求密钥）。
 func (h *Handler) receiptKey() []byte {
-	if len(h.cfg.ReceiptKey) >= 32 {
-		return h.cfg.ReceiptKey
+	if len(h.config().ReceiptKey) >= 32 {
+		return h.config().ReceiptKey
 	}
-	return h.cfg.Key
+	return h.config().Key
 }
 
 // Handler 提供 Work 协议的入站端点。
 type Handler struct {
 	cfg              Config
+	resolved         *Config
 	mgr              *runner.Manager
 	st               *store.Store
 	productionCheck  func(map[string]any) map[string]any
-	productionMu     sync.Mutex
+	productionMu     *sync.Mutex
 	productionActive map[string]chan struct{}
 }
 
 // New 构造节点处理器。
 func New(cfg Config, mgr *runner.Manager, st *store.Store) *Handler {
-	return &Handler{cfg: cfg, mgr: mgr, st: st}
+	return &Handler{cfg: cfg, mgr: mgr, st: st, productionMu: &sync.Mutex{}, productionActive: map[string]chan struct{}{}}
 }
 
 // Register 挂载节点端点（不走面板登录，靠 Work 签名鉴权）。
@@ -66,18 +68,20 @@ func (h *Handler) Register(r *gin.Engine) {
 			panic("production run storage unavailable")
 		}
 	}
-	enabled := h.cfg.Enabled && h.cfg.NodeID != "" && len(h.cfg.Key) >= minKeyLength
+	enabled := h.config().Enabled && h.config().NodeID != "" && len(h.config().Key) >= minKeyLength
 	if !enabled {
 		log.Printf("[node] Work 子节点未启用（缺 NODE_ID/NODE_KEY>=32 字节）")
 	} else {
-		log.Printf("[node] Work 子节点启用：node_id=%s platform=%s", h.cfg.NodeID, h.cfg.Platform)
+		log.Printf("[node] Work 子节点启用：node_id=%s platform=%s", h.config().NodeID, h.config().Platform)
 	}
 
 	// Work probes this unauthenticated endpoint before it projects the node's
 	// inventory or submits a task.  Keep it separate from the panel fallback:
 	// returning HTML here makes a healthy node look unavailable forever.
 	r.GET("/ready", func(c *gin.Context) {
-		actions := []string{"account.register", "account.authorize", "account.refresh", "account.liveness", "asset.liveness", "account.quota"}
+		h := h.snapshot()
+		enabled := h.config().Enabled
+		actions := []string{"account.register", "account.authorize", "account.refresh", "account.liveness", "asset.liveness", "asset.restore", "account.quota"}
 		productionError := h.productionReadiness()
 		if enabled && productionError == "" {
 			actions = append(actions, productionAction, "production.team_json.existing_result", "production.team_json.produce")
@@ -104,21 +108,22 @@ func (h *Handler) Register(r *gin.Engine) {
 	})
 
 	r.GET("/node/capabilities", func(c *gin.Context) {
+		h := h.snapshot()
 		c.JSON(http.StatusOK, gin.H{
 			"ok":      true,
-			"node_id": h.cfg.NodeID,
-			"config":  h.cfg.Platform,
+			"node_id": h.config().NodeID,
+			"config":  h.config().Platform,
 			"detail":  Describe(),
 			// 节点侧自报能力：Team 按此派单，不需要为节点改协议
 			"schema": "account-node.work.v1",
 			// 密钥指纹（sha256 前 8 位）：只为对齐 Team 侧配置，不泄露密钥
-			"business_key_fp": fingerprint(h.cfg.BusinessKey),
+			"business_key_fp": fingerprint(h.config().BusinessKey),
 			"receipt_key_fp":  fingerprint(h.receiptKey()),
-			"work_key_fp":     fingerprint(h.cfg.Key),
+			"work_key_fp":     fingerprint(h.config().Key),
 			"actions": gin.H{
 				"supported": []string{
 					"account.register", "account.authorize", "account.refresh",
-					"account.liveness", "asset.liveness", "account.quota",
+					"account.liveness", "asset.liveness", "asset.restore", "account.quota",
 					productionAction, "production.team_json.existing_result", "production.team_json.produce",
 				},
 				"unsupported": []string{
@@ -133,31 +138,36 @@ func (h *Handler) Register(r *gin.Engine) {
 			},
 		})
 	})
-	if !enabled {
-		return
+	group := r.Group("/internal/work/v1", func(c *gin.Context) {
+		if !h.config().Enabled {
+			c.AbortWithStatusJSON(503, gin.H{"error": "NODE_CONFIGURATION_REQUIRED"})
+			return
+		}
+		c.Next()
+	})
+	group.POST("/tasks", h.withConfig((*Handler).acceptTask))
+	group.POST("/production/resume", h.withConfig((*Handler).resumeProduction))
+	group.POST("/production/admit", h.withConfig((*Handler).resumeProduction))
+	group.POST("/production/continue", h.withConfig((*Handler).continueProduction))
+	group.POST("/production/readback", h.withConfig((*Handler).renewProductionReadback))
+	group.POST("/team/materials", h.withConfig((*Handler).productionMaterial))
+	group.POST("/stop", h.withConfig((*Handler).stopProduction))
+	group.GET("/tasks/:task_id", h.withConfig((*Handler).taskStatus))
+	group.POST("/tasks/:task_id/result", h.withConfig((*Handler).taskReceipt))
+	group.POST("/tasks/:task_id/events", h.withConfig((*Handler).executionEvents))
+	group.POST("/tasks/:task_id/artifact", h.withConfig((*Handler).workArtifact))
+	group.POST("/resolve", h.withConfig((*Handler).resolveTask))
+	group.POST("/inventory/library", h.withConfig((*Handler).accountLibrary))
+	group.POST("/inventory/reference", h.withConfig((*Handler).accountReference))
+	group.GET("/accounts", h.withConfig((*Handler).accountsInventory))
+	group.GET("/inventory/accounts", h.withConfig((*Handler).accountsInventory))
+	group.POST("/inventory/:action", h.withConfig((*Handler).inventoryRelay))
+	if h.st != nil {
+		if err := h.st.EnsureInventoryRelay(); err != nil {
+			log.Printf("[node] inventory relay schema unavailable: %v", err)
+		}
 	}
-	group := r.Group("/internal/work/v1")
-	group.POST("/tasks", h.acceptTask)
-	group.POST("/production/resume", h.resumeProduction)
-	group.POST("/production/admit", h.resumeProduction)
-	group.POST("/production/continue", h.continueProduction)
-	group.POST("/production/readback", h.renewProductionReadback)
-	group.POST("/team/materials", h.productionMaterial)
-	group.POST("/stop", h.stopProduction)
-	group.GET("/tasks/:task_id", h.taskStatus)
-	group.POST("/tasks/:task_id/result", h.taskReceipt)
-	group.POST("/tasks/:task_id/events", h.executionEvents)
-	group.POST("/tasks/:task_id/artifact", h.workArtifact)
-	group.POST("/resolve", h.resolveTask)
-	group.POST("/inventory/library", h.accountLibrary)
-	group.POST("/inventory/reference", h.accountReference)
-	group.GET("/accounts", h.accountsInventory)
-	group.GET("/inventory/accounts", h.accountsInventory)
-	group.POST("/inventory/:action", h.inventoryRelay)
-	if err := h.st.EnsureInventoryRelay(); err != nil {
-		log.Printf("[node] inventory relay schema unavailable: %v", err)
-	}
-	r.GET("/node/library/selftest", h.librarySelftest)
+	r.GET("/node/library/selftest", h.withConfig((*Handler).librarySelftest))
 }
 
 // acceptTask 接收 account.register 等动作并转成本地任务。
@@ -171,7 +181,7 @@ func (h *Handler) acceptTask(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "WORK_REQUEST_INVALID", "detail": err.Error()})
 		return
 	}
-	verified, err := Verify(doc, h.cfg.Key, h.cfg.NodeID, time.Now())
+	verified, err := Verify(doc, h.config().Key, h.config().NodeID, time.Now())
 	if err != nil {
 		writeErr(c, err)
 		return
@@ -203,12 +213,28 @@ func (h *Handler) acceptTask(c *gin.Context) {
 	if verified.Action == "account.quota" {
 		operationID, _ := verified.Payload["operation_id"].(string)
 		version, _ := toInt64(verified.Payload["resource_version"])
-		if err := h.st.RecordQuotaObservation(operationID, localID, h.cfg.Platform, int(version)); err != nil {
+		if err := h.st.RecordQuotaObservation(operationID, localID, h.config().Platform, int(version)); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "QUOTA_SNAPSHOT_FAILED"})
 			return
 		}
 		h.writeAccepted(c, verified)
 		return
+	}
+	if existing == sql.ErrNoRows && !centralBinding(verified) {
+		if ref, ok := h.subjectRef(verified.Subject); ok {
+			moved, e := h.st.TransferredRef(ref)
+			if e != nil || moved {
+				writeErr(c, perr("ASSET_SOURCE_TRANSFERRED", 409))
+				return
+			}
+		}
+		if email := h.subjectEmail(verified); email != "" {
+			moved, lookupErr := h.st.TransferredAccount(h.config().Platform, email)
+			if lookupErr != nil || moved {
+				writeErr(c, perr("ASSET_SOURCE_TRANSFERRED", 409))
+				return
+			}
+		}
 	}
 	if operationID, _ := verified.Payload["operation_id"].(string); operationID != "" {
 		inputVersion, _ := toInt64(verified.Payload["resource_version"])
@@ -242,7 +268,7 @@ func (h *Handler) acceptTask(c *gin.Context) {
 			Script:   script,
 			Title:    "节点生产 · " + verified.Subject,
 			ArgsJSON: args,
-			Actor:    "work:" + h.cfg.NodeID,
+			Actor:    "work:" + h.config().NodeID,
 		}
 		if err := h.mgr.Submit(task); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "submit_failed", "detail": err.Error()})
@@ -258,7 +284,7 @@ func (h *Handler) acceptTask(c *gin.Context) {
 			Script:   "asset_ops",
 			Title:    "节点授权 · " + verified.Subject,
 			ArgsJSON: argvTail,
-			Actor:    "work:" + h.cfg.NodeID,
+			Actor:    "work:" + h.config().NodeID,
 		}
 		if err := h.mgr.Submit(task); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "submit_failed", "detail": err.Error()})
@@ -274,7 +300,7 @@ func (h *Handler) acceptTask(c *gin.Context) {
 			Script:   "asset_ops",
 			Title:    "节点" + verified.Action + " · " + verified.Subject,
 			ArgsJSON: argvTail,
-			Actor:    "work:" + h.cfg.NodeID,
+			Actor:    "work:" + h.config().NodeID,
 		}
 		if err := h.mgr.Submit(task); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "submit_failed", "detail": err.Error()})
@@ -290,7 +316,7 @@ func (h *Handler) acceptTask(c *gin.Context) {
 			"accepted":     false,
 			"reason":       "ACTION_NOT_SUPPORTED_BY_NODE",
 			"capabilities": "/node/capabilities",
-			"node_id":      h.cfg.NodeID,
+			"node_id":      h.config().NodeID,
 			"task_id":      verified.TaskID,
 			"action":       verified.Action,
 		})
@@ -299,7 +325,7 @@ func (h *Handler) acceptTask(c *gin.Context) {
 
 // registerTask 把 mailbox 主体映射成已有邮箱注册任务。
 func (h *Handler) registerTask(mailbox string) (string, string) {
-	platform := strings.TrimSpace(h.cfg.Platform)
+	platform := strings.TrimSpace(h.config().Platform)
 	if platform == "" {
 		platform = "claude"
 	}
@@ -314,7 +340,7 @@ func (h *Handler) registerTask(mailbox string) (string, string) {
 
 // authorizeArgv 把 account.authorize 映射成 asset_ops refresh（允许重新登录）。
 func (h *Handler) authorizeArgv(v *Verified) string {
-	platform := strings.TrimSpace(h.cfg.Platform)
+	platform := strings.TrimSpace(h.config().Platform)
 	ref := v.Subject
 	if resolved, ok := h.subjectRef(ref); ok {
 		ref = resolved
@@ -332,7 +358,7 @@ func (h *Handler) authorizeArgv(v *Verified) string {
 
 // assetOpArgv 把 Work 动作映射成 asset_ops.py 的参数数组。
 func (h *Handler) assetOpArgv(v *Verified) string {
-	platform := strings.TrimSpace(h.cfg.Platform)
+	platform := strings.TrimSpace(h.config().Platform)
 	ref := v.Subject
 	if resolved, ok := h.subjectRef(ref); ok {
 		ref = resolved
@@ -408,7 +434,7 @@ func (h *Handler) taskReceipt(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "WORK_REQUEST_INVALID"})
 		return
 	}
-	verified, err := VerifyRead(doc, h.cfg.Key, h.cfg.NodeID, time.Now())
+	verified, err := VerifyRead(doc, h.config().Key, h.config().NodeID, time.Now())
 	if err != nil {
 		writeErr(c, err)
 		return
@@ -443,7 +469,7 @@ func (h *Handler) resolveTask(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "WORK_REQUEST_INVALID"})
 		return
 	}
-	verified, err := VerifyRead(doc, h.cfg.Key, h.cfg.NodeID, time.Now())
+	verified, err := VerifyRead(doc, h.config().Key, h.config().NodeID, time.Now())
 	if err != nil {
 		writeErr(c, err)
 		return
@@ -471,12 +497,12 @@ func (h *Handler) inventory(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "WORK_REQUEST_INVALID"})
 		return
 	}
-	if _, err := Verify(doc, h.cfg.Key, h.cfg.NodeID, time.Now()); err != nil {
+	if _, err := Verify(doc, h.config().Key, h.config().NodeID, time.Now()); err != nil {
 		writeErr(c, err)
 		return
 	}
 	log.Printf("[node] inventory action=%s accepted (v1 register-only)", action)
-	c.JSON(http.StatusAccepted, gin.H{"accepted": true, "action": action, "node_id": h.cfg.NodeID})
+	c.JSON(http.StatusAccepted, gin.H{"accepted": true, "action": action, "node_id": h.config().NodeID})
 }
 
 func writeErr(c *gin.Context, err error) {
@@ -501,7 +527,7 @@ func (h *Handler) librarySelftest(c *gin.Context) {
 	now := time.Now()
 	payload := map[string]any{
 		"schema":     "work.inventory-relay.v1",
-		"node_id":    h.cfg.NodeID,
+		"node_id":    h.config().NodeID,
 		"request_id": "selftest-" + strconv.FormatInt(now.UnixNano(), 36),
 		"issued_at":  now.Unix(),
 		"expires_at": now.Unix() + 120,
@@ -522,7 +548,7 @@ func (h *Handler) librarySelftest(c *gin.Context) {
 	sig := hex.EncodeToString(mac.Sum(nil))
 
 	if _, verifyErr := verifyLibraryRequest(
-		map[string]any{"signature": sig, "payload": payload}, key, h.cfg.NodeID, now,
+		map[string]any{"signature": sig, "payload": payload}, key, h.config().NodeID, now,
 	); verifyErr != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "selftest_failed", "detail": verifyErr.Error()})
 		return
@@ -541,7 +567,7 @@ func (h *Handler) librarySelftest(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"ok": true, "schema": "work.inventory-relay.v1",
-		"node_id": h.cfg.NodeID, "signature_verified": true,
+		"node_id": h.config().NodeID, "signature_verified": true,
 		"total": total, "sample": emails,
 		"business_key_fp": fingerprint(key),
 	})

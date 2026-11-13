@@ -174,13 +174,17 @@ func TestAccountLibraryCheckRecoveryAndPagination(t *testing.T) {
 		t.Fatal(err)
 	}
 	seen := map[string]bool{}
-	for page := 1; page <= 2; page++ {
+	for page := 1; page <= 3; page++ {
 		rows, total, err := s.LibraryAccounts("ready-", "available", "", page, 2)
-		if err != nil || total != 4 || len(rows) != 2 {
+		want := 2
+		if page == 3 {
+			want = 1
+		}
+		if err != nil || total != 5 || len(rows) != want {
 			t.Fatalf("page %d: total=%d rows=%d error=%v", page, total, len(rows), err)
 		}
 		for _, row := range rows {
-			if seen[row.Ref] || row.Claimed || row.OAuthStatus != "completed" || row.LivenessStatus != "alive" || row.JoinStatus != "none" {
+			if seen[row.Ref] || row.OAuthStatus != "completed" || row.LivenessStatus != "alive" {
 				t.Fatalf("invalid eligible row: %+v", row)
 			}
 			seen[row.Ref] = true
@@ -191,7 +195,7 @@ func TestAccountLibraryCheckRecoveryAndPagination(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows, total, err := s.LibraryAccounts("ready-", "available", "", 1, 100)
-	if err != nil || total != 5 || len(rows) != 5 {
+	if err != nil || total != 6 || len(rows) != 6 {
 		t.Fatal(total, len(rows), err)
 	}
 	a, _ := s.GetAccount("ready-0")

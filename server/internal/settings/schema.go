@@ -17,6 +17,8 @@ type ConfigField struct {
 	Secret       bool     `json:"secret"`
 	Apply        string   `json:"apply,omitempty"`
 	ReadOnly     bool     `json:"readonly,omitempty"`
+	Advanced     bool     `json:"advanced,omitempty"`
+	Generate     bool     `json:"generate,omitempty"`
 	Area         string   `json:"area,omitempty"`
 	EmptyDefault bool     `json:"empty_default,omitempty"`
 }
@@ -79,15 +81,19 @@ func MergeConfig(schema []ConfigGroup, entries []Entry, fallback func(string) st
 	for name, list := range groups {
 		for i := range list {
 			entry := &list[i]
+			if DeploymentOnly(entry.Key) || entry.ReadOnly {
+				entry.ReadOnly, entry.Apply = true, "deployment"
+			} else if entry.Apply == "restart" {
+				entry.Apply = "live"
+			}
 			if strings.HasPrefix(entry.Key, "ICMAIL_IMAP_") || strings.HasPrefix(entry.Key, "MAIL_IMAP_") {
 				entry.Apply = "seed"
+				entry.ReadOnly = true
 				entry.Help = "仅在空来源库首次启动时预置收件来源；已有邮箱的登录资料请在邮箱池的收件来源中修改。"
-			} else if strings.HasPrefix(entry.Key, "ICMAIL_") {
-				entry.Apply = "restart"
 			}
 			value, source := entry.Value, "file"
-			if deployed, exists := DeploymentValue(entry.Key); exists {
-				value, source, entry.Overridden = deployed, "deployment", true
+			if deployed, exists := DeploymentValue(entry.Key); exists && (entry.Line == 0 || entry.ReadOnly) {
+				value, source = deployed, "deployment"
 			} else if entry.Line == 0 {
 				value, source = "", "unset"
 				if entry.Default != nil {
@@ -103,6 +109,9 @@ func MergeConfig(schema []ConfigGroup, entries []Entry, fallback func(string) st
 			entry.EffectiveSource, entry.EffectiveSet = source, value != ""
 			if !entry.Secret {
 				entry.EffectiveValue = value
+				if entry.Line == 0 || entry.ReadOnly {
+					entry.Value = value
+				}
 			}
 		}
 		groups[name] = list
@@ -179,7 +188,7 @@ func configArea(key string) string {
 		{"sms", []string{"SMS", "HERO", "CODEX_PHONE", "CODEX_SMS", "CODEX_ADDPHONE", "CUSTOM_SMS"}},
 		{"captcha", []string{"CAPSOLVER", "EZCAPTCHA", "YESCAPTCHA", "VISION", "VOTE", "GEMMA", "CLAUDE_VISION_", "CLAUDE_HCAPTCHA_", "CLAUDE_CAPTCHA_"}},
 		{"browser", []string{"BROWSER", "BITBROWSER", "BB_CORE_", "ADSPOWER", "CHROMIUM", "CLOAK", "ROXY", "CUSTOM_BROWSER", "REG_FACTORY_BROWSER"}},
-		{"node", []string{"REG_FACTORY_NODE_"}},
+		{"node", []string{"REG_FACTORY_NODE_", "REG_FACTORY_ASSET_", "REG_FACTORY_WORK_ORIGIN"}},
 		{"integration", []string{"SUB2API", "CPA_", "CHATGPT2API", "WEBCHAT2API", "K12_", "CODEX_CPA", "CODEX_AUTH_URL_SOURCE"}},
 		{"runtime", []string{"REGD_", "REG_FACTORY_PANEL_", "REG_FACTORY_MEMORY_", "REG_FACTORY_MAX_", "REG_FACTORY_DATA_", "REG_FACTORY_ENV_", "REG_FACTORY_LIVENESS_"}},
 	} {

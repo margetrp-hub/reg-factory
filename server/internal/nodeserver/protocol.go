@@ -48,6 +48,7 @@ var workFields = []string{
 
 // 支持的动作与各自允许的业务参数。
 var workActions = map[string]map[string]bool{
+	"asset.restore": {"asset_ref":true},
 	productionAction:    {"production_ref": true, "order_ref": true, "product_id": true, "seat_type": true, "workspace_ids": true, "mode": true, "source_ref": true, "source_sha256": true, "budget_units": true},
 	"account.register":  {"goal": true, "sms_allowance": true},
 	"account.authorize": {"sms_allowance": true, "custody_grant": true},
@@ -211,7 +212,7 @@ func Verify(doc Document, key []byte, nodeID string, now time.Time) (*Verified, 
 		if name == "asset_ref" {
 			binding, ok := params[name].(map[string]any)
 			if !ok || len(binding) != 1 || len(params) != 1 || !refPattern.MatchString(ls(binding["center_id"])) ||
-				(action != "asset.liveness" && action != "account.refresh" && action != "account.authorize") {
+				(action != "asset.liveness" && action != "account.refresh" && action != "account.authorize" && action != "asset.restore") {
 				return nil, perr("WORK_ASSET_BINDING_INVALID", 400)
 			}
 			continue
@@ -225,6 +226,7 @@ func Verify(doc Document, key []byte, nodeID string, now time.Time) (*Verified, 
 			return nil, perr("NODE_REGISTER_THEN_AUTHORIZE_REQUIRED", 422)
 		}
 	}
+	if action == "asset.restore" && len(params)!=1 { return nil,perr("WORK_ASSET_BINDING_INVALID",400) }
 
 	subject, _ := doc.Payload["subject_id"].(string)
 	taskID, _ := doc.Payload["task_id"].(string)

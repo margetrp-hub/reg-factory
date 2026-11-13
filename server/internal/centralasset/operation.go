@@ -20,9 +20,16 @@ type Operation struct {
 	send             func(context.Context, map[string]any) (map[string]any, error)
 	// Progress contains only fixed stage names, never material or tokens.
 	Progress func(string)
+	// Restore only performs idempotent local installation of retained material.
+	Restore Executor
 }
 
 func New(c Config, scope map[string]any) (*Operation, error) {
+	var err error
+	c, err = forScope(c, scope)
+	if err != nil {
+		return nil, err
+	}
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}
@@ -31,14 +38,13 @@ func New(c Config, scope map[string]any) (*Operation, error) {
 	action := scope["action"]
 	expected := map[string]any{"asset_ref": map[string]any{"center_id": c.CenterID}}
 	if !ok || !accountOK || !identifier.MatchString(account) || scope["node_id"] != c.NodeID || !equal(scope["parameters"], expected) ||
-		(action != "asset.liveness" && action != "account.refresh" && action != "account.authorize") || number(scope["resource_version"]) < 1 || number(scope["expires_at"]) < 1 {
+		(action != "asset.liveness" && action != "account.refresh" && action != "account.authorize" && action != "asset.restore") || number(scope["resource_version"]) < 1 || number(scope["expires_at"]) < 1 {
 		return nil, errors.New("ASSET_SCOPE_INVALID")
 	}
 	op := &Operation{scope: scope, id: id, intents: journal{filepath.Join(c.Directory, "intents"), c.JournalKey}, results: journal{filepath.Join(c.Directory, "results"), c.JournalKey}}
 	if _, err := op.results.path(id); err != nil {
 		return nil, err
 	}
-	var err error
 	op.send, err = c.sender()
 	op.claim = func(ctx context.Context) (map[string]any, error) { return c.claim(ctx, id) }
 	return op, err
@@ -89,7 +95,7 @@ func (o *Operation) stage(result map[string]any, preflight bool) error {
 		return errors.New("ASSET_EXECUTOR_RESULT_INVALID")
 	}
 	var document any
-	if result["status"] == "completed" && (o.scope["action"] == "account.refresh" || o.scope["action"] == "account.authorize") {
+	if result["status"] == "completed" && (o.scope["action"] == "account.refresh" || o.scope["action"] == "account.authorize" || o.scope["action"] == "asset.restore") {
 		var ok bool
 		document, ok = result["document"].(map[string]any)
 		if !ok || document == nil {
@@ -162,12 +168,23 @@ func (o *Operation) Run(ctx context.Context, execute Executor) (map[string]any, 
 		if time.Now().Unix() >= number(o.scope["expires_at"]) {
 			return errors.New("WORK_AUTHORIZATION_EXPIRED")
 		}
-		if err = o.intents.put(o.id, map[string]any{"task_id": o.id, "context": o.scope}); err != nil {
+		intent := map[string]any{"task_id": o.id, "context": o.scope}
+		if o.scope["action"] == "asset.restore" {
+			intent["material"] = material
+		}
+		if err = o.intents.put(o.id, intent); err != nil {
 			return err
 		}
 		invoked = true
 		o.progress("asset_execution")
-		result, err = execute(ctx, material)
+		if o.scope["action"] == "asset.restore" {
+			if o.Restore == nil {
+				return errors.New("ASSET_RESTORE_RUNTIME_UNAVAILABLE")
+			}
+			result, err = o.Restore(ctx, material)
+		} else {
+			result, err = execute(ctx, material)
+		}
 		if err != nil {
 			return err
 		}
@@ -175,6 +192,9 @@ func (o *Operation) Run(ctx context.Context, execute Executor) (map[string]any, 
 		return o.stage(result, false)
 	}
 	if err := perform(); err != nil {
+		if invoked && o.scope["action"] == "asset.restore" {
+			return nil, err
+		}
 		code := err.Error()
 		if !errorCode.MatchString(code) || code == "" {
 			code = "ASSET_PREPARATION_FAILED"
@@ -207,6 +227,35 @@ func (o *Operation) Replay(ctx context.Context, started bool) (map[string]any, e
 		}
 		if intent != nil && !equal(intent["context"], o.scope) {
 			return nil, errors.New("ASSET_TASK_SCOPE_CHANGED")
+		}
+		if intent != nil && o.scope["action"] == "asset.restore" {
+			material, ok := intent["material"].(map[string]any)
+			if !ok || o.Restore == nil {
+				return nil, errors.New("ASSET_RESTORE_RUNTIME_UNAVAILABLE")
+			}
+			// Manual closure prevents local installation from resuming. A failed
+			// read is retryable and cannot grant new authority.
+			receipt, e := o.send(ctx, map[string]any{"action": "receipt", "task_id": o.id})
+			if e != nil {
+				return nil, e
+			}
+			if receipt["state"] == "closed" {
+				if e = o.stage(failure("ASSET_CHECKOUT_CLOSED", true), false); e != nil {
+					return nil, e
+				}
+				return o.Deliver(ctx)
+			}
+			if receipt["task_id"] != o.id || receipt["state"] != "claimed" {
+				return nil, errors.New("ASSET_RESTORE_RECEIPT_PENDING")
+			}
+			result, e := o.Restore(ctx, material)
+			if e != nil {
+				return nil, e
+			}
+			if e = o.stage(result, false); e != nil {
+				return nil, e
+			}
+			return o.Deliver(ctx)
 		}
 		code, invoked := "NODE_TASK_NOT_STARTED", started || intent != nil
 		if intent != nil {

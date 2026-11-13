@@ -8,7 +8,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/tiantianGPU/reg-factory/server/internal/probe"
-	"github.com/tiantianGPU/reg-factory/server/internal/settings"
 	"github.com/tiantianGPU/reg-factory/server/internal/store"
 )
 
@@ -54,6 +53,10 @@ func (s *Server) getAccountRefresh(c *gin.Context) {
 		}
 		progress = &stage
 	}
+	if progress != nil && (task.Status == "succeeded" || task.Status == "failed") && progress.Status == "running" {
+		progress.Status = task.Status
+		progress.Action = task.Error
+	}
 	c.JSON(200, gin.H{"task": task, "evidence": evidence, "can_resolve": pending && !owned,
 		"method": method, "progress": progress,
 		"library_status": account.LibraryStatus, "verification_task_id": verificationID, "verification_status": verificationStatus,
@@ -90,10 +93,7 @@ func (s *Server) reconcileAccountRefresh(c *gin.Context) {
 		c.JSON(409, gin.H{"error": "refresh_not_confirmed", "detail": err.Error()})
 		return
 	}
-	proxy := s.env.Get("REG_FACTORY_PRODUCTION_PROXY")
-	if value, exists := settings.DeploymentValue("REG_FACTORY_PRODUCTION_PROXY"); exists {
-		proxy = value
-	}
+	proxy := s.env.Effective("REG_FACTORY_PRODUCTION_PROXY")
 	result := probe.OAuthContext(c.Request.Context(), credentials, proxy, 30*time.Second)
 	if result.Status != "ok" {
 		c.JSON(409, gin.H{"error": "refresh_not_confirmed", "detail": result.Message + "；保留原任务，未再次交换 RT"})

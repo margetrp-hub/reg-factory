@@ -4,6 +4,7 @@ Old references identify the account; only a successful atomic save advances the
 current credential timestamp. Never splice tokens from different results.
 """
 import base64
+import copy
 from contextlib import contextmanager
 from datetime import datetime
 import hashlib
@@ -98,6 +99,32 @@ def compatible(anchor, candidate):
     if a[1] and b[1] and a[1] == b[1]:
         return True  # the same upstream user may be reused in a new workspace
     return all(not left or not right or left == right for left, right in zip(a, b))
+
+
+def reference_stub(document, current_ref):
+    """Retain login material and identity, but never a retired token bundle."""
+    result = copy.deepcopy(document)
+    workspace, subject = scope(document)
+    secret_keys = {'access_token', 'refresh_token', 'id_token', 'accessToken',
+                   'refreshToken', 'idToken', 'oauth_access_token', 'oauth_refresh_token'}
+    def strip(value):
+        if isinstance(value, dict):
+            for key in list(value):
+                if key in secret_keys:
+                    del value[key]
+                else:
+                    strip(value[key])
+        elif isinstance(value, list):
+            for item in value:
+                strip(item)
+    strip(result)
+    payload = result.setdefault('payload', {})
+    if subject:
+        payload['credential_subject'] = subject
+    if workspace:
+        payload['workspace_account_id'] = workspace
+    result['credential_ref'] = current_ref
+    return result
 
 
 def select(anchor, candidates):

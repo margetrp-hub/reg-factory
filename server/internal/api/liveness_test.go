@@ -26,7 +26,9 @@ func livenessFixture(t *testing.T, response func(http.ResponseWriter, *http.Requ
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	s := &Server{st: st, assets: assetstore.New(root), env: settings.NewEnv(filepath.Join(root, "fixture.env"))}
+	repo, _ := filepath.Abs("../../..")
+	cfg := &settings.Settings{AppRoot: repo, DataDir: root, EnvFile: filepath.Join(root, "fixture.env")}
+	s := &Server{cfg: cfg, st: st, assets: assetstore.New(root), env: settings.NewEnv(cfg.EnvFile)}
 	router := gin.New()
 	router.Use(func(c *gin.Context) { c.Set("actor", "operator"); c.Next() })
 	router.PUT("/config", s.configPut)

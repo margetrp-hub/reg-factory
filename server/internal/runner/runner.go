@@ -44,6 +44,7 @@ type Manager struct {
 	centralCheckMu   sync.Mutex
 	centralCheckedAt time.Time
 	centralCheckErr  error
+	assetRestorer func(context.Context, map[string]any, map[string]any) (map[string]any, error)
 	workers          sync.WaitGroup
 	procs            map[string]*proc
 	slots            int
@@ -105,7 +106,13 @@ func (m *Manager) RunningCount() int {
 }
 
 // Capacity 返回并发上限。
-func (m *Manager) Capacity() int { return m.cfg.MaxParallel }
+func (m *Manager) Capacity() int {
+	return m.cfg.RuntimeInt("REG_FACTORY_MAX_CONCURRENCY", m.cfg.MaxParallel, 1, 32)
+}
+
+func (m *Manager) GuardPercent() float64 {
+	return float64(m.cfg.RuntimeInt("REG_FACTORY_MEMORY_GUARD_PCT", int(m.cfg.GuardPct), 1, 100))
+}
 
 // Memory 读取 cgroup 水位。
 func (m *Manager) Memory() MemInfo {
@@ -136,7 +143,7 @@ func (m *Manager) Memory() MemInfo {
 // Guarded 判断当前是否因内存拒绝新任务。
 func (m *Manager) Guarded() bool {
 	info := m.Memory()
-	return info.MaxMB > 0 && info.UsedPct >= m.cfg.GuardPct
+	return info.MaxMB > 0 && info.UsedPct >= m.GuardPercent()
 }
 
 // ---------------------------------------------------------------- 订阅
@@ -166,7 +173,8 @@ func (m *Manager) dispatch() {
 			m.mu.Lock()
 			used := m.weight
 			m.mu.Unlock()
-			if used >= m.cfg.MaxParallel {
+			capacity := m.Capacity()
+			if used >= capacity {
 				break
 			}
 			next, err := m.nextQueued()
@@ -174,12 +182,12 @@ func (m *Manager) dispatch() {
 				break
 			}
 			w := m.taskWeight(*next)
-			if w > m.cfg.MaxParallel-used {
+			if w > capacity-used {
 				// 剩余槽位不够装这个任务：留给后面更小的任务，避免队头阻塞过久
 				if w > 1 && used > 0 {
 					break
 				}
-				w = m.cfg.MaxParallel - used
+				w = capacity - used
 				if w < 1 {
 					break
 				}
@@ -225,8 +233,8 @@ func (m *Manager) taskWeight(t store.Task) int {
 			}
 		}
 	}
-	if w > m.cfg.MaxParallel {
-		w = m.cfg.MaxParallel
+	if capacity := m.Capacity(); w > capacity {
+		w = capacity
 	}
 	return w
 }
@@ -240,7 +248,7 @@ func (m *Manager) Weight() int {
 
 // taskTimeout 读取 REG_FACTORY_TASK_TIMEOUT（秒），0 表示不限制。
 func (m *Manager) taskTimeout() time.Duration {
-	raw := strings.TrimSpace(os.Getenv("REG_FACTORY_TASK_TIMEOUT"))
+	raw := strings.TrimSpace(settings.NewEnv(m.cfg.EnvFile).Effective("REG_FACTORY_TASK_TIMEOUT"))
 	if raw == "" {
 		return time.Hour
 	}

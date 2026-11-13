@@ -37,7 +37,7 @@ var uuidLike = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-
 // the outer envelope with the node request key; the returned business documents
 // are signed with BusinessKey so Team can verify them independently.
 func (h *Handler) inventoryRelay(c *gin.Context) {
-	if len(h.cfg.BusinessKey) < minKeyLength {
+	if len(h.config().BusinessKey) < minKeyLength {
 		writeErr(c, perr("WORK_INVENTORY_NODE_UNCONFIGURED", http.StatusServiceUnavailable))
 		return
 	}
@@ -47,7 +47,7 @@ func (h *Handler) inventoryRelay(c *gin.Context) {
 		writeErr(c, perr("WORK_INVENTORY_REQUEST_INVALID", http.StatusUnprocessableEntity))
 		return
 	}
-	payload, err := verifyLibraryRequest(document, h.cfg.Key, h.cfg.NodeID, time.Now())
+	payload, err := verifyLibraryRequest(document, h.config().Key, h.config().NodeID, time.Now())
 	if err != nil {
 		writeErr(c, err)
 		return
@@ -179,7 +179,7 @@ func (h *Handler) inventoryOffer(request map[string]any, data map[string]any) (m
 		if account.Claimed || account.JoinStatus == "joined" || account.JoinStatus == "switched" {
 			continue
 		}
-		status := libraryStatus(account.OAuthStatus, account.LivenessStatus, account.JoinStatus)
+		status := account.LibraryStatus
 		// A newly imported document has no historical liveness projection yet.
 		// The document itself is the source-side proof for this offer; retain only
 		// explicit terminal invalid/used states so an unknown or pending record
@@ -207,11 +207,11 @@ func (h *Handler) inventoryOffer(request map[string]any, data map[string]any) (m
 	}
 	issued := time.Now().Unix()
 	body := map[string]any{
-		"schema": teamOfferSchema, "node_id": h.cfg.NodeID,
+		"schema": teamOfferSchema, "node_id": h.config().NodeID,
 		"request_id": ls(request["request_id"]), "issued_at": issued, "expires_at": issued + 120,
 		"items": items, "cursor": next,
 	}
-	return signInventory(body, h.cfg.BusinessKey, inventoryOfferDomain)
+	return signInventory(body, h.config().BusinessKey, inventoryOfferDomain)
 }
 
 const teamOfferSchema = "work.inventory-offer.v1"
@@ -238,7 +238,7 @@ func (h *Handler) inventoryEvent(data map[string]any) (map[string]any, error) {
 		return nil, perr("WORK_INVENTORY_EVENT_INVALID", http.StatusUnprocessableEntity)
 	}
 	pending, ok := event["payload"].(map[string]any)
-	if !ok || ls(pending["node_id"]) != h.cfg.NodeID {
+	if !ok || ls(pending["node_id"]) != h.config().NodeID {
 		return nil, perr("WORK_INVENTORY_SCOPE_INVALID", http.StatusForbidden)
 	}
 	switch ls(pending["schema"]) {
@@ -252,7 +252,7 @@ func (h *Handler) inventoryEvent(data map[string]any) (map[string]any, error) {
 }
 
 func (h *Handler) inventoryBusiness(event map[string]any) (map[string]any, error) {
-	pending, err := verifyInventorySigned(event, h.cfg.BusinessKey, teamBusinessDomain, teamBusinessFields)
+	pending, err := verifyInventorySigned(event, h.config().BusinessKey, teamBusinessDomain, teamBusinessFields)
 	if err != nil {
 		return nil, err
 	}
@@ -275,7 +275,7 @@ func (h *Handler) inventoryBusiness(event map[string]any) (map[string]any, error
 		if oldSHA != digest {
 			return nil, perr("WORK_INVENTORY_EVENT_CONFLICT", http.StatusConflict)
 		}
-		return decodeStoredResponse(oldResponse)
+		return h.replayInventoryResponse(oldResponse, teamBusinessDomain)
 	}
 	accountRef, ok := h.inventoryAccountRef(ls(pending["account_id"]))
 	if !ok {
@@ -312,28 +312,28 @@ func (h *Handler) inventoryBusiness(event map[string]any) (map[string]any, error
 		}
 		artifact["document"] = document
 		encoded, _ := Canonical(artifact)
-		sealed, sealErr := fernetEncrypt(h.cfg.ArtifactKey, encoded)
+		sealed, sealErr := fernetEncrypt(h.config().ArtifactKey, encoded)
 		if sealErr != nil {
 			return nil, perr("TEAM_ARTIFACT_KEY_UNCONFIGURED", http.StatusServiceUnavailable)
 		}
 		responsePayload["artifact_encrypted"] = sealed
 	}
-	response, err := signInventory(responsePayload, h.cfg.BusinessKey, teamBusinessDomain)
+	response, err := signInventory(responsePayload, h.config().BusinessKey, teamBusinessDomain)
 	if err != nil {
 		return nil, err
 	}
 	encodedResponse, _ := json.Marshal(response)
-	if saved, replay, commitErr := h.st.CommitInventoryEvent(ls(pending["event_id"]), digest, string(encodedResponse), h.cfg.NodeID,
+	if saved, replay, commitErr := h.st.CommitInventoryEvent(ls(pending["event_id"]), digest, string(encodedResponse), h.config().NodeID,
 		ls(pending["team_asset_uuid"]), accountRef, state, intValue(pending["revision"]), expectedVersion); commitErr != nil {
 		return nil, perr("WORK_INVENTORY_COMMIT_FAILED", http.StatusConflict)
 	} else if replay {
-		return decodeStoredResponse(saved)
+		return h.replayInventoryResponse(saved, teamBusinessDomain)
 	}
 	return response, nil
 }
 
 func (h *Handler) inventoryCoreIntake(event map[string]any) (map[string]any, error) {
-	pending, err := verifyInventorySigned(event, h.cfg.BusinessKey, coreIntakeDomain, coreIntakeFields)
+	pending, err := verifyInventorySigned(event, h.config().BusinessKey, coreIntakeDomain, coreIntakeFields)
 	if err != nil {
 		return nil, err
 	}
@@ -351,9 +351,9 @@ func (h *Handler) inventoryCoreIntake(event map[string]any) (map[string]any, err
 		if oldSHA != digest {
 			return nil, perr("CORE_INTAKE_EVENT_CONFLICT", http.StatusConflict)
 		}
-		return decodeStoredResponse(oldResponse)
+		return h.replayInventoryResponse(oldResponse, coreIntakeDomain)
 	}
-	materialRaw, err := fernetDecrypt(h.cfg.ArtifactKey, []byte(ls(pending["material_encrypted"])), 30*time.Minute)
+	materialRaw, err := fernetDecrypt(h.config().ArtifactKey, []byte(ls(pending["material_encrypted"])), 30*time.Minute)
 	if err != nil {
 		return nil, perr("CORE_INTAKE_MATERIAL_INVALID", http.StatusUnprocessableEntity)
 	}
@@ -391,7 +391,7 @@ func (h *Handler) inventoryCoreIntake(event map[string]any) (map[string]any, err
 		"request_sha256": digest, "status": "accepted", "error_code": "", "account_id": ref,
 		"resource_version": expected + 1, "business_locked": true,
 	}
-	response, err := signInventory(responsePayload, h.cfg.BusinessKey, coreIntakeDomain)
+	response, err := signInventory(responsePayload, h.config().BusinessKey, coreIntakeDomain)
 	if err != nil {
 		return nil, err
 	}

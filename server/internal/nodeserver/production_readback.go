@@ -20,7 +20,7 @@ func (h *Handler) renewProductionReadback(c *gin.Context) {
 		writeErr(c, perr("PRODUCTION_READBACK_INVALID", 422))
 		return
 	}
-	signed, err := signInventory(doc.Payload, h.cfg.Key, "work-production-readback-v1\n")
+	signed, err := signInventory(doc.Payload, h.config().Key, "work-production-readback-v1\n")
 	if err != nil || !hmac.Equal([]byte(ls(signed["signature"])), []byte(doc.Signature)) {
 		writeErr(c, perr("WORK_SIGNATURE_INVALID", 401))
 		return
@@ -31,8 +31,8 @@ func (h *Handler) renewProductionReadback(c *gin.Context) {
 		writeErr(c, perr("PRODUCTION_READBACK_INVALID", 422))
 		return
 	}
-	mac, _ := Sign(assignment, h.cfg.Key, false)
-	v, err := Verify(Document{Payload: assignment, Signature: mac}, h.cfg.Key, h.cfg.NodeID, time.Now())
+	mac, _ := Sign(assignment, h.config().Key, false)
+	v, err := Verify(Document{Payload: assignment, Signature: mac}, h.config().Key, h.config().NodeID, time.Now())
 	if err != nil {
 		writeErr(c, err)
 		return

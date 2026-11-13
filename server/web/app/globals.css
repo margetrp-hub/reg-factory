@@ -102,6 +102,10 @@
 .sg-config-context > span { font-size:12px; }
 .sg-config-draft { margin-bottom:14px; border-left:2px solid hsl(var(--warning)); padding:8px 12px; background:hsl(var(--warning)/.05); font-size:13px; line-height:1.6; }
 .sg-config-fields { min-width:0; }
+.sg-config-label { width:40%; min-width:0; vertical-align:top; }
+.sg-config-control { display:flex; align-items:center; gap:8px; min-width:0; }
+.sg-config-control .field { min-width:0; width:100%; min-height:38px; font-size:14px; }
+@media(max-width:640px) { .sg-config-label { width:100%; } .sg-config-control { flex-wrap:wrap; } .sg-config-control .field { flex:1 1 160px; } }
 .sg-config-breadcrumb { margin-bottom:7px; font-size:11px; color:hsl(var(--muted-foreground)); }
 .sg-config-workspace .card-head button { white-space:nowrap; }
 @media(max-width:1000px) { .sg-config-selectors { grid-template-columns:repeat(2,minmax(0,1fr)); } .sg-config-selectors > label:last-child { grid-column:1 / -1; } }
@@ -241,6 +245,9 @@
 }
 
 @layer components {
+  .asset-sharing > header h1 { font-size:18px; }
+  .asset-sharing > section > form { margin-bottom:10px; gap:8px; }
+  .asset-sharing > section > form .field { padding:5px 9px; }
   .card {
     @apply rounded-[var(--radius)] border border-border bg-card text-card-foreground;
     box-shadow: 0 1px 2px 0 hsl(var(--foreground) / 0.04);
@@ -276,6 +283,18 @@
   }
   .btn-danger {
     @apply btn bg-destructive/10 text-destructive hover:bg-destructive/20;
+  }
+
+  @media (max-width:640px) {
+    .btn,.btn-primary,.btn-ghost,.btn-danger {
+      min-height:28px;
+      padding:3px 8px;
+      gap:4px;
+      font-size:12px;
+      line-height:20px;
+      white-space:nowrap;
+    }
+    .sg-task-footer { flex-wrap:wrap; }
   }
 
   .field {

@@ -27,6 +27,7 @@ import (
 	"github.com/tiantianGPU/reg-factory/server/internal/assets"
 	"github.com/tiantianGPU/reg-factory/server/internal/assetstore"
 	"github.com/tiantianGPU/reg-factory/server/internal/auth"
+	"github.com/tiantianGPU/reg-factory/server/internal/centralasset"
 	"github.com/tiantianGPU/reg-factory/server/internal/claudehttp"
 	"github.com/tiantianGPU/reg-factory/server/internal/exporter"
 	"github.com/tiantianGPU/reg-factory/server/internal/probe"
@@ -47,13 +48,15 @@ type Server struct {
 	version string
 
 	schemaMu   sync.Mutex
+	configMu   sync.Mutex
 	schemaAt   time.Time
 	schemaList []runner.Script
 
 	// 协议注册（Go 原生）并发槽，避免一次点 10 个把出口打死
 	webRegisterSlot chan struct{}
 	// IC 邮箱 app（同进程），协议注册可直接从这里取 magic link
-	icApp *mail.App
+	icApp   *mail.App
+	sharing *centralasset.Sharing
 }
 
 // New 构造 API。
@@ -76,6 +79,10 @@ func New(cfg *settings.Settings, env *settings.Env, st *store.Store, run *runner
 	// 建 ip_pool 表 + 给 accounts 加 pool_* 字段（幂等）。
 	// 之前 ip_pool.go / pool.go 写完但零调用，表和字段都没建。
 	s.initPoolSchema()
+	s.sharing = s.newSharing()
+	if run != nil {
+		run.SetAssetRestorer(s.sharing.Restore)
+	}
 
 	return s
 }
@@ -159,6 +166,10 @@ func (s *Server) Register(r *gin.Engine) {
 	r.GET("/api/accounts/sources", s.accountSources)
 	r.GET("/api/accounts/summary", s.accountSummary)
 	r.GET("/api/accounts", s.listAccounts)
+	r.GET("/api/sharing", s.shareList)
+	r.POST("/api/sharing/preview", s.sharePreview)
+	r.POST("/api/sharing/consent", s.shareConsent)
+	r.POST("/api/sharing/sync", s.shareSync)
 	r.POST("/api/accounts/sync", s.syncAccountsHandler)
 	r.POST("/api/accounts/liveness", s.accountLiveness)
 	r.POST("/api/accounts/refresh", s.accountRefresh)
@@ -188,16 +199,16 @@ func (s *Server) system(c *gin.Context) {
 		"env_file":      s.cfg.EnvFile,
 		"addr":          s.cfg.Addr,
 		"python":        s.cfg.Python,
-		"max_parallel":  s.cfg.MaxParallel,
+		"max_parallel":  s.run.Capacity(),
 		"running":       s.run.RunningCount(),
 		"queued":        stats["queued"],
 		"slots_used":    s.run.Weight(),
-		"slots_total":   s.cfg.MaxParallel,
+		"slots_total":   s.run.Capacity(),
 		"cpu_cores":     round1(cores),
 		"cpu_quota":     round1(quota),
 		"cpu_pct":       round1(cpuPct),
 		"guarded":       s.run.Guarded(),
-		"guard_pct":     s.cfg.GuardPct,
+		"guard_pct":     s.run.GuardPercent(),
 		"memory":        mem,
 		"disk_total_gb": float64(diskTotal) / (1 << 30),
 		"disk_free_gb":  float64(diskFree) / (1 << 30),
@@ -434,7 +445,8 @@ func (s *Server) taskLogs(c *gin.Context) {
 			}
 		}
 	}
-	limit := atoi(c.DefaultQuery("tail", strconv.Itoa(s.cfg.LogTailMax)), s.cfg.LogTailMax)
+	defaultTail := s.cfg.RuntimeInt("REGD_LOG_TAIL", s.cfg.LogTailMax, 1, 10000)
+	limit := atoi(c.DefaultQuery("tail", strconv.Itoa(defaultTail)), defaultTail)
 	events, err := s.st.TailEvents(id, limit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -1008,7 +1020,7 @@ func (s *Server) importAccounts(c *gin.Context) {
 		}
 		seeds = append(seeds, store.AccountSeed{
 			Ref: "import:" + strings.ToLower(email), Platform: platform, Kind: kind,
-			Identity: email, SecretRef: batch,
+			Identity: email, SecretRef: batch, ImportBatch: batch,
 		})
 		rows = append(rows, parsed{email: email, password: password, totp: totp})
 	}
@@ -1018,11 +1030,17 @@ func (s *Server) importAccounts(c *gin.Context) {
 	}
 	for _, row := range rows {
 		ref := "import:" + strings.ToLower(row.email)
-		_ = s.st.SaveCredential(ref, row.password, row.totp)
-		_ = s.assets.Put(assetstore.Asset{
+		if err := s.st.SaveCredential(ref, row.password, row.totp); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "import_save_failed", "detail": "账号资料保存失败，请核对列表后重试"})
+			return
+		}
+		if err := s.assets.Put(assetstore.Asset{
 			Ref: ref, Platform: platform, Kind: kind, Email: row.email, Source: "import",
 			Payload: map[string]any{"password": row.password, "totp": row.totp},
-		})
+		}); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "import_save_failed", "detail": "账号资料保存失败，请核对列表后重试"})
+			return
+		}
 	}
 	imported, err := s.st.UpsertAccounts(seeds)
 	if err != nil {
@@ -1065,12 +1083,7 @@ func (s *Server) importAccounts(c *gin.Context) {
 
 // proxyPoolFor 从环境变量取代理池（PROXY_POOL 优先，其次 PROXY_URL）。
 func (s *Server) proxyPoolFor() []string {
-	value := func(key string) string {
-		if configured, exists := settings.DeploymentValue(key); exists {
-			return configured
-		}
-		return s.env.Get(key)
-	}
+	value := s.env.Effective
 	raw := strings.TrimSpace(value("REG_FACTORY_PROXY_POOL"))
 	if raw == "" {
 		raw = strings.TrimSpace(value("REG_FACTORY_PROXY"))
@@ -1259,7 +1272,7 @@ func (s *Server) listAccounts(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "account_query_invalid"})
 		return
 	}
-	list, total, err := s.st.ListAccountsPage(c.Query("kind"), c.Query("platform"), c.Query("status"), limit, offset)
+	list, total, err := s.st.SearchAccounts(c.Query("kind"), c.Query("platform"), c.Query("status"), c.Query("q"), c.Query("batch"), c.Query("library_status"), limit, offset)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -1277,6 +1290,11 @@ func (s *Server) credentialMetadata(account *store.Account) {
 	if current, err := s.assets.Get(account.Ref, account.Identity); err == nil {
 		account.CredentialUpdatedAt = current.CredentialUpdatedAt
 		account.CredentialRef = current.CredentialRef
+		if document, err := assetstore.OAuthDocument(current.Payload, account.Identity); err == nil {
+			accessToken, _ := document["access_token"].(string)
+			refreshToken, _ := document["refresh_token"].(string)
+			account.HasCredentials = strings.TrimSpace(accessToken) != "" || strings.TrimSpace(refreshToken) != ""
+		}
 	}
 }
 
@@ -1324,10 +1342,7 @@ func (s *Server) probeOAuthAccount(ref string) (bool, error) {
 	if err != nil || asset.Platform != "chatgpt" || asset.Kind != "oauth" {
 		return false, nil
 	}
-	proxy := s.env.Get("REG_FACTORY_PRODUCTION_PROXY")
-	if value, exists := settings.DeploymentValue("REG_FACTORY_PRODUCTION_PROXY"); exists {
-		proxy = value
-	}
+	proxy := s.env.Effective("REG_FACTORY_PRODUCTION_PROXY")
 	result := probe.OAuth(asset.Payload, proxy, 30*time.Second)
 	current, readErr := s.assets.Get(ref, account.Identity)
 	if readErr != nil || current.ResultSHA != asset.ResultSHA {
@@ -1526,6 +1541,8 @@ type configUpdate struct {
 }
 
 func (s *Server) configPut(c *gin.Context) {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	var req configUpdate
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_body"})
@@ -1545,14 +1562,9 @@ func (s *Server) configPut(c *gin.Context) {
 			return
 		}
 	}
-	for key := range req.Updates {
-		if strings.HasPrefix(key, "REG_FACTORY_LIVENESS_") {
-			if _, err := s.livenessConfigWith(req.Updates); err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_liveness_config", "detail": err.Error()})
-				return
-			}
-			break
-		}
+	if err := s.validateConfiguration(req.Updates); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_config", "detail": err.Error()})
+		return
 	}
 	changed, err := s.env.Update(req.Updates)
 	if err != nil {
@@ -1561,7 +1573,10 @@ func (s *Server) configPut(c *gin.Context) {
 	}
 	actor, _ := c.Get("actor")
 	s.st.Audit(toString(actor), "config.update", strings.Join(changed, ","), c.ClientIP())
-	c.JSON(http.StatusOK, gin.H{"ok": true, "changed": changed})
+	if s.run != nil {
+		s.run.Wake()
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "changed": changed, "applied": true})
 }
 
 func (s *Server) configRaw(c *gin.Context) {
@@ -1578,6 +1593,8 @@ type rawUpdate struct {
 }
 
 func (s *Server) configRawPut(c *gin.Context) {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	var req rawUpdate
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_body"})
@@ -1587,28 +1604,50 @@ func (s *Server) configRawPut(c *gin.Context) {
 		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "too_large"})
 		return
 	}
+	updates := map[string]string{}
 	for _, line := range strings.Split(req.Content, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
 		}
-		key, _, ok := strings.Cut(trimmed, "=")
+		key, value, ok := strings.Cut(trimmed, "=")
 		if !ok || !validKey(strings.TrimSpace(key)) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_line", "detail": trimmed})
 			return
 		}
+		key = strings.TrimSpace(key)
+		if _, seen := updates[key]; seen {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "duplicate_key", "detail": key})
+			return
+		}
+		updates[key] = strings.Trim(strings.TrimSpace(value), "\"'")
 	}
-	temp := s.env.Path() + ".tmp"
-	if err := os.WriteFile(temp, []byte(req.Content), 0o600); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	previous, err := s.env.Parse()
+	if err != nil {
+		c.JSON(500, gin.H{"error": "config_read_failed"})
 		return
 	}
-	if err := os.Rename(temp, s.env.Path()); err != nil {
+	for _, entry := range previous {
+		if _, exists := updates[entry.Key]; !exists {
+			// An explicit empty value prevents a deleted override from silently
+			// reviving an old deployment credential on the next task/restart.
+			updates[entry.Key] = ""
+			req.Content += "\n" + entry.Key + "=\n"
+		}
+	}
+	if err := s.validateConfiguration(updates); err != nil {
+		c.JSON(400, gin.H{"error": "invalid_config", "detail": err.Error()})
+		return
+	}
+	if err := s.env.Replace(req.Content); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	actor, _ := c.Get("actor")
 	s.st.Audit(toString(actor), "config.raw_update", "", c.ClientIP())
+	if s.run != nil {
+		s.run.Wake()
+	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 

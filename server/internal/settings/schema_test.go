@@ -12,7 +12,7 @@ func TestEffectiveConfigurationMatchesWorkerPrecedenceWithoutExposingSecrets(t *
 	}}}
 	items := MergeConfig(schema, []Entry{{Key: "MAIL_ENDPOINT", Value: "saved", Line: 1},
 		{Key: "MAIL_DEFAULT", Line: 2}, {Key: "MAIL_OPTIONAL", Line: 3}}, func(string) string { return "mail" })["mail"]
-	if items[0].Value != "saved" || items[0].EffectiveValue != "https://deployed.example.test" || !items[0].Overridden {
+	if items[0].Value != "saved" || items[0].EffectiveValue != "saved" || items[0].Overridden {
 		t.Fatal(items[0])
 	}
 	if items[1].EffectiveValue != "gptmail" || items[1].EffectiveSource != "default" {

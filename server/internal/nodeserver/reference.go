@@ -93,7 +93,7 @@ func (h *Handler) accountReference(c *gin.Context) {
 		writeErr(c, perr("WORK_INVENTORY_REQUEST_INVALID", http.StatusUnprocessableEntity))
 		return
 	}
-	payload, err := verifyLibraryRequest(doc, h.cfg.Key, h.cfg.NodeID, time.Now())
+	payload, err := verifyLibraryRequest(doc, h.config().Key, h.config().NodeID, time.Now())
 	if err != nil {
 		writeErr(c, err)
 		return
@@ -126,7 +126,7 @@ func (h *Handler) accountReference(c *gin.Context) {
 	stamp := time.Now().Unix()
 	requestID := ls(payload["request_id"])
 	body := map[string]any{
-		"schema": referenceSchema, "node_id": h.cfg.NodeID,
+		"schema": referenceSchema, "node_id": h.config().NodeID,
 		"request_id": requestID, "kind": "account",
 		"subject_id":       SubjectID(account.Ref),
 		"resource_version": version,

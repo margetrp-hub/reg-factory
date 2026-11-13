@@ -1,0 +1,84 @@
+import assert from 'node:assert/strict';
+import {createServer} from 'node:http';
+import {readFile,stat,mkdir} from 'node:fs/promises';
+import path from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {chromium} from 'playwright';
+
+const root=fileURLToPath(new URL('../',import.meta.url)),output=path.join(root,'output/playwright/account-import');
+const mime={'.html':'text/html','.js':'application/javascript','.css':'text/css','.txt':'text/x-component','.woff2':'font/woff2'};
+const server=createServer(async(req,res)=>{try{let f=path.resolve(root,'out','.'+decodeURIComponent(new URL(req.url,'http://localhost').pathname));assert(f.startsWith(path.join(root,'out')+path.sep));if((await stat(f)).isDirectory())f=path.join(f,'index.html');res.setHeader('Content-Type',mime[path.extname(f)]||'application/octet-stream');res.end(await readFile(f));}catch{res.writeHead(404);res.end();}});
+await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+const origin=`http://127.0.0.1:${server.address().port}`,browser=await chromium.launch({headless:true}),page=await browser.newPage({viewport:{width:1536,height:1000},reducedMotion:'reduce'});
+const errors=[],writes=[],reads=[];let imported=false,failRead=false;
+const accounts=Array.from({length:10},(_,i)=>({ref:`import:new-${i}@example.test`,identity:`new-${i}@example.test`,platform:'chatgpt',kind:'imported',status:'unknown',library_status:'pending',created_at:'2026-11-13T10:47:15Z',imported_at:'2026-11-13T10:47:15Z',import_batch:'import-test',has_credentials:false}));
+page.setDefaultTimeout(30000);page.on('pageerror',e=>errors.push(e.message));
+await page.route('**/*',async route=>{
+ const request=route.request(),url=new URL(request.url()),p=url.pathname;assert.equal(url.origin,origin);
+ if(!p.startsWith('/api/'))return route.continue();
+ const json=data=>route.fulfill({json:data});
+ if(request.method()!=='GET')writes.push([p,request.postDataJSON()]);else reads.push(p);
+ if(p==='/api/session')return json({ok:true,user:'fixture-admin'});
+ if(p==='/api/system')return json({version:'fixture',task_stats:{},memory:{current_mb:1,max_mb:100,used_pct:1}});
+ if(p==='/api/accounts/summary')return json({platforms:[{platform:'chatgpt',total:imported?10:0,available:0,abnormal:0,unknown:imported?10:0,used:0,leased:0,source_count:99}]});
+ if(p==='/api/accounts/import'){imported=true;return json({ok:true,imported:10,batch:'import-test',tasks:[]});}
+ if(p==='/api/accounts'){
+  if(failRead){failRead=false;return route.fulfill({status:503,json:{error:'fixture_unavailable'}});}
+  const q=url.searchParams.get('q')||'';
+  const rows=imported?accounts.filter(row=>row.identity.includes(q)):[];
+  return json({accounts:rows,total:rows.length,count:rows.length});
+ }
+ if(p==='/api/accounts/detail')return json({account:accounts.find(a=>a.ref===url.searchParams.get('ref'))});
+ if(p==='/api/accounts/checks')return json({page:{tasks:[],total:0,offset:0,limit:50},counts:{}});
+ throw Error('Unexpected API '+p);
+});
+try{
+ await mkdir(output,{recursive:true});
+ await page.goto(origin+'/accounts/?status=expired&q=old&offset=50');
+ await page.getByRole('button',{name:'导入账号',exact:true}).click();
+ const dialog=page.getByRole('dialog',{name:'导入账号',exact:true});
+ await dialog.locator('textarea').fill(accounts.map(a=>a.identity+'----fixture-password').join('\n'));
+ await dialog.getByRole('button',{name:'导入',exact:true}).click();
+ await page.getByText('本次导入 · 10 个账号',{exact:true}).waitFor();
+ const table=page.getByRole('table',{name:'全部账号列表'});
+ assert.equal(await table.locator('tbody tr').count(),10);
+ assert(!new URL(page.url()).searchParams.has('status'));
+ assert(!new URL(page.url()).searchParams.has('q'));
+ assert(!new URL(page.url()).searchParams.has('offset'));
+ assert.equal(await page.getByText(/来源/).count(),0);
+ assert.match(await table.innerText(),/2026.11.13.*18:47:15/);
+ await page.getByLabel('全选本页',{exact:true}).check();
+ await page.getByRole('button',{name:'生成凭据 (10)',exact:true}).click();
+ const update=page.getByRole('dialog',{name:'更新凭据',exact:true});
+ assert(await update.locator('input[value="authorize"]').isChecked());
+ assert.equal(writes.length,1,'opening a dialog must not start production');
+ await update.getByRole('button',{name:'取消',exact:true}).click();
+ await page.getByLabel('搜索账号',{exact:true}).fill('new-3');
+ await page.getByRole('button',{name:'搜索',exact:true}).click();
+ await page.getByText('本次导入 · 1 个账号',{exact:true}).waitFor();
+ const returnURL=page.url();
+ await page.getByRole('link',{name:'处理记录',exact:true}).click();
+ await page.getByRole('navigation',{name:'账号工作区'}).getByRole('link',{name:'账号管理',exact:true}).click();
+ await table.waitFor();assert.equal(page.url(),returnURL);
+ assert.equal(await table.locator('tbody tr').count(),1);
+ failRead=true;await page.getByRole('button',{name:'更新列表',exact:true}).click();
+ await page.getByRole('alert').filter({hasText:'保留上次结果'}).waitFor();
+ assert.equal(await table.locator('tbody tr').count(),1);
+ await page.getByRole('button',{name:'更新列表',exact:true}).click();
+ await page.getByRole('alert').filter({hasText:'保留上次结果'}).waitFor({state:'hidden'});
+ const cellPadding=await table.locator('tbody td').first().evaluate(el=>getComputedStyle(el).padding);assert.equal(cellPadding,'6px 12px');
+ const importButton=page.getByRole('button',{name:'导入账号',exact:true});
+ const desktopButton=await importButton.boundingBox();
+ await page.screenshot({path:path.join(output,'desktop.png'),fullPage:true});
+ await page.setViewportSize({width:390,height:844});
+ const mobileButton=await importButton.boundingBox();assert(mobileButton.height<desktopButton.height&&mobileButton.width<desktopButton.width,'mobile buttons shrink');
+ assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),'mobile page overflow');
+ await page.screenshot({path:path.join(output,'mobile.png'),fullPage:true});
+ await page.setViewportSize({width:320,height:740});assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),'small mobile page overflow');
+ await page.goto(origin+'/platform/chatgpt/accounts/?q=new-3');await table.waitFor();
+ assert.equal(await table.locator('tbody tr').count(),1);
+ assert.equal(writes.length,1);assert(reads.filter(p=>p==='/api/accounts').length<16,'unbounded account reloads');
+ assert.deepEqual(errors,[]);
+ console.log(JSON.stringify({passed:true,checks:['10 imports immediately visible','stable explicit time','no source category','authorization choice without submission','search and return URL','failed reload preserves results','standard table and smaller mobile buttons','shared platform account view']}));
+}catch(error){await page.screenshot({path:path.join(output,'failure.png'),fullPage:true});console.error({errors,url:page.url(),body:await page.locator('body').innerText()});throw error;}
+finally{await browser.close();await new Promise(resolve=>server.close(resolve));}

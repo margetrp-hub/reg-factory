@@ -5,7 +5,7 @@ import (
 	"regexp"
 )
 
-const SDKVersion = "1.0.0"
+const SDKVersion = "1.1.0"
 
 func runtimeError() error { return errors.New("SDK_CONFIGURATION_INVALID") }
 
@@ -31,7 +31,7 @@ func Runtime(center, revision string, materials []map[string]any) (map[string]an
 		materials = []map[string]any{}
 	}
 	value := map[string]any{"node_sdk": map[string]any{"version": SDKVersion, "contract": 1,
-		"capabilities": []string{"asset_claim", "durable_result", "scoped_ack", "repair_observation", "runtime_versions"}}, "material_versions": materials}
+		"capabilities": []string{"asset_claim", "durable_result", "scoped_ack", "repair_observation", "runtime_versions", "asset_handoff", "asset_receive"}}, "material_versions": materials}
 	if center != "" || revision != "" {
 		if !regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$`).MatchString(center) ||
 			!regexp.MustCompile(`^[a-f0-9]{16}$`).MatchString(revision) {

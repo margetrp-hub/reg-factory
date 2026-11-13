@@ -198,7 +198,7 @@ func (h *Handler) executionEvents(c *gin.Context) {
 			return
 		}
 	}
-	expected, err := signWorkEvents(p, h.cfg.Key)
+	expected, err := signWorkEvents(p, h.config().Key)
 	if err != nil || !hmac.Equal([]byte(expected), []byte(doc.Signature)) {
 		writeErr(c, perr("WORK_EVENTS_SIGNATURE_INVALID", 403))
 		return
@@ -209,7 +209,7 @@ func (h *Handler) executionEvents(c *gin.Context) {
 	issued, issuedOK := toInt64(p["issued_at"])
 	expires, expiresOK := toInt64(p["expires_at"])
 	fence, fenceOK := toInt64(p["fence"])
-	if p["schema"] != "account-node.events-request.v1" || p["node_id"] != h.cfg.NodeID || p["node_task_id"] != c.Param("task_id") || p["operation_id"] != p["node_task_id"] || !pageOK || !sizeOK || page < 1 || page > 100000 || size < 1 || size > 50 || !issuedOK || !expiresOK || issued < now-120 || issued > now+30 || expires <= now || expires > issued+120 {
+	if p["schema"] != "account-node.events-request.v1" || p["node_id"] != h.config().NodeID || p["node_task_id"] != c.Param("task_id") || p["operation_id"] != p["node_task_id"] || !pageOK || !sizeOK || page < 1 || page > 100000 || size < 1 || size > 50 || !issuedOK || !expiresOK || issued < now-120 || issued > now+30 || expires <= now || expires > issued+120 {
 		writeErr(c, perr("WORK_EVENTS_SCOPE_INVALID", 403))
 		return
 	}

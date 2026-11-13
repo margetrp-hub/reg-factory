@@ -91,6 +91,7 @@ func TestAccountLibraryJourneyFromATCheckThroughUnknownRecovery(t *testing.T) {
 		s.executeCredentialCheck(context.Background(), task, s.checkCredential)
 	}
 	library := func(expected int) {
+		t.Helper()
 		payload := map[string]any{"schema": "work.inventory-relay.v1", "node_id": "sg", "request_id": "library-read", "issued_at": time.Now().Unix(), "expires_at": time.Now().Unix() + 120, "action": "library", "data": map[string]any{"source": "account_center", "status": "available", "q": "", "page": 1, "page_size": 100}}
 		raw, _ := nodeserver.Canonical(payload)
 		mac := hmac.New(sha256.New, key)
@@ -139,9 +140,11 @@ func TestAccountLibraryJourneyFromATCheckThroughUnknownRecovery(t *testing.T) {
 	if err := st.MarkClaimed(refs[0]); err != nil {
 		t.Fatal(err)
 	}
-	library(9)
-	if rows, _, err := st.LibraryAccounts("account-0", "available", "", 1, 100); err != nil || len(rows) != 0 {
-		t.Fatal("claimed account offered", rows, err)
+	// The central discovery feed reports technical availability; the central
+	// production facts determine reuse without erasing the node's local record.
+	library(10)
+	if rows, _, err := st.LibraryAccounts("account-0", "available", "", 1, 100); err != nil || len(rows) != 1 || !rows[0].Claimed {
+		t.Fatal("technical availability or local record changed", rows, err)
 	}
 	if strings.Contains(task.Error, "fixture-") {
 		t.Fatal("credential leaked")

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"time"
@@ -70,7 +69,11 @@ func (m *Manager) recoverPublication(task store.Task) bool {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, m.cfg.Python, filepath.Join(m.cfg.AppRoot, "tools", "asset_ops.py"), "recover-publication", "--ref", ref)
 	cmd.Dir = m.cfg.AppRoot
-	cmd.Env = append(os.Environ(), "REG_FACTORY_DATA_DIR="+m.cfg.DataDir, "REG_FACTORY_RUN_ID="+task.ID, "PYTHONIOENCODING=utf-8")
+	env, err := settings.WorkerEnvironment(m.cfg.EnvFile)
+	if err != nil {
+		return false
+	}
+	cmd.Env = append(env, "REG_FACTORY_DATA_DIR="+m.cfg.DataDir, "REG_FACTORY_RUN_ID="+task.ID, "PYTHONIOENCODING=utf-8")
 	raw, err := cmd.Output()
 	var result struct {
 		Ref    string `json:"ref"`
@@ -152,6 +155,7 @@ func (m *Manager) settleCredential(task store.Task, result, status string, code 
 			}
 		}
 		if err == nil {
+			_ = m.st.Stage(task.ID, store.StageEvent{Stage: "credential_settlement", Status: status, Action: message})
 			return status, code, message, nil
 		}
 		if attempt == 0 {

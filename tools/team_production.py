@@ -18,7 +18,7 @@ import sys
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, MultiFernet
 from common.production_database import connect
 
 AUTH = 'https://api.openai.com/auth'
@@ -63,6 +63,7 @@ def candidates(db, root):
     blocked = {str(r['identity']).lower() for r in aliases if r['claimed'] or r['join_status'] in ('joined', 'switched', 'verified')}
     blocked |= {r[0].lower() for r in db.execute('SELECT email FROM production_results')}
     blocked |= {r[0].lower() for r in db.execute("SELECT email FROM production_runs WHERE email<>'' AND NOT (status='cancelled' AND stop_effect='none' AND external_started=0)")}
+    blocked |= {r[0].lower() for r in db.execute("SELECT email FROM asset_transferred WHERE platform='chatgpt'")}
     paths = list((root / 'plus-import').glob('*.json'))
     paths += list((root / 'plus-import' / 'team-json').glob('*.json'))
     paths += list((root / 'assets' / 'chatgpt').glob('*/*.json'))
@@ -507,6 +508,9 @@ def _run(request, db):
     root = Path(request['root'])
     operation = request['operation_id']
     run = Run(db, operation, request['artifact_key'].encode(), root)
+    # Active key encrypts new results; previous keys only decrypt local records.
+    keys = list(dict.fromkeys([request['artifact_key'], *request.get('artifact_keys', [])]))
+    run.box = MultiFernet([Fernet(key.encode()) for key in keys])
     locks = root / 'runtime' / 'production-locks'
     locks.mkdir(parents=True, exist_ok=True)
     with (locks / (operation + '.lock')).open('a') as lock:

@@ -103,6 +103,7 @@ func main() {
 	apiServer.Register(router)
 	checkContext, stopChecks := context.WithCancel(context.Background())
 	checksDone := apiServer.StartCredentialChecks(checkContext)
+	sharingDone := apiServer.StartAssetSharing(checkContext)
 	defer stopChecks()
 	if synced, syncErr := apiServer.SeedAccounts(); syncErr != nil {
 		log.Printf("[regd] 账号主数据同步失败: %v", syncErr)
@@ -111,6 +112,7 @@ func main() {
 	}
 	apiServer.StartLivenessLoop(context.Background())
 	productionNode := nodeserver.New(nodeserver.Config{
+		EnvFile:     cfg.EnvFile,
 		Enabled:     cfg.NodeID != "" && len(cfg.NodeKey) >= 32,
 		NodeID:      cfg.NodeID,
 		Key:         []byte(cfg.NodeKey),
@@ -151,6 +153,7 @@ func main() {
 	log.Printf("[regd] 收到退出信号，停止任务并关闭")
 	stopChecks()
 	<-checksDone
+	<-sharingDone
 	manager.Shutdown(context.Background())
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

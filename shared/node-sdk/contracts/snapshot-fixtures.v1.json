@@ -1,0 +1,52 @@
+[
+  {
+    "name": "empty_material_is_accepted",
+    "entry": {
+      "schema": "aishop.asset-snapshot.v1",
+      "source_ref": "local:1",
+      "source_revision": 1,
+      "type": "account",
+      "document": {}
+    },
+    "missing": []
+  },
+  {
+    "name": "json_without_credentials_is_accepted",
+    "entry": {
+      "schema": "aishop.asset-snapshot.v1",
+      "source_ref": "local:2",
+      "source_revision": 1,
+      "type": "credential",
+      "document": {
+        "anything": "preserved"
+      }
+    },
+    "missing": []
+  },
+  {
+    "name": "partial_mailbox_is_accepted",
+    "entry": {
+      "schema": "aishop.asset-snapshot.v1",
+      "source_ref": "mail:1",
+      "source_revision": 1,
+      "type": "mailbox",
+      "document": {
+        "email_password": "synthetic"
+      }
+    },
+    "missing": []
+  },
+  {
+    "name": "boolean_revision_rejected",
+    "entry": {
+      "schema": "aishop.asset-snapshot.v1",
+      "source_ref": "local:1",
+      "source_revision": true,
+      "type": "account",
+      "document": {}
+    },
+    "missing": [
+      "source_revision"
+    ]
+  }
+]

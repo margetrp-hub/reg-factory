@@ -1136,18 +1136,18 @@ ENV_SCHEMA.extend([
          "help": "账号修复、TEAM 生产与核验使用的出口。留空直连，不继承注册住宅代理。"},
     ]},
     {"group": "控制面运行", "items": [
-        {"key": "REG_FACTORY_MAX_CONCURRENCY", "label": "最大执行并发", "type": "int", "default": 3, "apply": "restart", "help": "控制面并发槽位，范围1至32；保存后需重启。"},
-        {"key": "REG_FACTORY_MEMORY_GUARD_PCT", "label": "内存保护阈值", "type": "int", "default": 85, "apply": "restart", "help": "达到此内存百分比时暂缓接新任务；原任务查询和恢复仍可访问。"},
-        {"key": "REGD_LOG_TAIL", "label": "默认日志行数", "type": "int", "default": 2000, "apply": "restart", "help": "控制面读取历史日志的默认上限。"},
+        {"key": "REG_FACTORY_MAX_CONCURRENCY", "label": "最大执行并发", "type": "int", "default": 3, "apply": "live", "help": "范围 1–32。调低后等待运行中任务释放名额，不中断原任务。"},
+        {"key": "REG_FACTORY_MEMORY_GUARD_PCT", "label": "内存保护阈值（%）", "type": "int", "default": 85, "apply": "live", "help": "达到阈值后暂缓新任务；原任务查询和恢复继续。"},
+        {"key": "REGD_LOG_TAIL", "label": "默认日志行数", "type": "int", "default": 2000, "apply": "live", "help": "范围 1–10000，下一次日志读取生效。"},
     ]},
     {"group": "节点身份与密钥", "items": [
-        {"key": "REG_FACTORY_WORK_ORIGIN", "label": "Work 内网地址", "apply": "restart", "help": "中央资产领取和结果回传统一经过 Work，不连接 Core 数据库。"},
-        {"key": "REG_FACTORY_ASSET_CENTER_ID", "label": "生产中心身份", "apply": "restart", "help": "与 Work 登记的生产中心节点 ID 一致。"},
-        {"key": "REG_FACTORY_ASSET_KEY", "label": "中央资产通信密钥", "secret": True, "apply": "restart", "help": "生产中心为此节点单独配置的 base64url 32 字节密钥。"},
-        {"key": "REG_FACTORY_ASSET_JOURNAL_KEY", "label": "原结果暂存密钥", "secret": True, "apply": "restart", "help": "本机加密回库结果；与通信密钥不同，升级保留。"},
-        {"key": "REG_FACTORY_NODE_ID", "label": "节点身份", "apply": "restart", "help": "Core/Work登记的节点身份。修改需同步接入信息。"},
-        {"key": "REG_FACTORY_NODE_PLATFORM", "label": "节点平台", "apply": "restart", "help": "签名任务默认平台，与本地可执行模式分开管理。"},
-        *[{"key": key, "label": label, "secret": True, "apply": "restart", "help": "节点独立密钥；保存后需重启并核对双方指纹。"}
+        {"key": "REG_FACTORY_WORK_ORIGIN", "label": "Work 地址", "apply": "live", "help": "资产领取和结果回传的 Work 服务地址。"},
+        {"key": "REG_FACTORY_ASSET_CENTER_ID", "label": "生产中心", "apply": "live", "help": "选择已有连接或填写 Work 中登记的生产中心 ID。"},
+        {"key": "REG_FACTORY_ASSET_KEY", "label": "资产通信密钥", "secret": True, "generate": True, "apply": "live", "help": "与生产中心为本节点配置的密钥一致。更换后需同步双方。"},
+        {"key": "REG_FACTORY_ASSET_JOURNAL_KEY", "label": "结果暂存密钥", "secret": True, "generate": True, "apply": "live", "help": "仅用于本机结果保存。重新生成后仍可读取旧结果。"},
+        {"key": "REG_FACTORY_NODE_ID", "label": "节点身份", "readonly": True, "apply": "deployment", "help": "本机部署身份，与 Work 登记保持一致。"},
+        {"key": "REG_FACTORY_NODE_PLATFORM", "label": "默认平台", "type": "choice", "choices": ["chatgpt", "claude", "grok", "kiro", "outlook", "github"], "apply": "live", "help": "未指定平台的账号任务使用此平台。"},
+        *[{"key": key, "label": label, "secret": True, "generate": True, "apply": "live", "help": "保存后生效；需与 Work 中的对应密钥一致。"}
           for key, label in [("REG_FACTORY_NODE_KEY", "工作签名密钥"), ("REG_FACTORY_NODE_RECEIPT_KEY", "回执签名密钥"), ("REG_FACTORY_NODE_BUSINESS_KEY", "业务签名密钥"), ("REG_FACTORY_NODE_ARTIFACT_KEY", "工件加密密钥")]],
     ]},
 ])
@@ -1173,7 +1173,7 @@ for _group in ENV_SCHEMA:
 def _config_location(key, area, group):
     """One category and one configuration object per key, for every UI entry."""
     if area == "node":
-        return area, group
+        return area, "节点 · 中央资产连接" if key in {"REG_FACTORY_WORK_ORIGIN", "REG_FACTORY_ASSET_CENTER_ID", "REG_FACTORY_ASSET_KEY", "REG_FACTORY_ASSET_JOURNAL_KEY"} else "节点 · Work 任务通信"
     if key.startswith("REG_FACTORY_LIVENESS_"):
         return "runtime", "运行 · 周期巡检"
     if key in {"REG_FACTORY_MAX_CONCURRENCY", "REG_FACTORY_MEMORY_GUARD_PCT", "REGD_LOG_TAIL"}:
@@ -1240,6 +1240,11 @@ for _group in ENV_SCHEMA:
         _target = _config_groups.setdefault((_area, _section), {"group": _section, "area": _area, "items": []})
         _target["items"].append(_item)
 ENV_SCHEMA = list(_config_groups.values())
+for _group in ENV_SCHEMA:
+    for _item in _group["items"]:
+        # Timing and protocol tuning are available on demand; authentication,
+        # provider selection and connection addresses stay in the main form.
+        _item["advanced"] = _item["key"].endswith(("_RETRIES", "_TIMEOUT", "_TIMEOUT_SECONDS", "_POLL_INTERVAL", "_EXTRA_ARGS", "_HEADERS", "_RETRY_SLEEP"))
 
 # Business-mode relationships, exported with the navigation catalogue. These
 # describe existing runtime selectors; switching a view never invents a new

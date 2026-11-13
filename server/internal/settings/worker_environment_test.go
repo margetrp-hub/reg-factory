@@ -7,10 +7,11 @@ import (
 	"testing"
 )
 
-func TestWorkerSettingsRefreshFileButPreserveDeploymentOverride(t *testing.T) {
+func TestWorkerSettingsRefreshFileAndOverrideDeploymentSeed(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "worker.env")
 	const fileKey = "SG_TEST_WORKER_FILE"
 	const externalKey = "SG_TEST_WORKER_EXTERNAL"
+	t.Setenv("REGD_ADDR", "127.0.0.1:8800")
 	t.Setenv(externalKey, "deployment")
 	os.Unsetenv(fileKey)
 	defer func() {
@@ -27,17 +28,27 @@ func TestWorkerSettingsRefreshFileButPreserveDeploymentOverride(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewEnv(path).Update(map[string]string{fileKey: "second", externalKey: "still-ignored"}); err != nil {
+	if _, err := NewEnv(path).Update(map[string]string{fileKey: "second", externalKey: "saved", "REGD_ADDR": "cannot-change-live"}); err != nil {
 		t.Fatal(err)
 	}
 	second, err := WorkerEnvironment(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(strings.Join(first, "\n"), fileKey+"=first") || !strings.Contains(strings.Join(second, "\n"), fileKey+"=second") || !strings.Contains(strings.Join(second, "\n"), externalKey+"=deployment") {
+	if !strings.Contains(strings.Join(first, "\n"), fileKey+"=first") || !strings.Contains(strings.Join(second, "\n"), fileKey+"=second") || !strings.Contains(strings.Join(second, "\n"), externalKey+"=saved") || !strings.Contains(strings.Join(second, "\n"), "REGD_ADDR=127.0.0.1:8800") {
 		t.Fatal("file refresh or environment precedence broken")
 	}
 	if os.Getenv(fileKey) != "first" {
 		t.Fatal("process snapshot changed")
+	}
+	if _, err := NewEnv(path).Update(map[string]string{externalKey: ""}); err != nil {
+		t.Fatal(err)
+	}
+	if NewEnv(path).Effective(externalKey) != "" {
+		t.Fatal("clearing resurrected deployment seed")
+	}
+	third, err := WorkerEnvironment(path)
+	if err != nil || !strings.Contains(strings.Join(third, "\n"), externalKey+"=\n") {
+		t.Fatal("worker did not receive explicit empty value", err)
 	}
 }

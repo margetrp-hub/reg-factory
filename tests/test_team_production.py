@@ -29,6 +29,7 @@ class ProductionTests(unittest.TestCase):
         self.addCleanup(self.db.close)
         self.db.executescript('''
           CREATE TABLE accounts(ref TEXT,platform TEXT,identity TEXT,claimed INT,join_status TEXT,status TEXT);
+          CREATE TABLE asset_transferred(ref TEXT PRIMARY KEY,platform TEXT NOT NULL,email TEXT NOT NULL);
           CREATE TABLE account_credentials(ref TEXT,password TEXT,totp TEXT);
           CREATE TABLE production_results(operation_id TEXT PRIMARY KEY,email TEXT,state TEXT,artifact TEXT);
           CREATE TABLE production_runs(operation_id TEXT PRIMARY KEY,material TEXT,email TEXT DEFAULT '',input_artifact TEXT DEFAULT '',
@@ -86,6 +87,11 @@ class ProductionTests(unittest.TestCase):
         self.assertEqual(candidates(self.db, self.root), [])
         self.run.advance(self.backend)
         self.assertEqual((self.backend.invites, self.backend.logins), (1, 1))
+
+    def test_transferred_identity_cannot_reenter_private_production(self):
+        self.db.execute("INSERT INTO asset_transferred VALUES('another-ref','chatgpt',?)", (self.email,))
+        self.db.commit()
+        self.assertEqual(candidates(self.db, self.root), [])
 
     def test_expired_stopped_output_renews_only_readback_and_preserves_original(self):
         output = self.run.advance(self.backend)

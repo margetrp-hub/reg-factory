@@ -62,6 +62,15 @@ func (j journal) get(id string) (map[string]any, error) {
 		return nil, err
 	}
 	raw, err := fernet.Decrypt([]byte(j.key), sealed, 0)
+	if err != nil {
+		previous, historyErr := history(filepath.Dir(j.directory))
+		if historyErr != nil {
+			return nil, historyErr
+		}
+		for i := len(previous) - 1; i >= 0 && err != nil; i-- {
+			raw, err = fernet.Decrypt([]byte(previous[i].JournalKey), sealed, 0)
+		}
+	}
 	var value map[string]any
 	if err != nil || len(raw) > 1024*1024 || json.Unmarshal(raw, &value) != nil || value["task_id"] != id {
 		return nil, errors.New("ASSET_JOURNAL_UNREADABLE")

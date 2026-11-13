@@ -10,29 +10,34 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import sqlite3
+from contextlib import closing
 import sys
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from common import credential_versions as versions
+from common.production_database import connect
 from tools.asset_ops import _atomic_json_write, _credential_dirs, _find_credential, _json_email
 
 LOGIN_KEYS = ('password', 'account_password', 'chatgpt_password', 'totp', 'two_factor',
               'otp_secret', 'reauthorization', 'mail_api_url', 'mail_api_key')
 
 
-def compact(root, *, apply=False):
+def compact(root, *, apply=False, database=None):
     root = Path(root).resolve()
-    with sqlite3.connect((root / 'regd.db').as_uri() + '?mode=ro', uri=True) as db:
-        accounts = db.execute("SELECT ref,identity FROM accounts WHERE platform='chatgpt' ORDER BY ref").fetchall()
-        active = db.execute("SELECT count(*) FROM tasks WHERE script='asset_ops' AND status IN ('running','queued','stopping')").fetchone()[0]
+    dsn = database or os.environ.get('REGD_DB')
+    if not dsn:
+        raise RuntimeError('CREDENTIAL_DATABASE_REQUIRED')
+    with closing(connect(dsn)) as db:
+        accounts = [(r[0], r[1]) for r in db.execute("SELECT ref,identity FROM accounts WHERE platform='chatgpt' ORDER BY ref").fetchall()]
+        active = db.execute("SELECT count(*) FROM tasks WHERE status IN ('running','queued','stopping')").fetchone()[0]
         if active:
             raise RuntimeError('CREDENTIAL_TASK_ACTIVE')
-        protected = {value for row in db.execute("SELECT r.source_sha,r.result_sha FROM account_refreshes r JOIN tasks t ON t.id=r.task_id WHERE t.status IN ('queued','running','stopping')") for value in row if value}
+        protected = {row[i] for row in db.execute("SELECT r.source_sha,r.result_sha FROM account_refreshes r JOIN tasks t ON t.id=r.task_id WHERE t.status NOT IN ('succeeded','failed')").fetchall() for i in (0, 1) if row[i]}
+        task_states = {r[0]: r[1] for r in db.execute('SELECT id,status FROM tasks').fetchall()}
     before, current, writes = {}, {}, {}
     for ref, email in accounts:
-        selected = _find_credential(ref, root=root)
+        selected = _find_credential(ref, root=root, database=dsn)
         if not selected:
             raise RuntimeError('CREDENTIAL_REFERENCE_MISSING')
         path, document = selected
@@ -60,18 +65,11 @@ def compact(root, *, apply=False):
                 continue
             document=json.loads(path.read_text(encoding='utf-8'))
             email=_json_email(document).strip().lower()
-            matches=[(p,d) for p,d in current.values() if _json_email(d).strip().lower()==email]
+            matches=[(p,d) for p,d in current.values() if _json_email(d).strip().lower()==email and versions.compatible(document,d)]
             if len(matches)!=1 or not versions.tokens(document):
                 continue
             target, canonical=matches[0]
-            workspace,subject=versions.scope(canonical)
-            payload={'email':email,'credential_subject':subject,'workspace_account_id':workspace}
-            original=document.get('payload',document)
-            for key in LOGIN_KEYS:
-                if original.get(key):payload[key]=original[key]
-            stub={key:document[key] for key in ('ref','platform','kind','email','created_at','source') if key in document}
-            stub.update(email=email,credential_ref=canonical['ref'],payload=payload)
-            writes[path]=stub
+            writes[path]=versions.reference_stub(document, canonical['ref'])
     retired=[]
     for directory in (root/'asset-results',root/'oauth-results'):
         for path in directory.glob('*.json'):
@@ -83,6 +81,9 @@ def compact(root, *, apply=False):
                 continue
             if directory.name=='oauth-results':
                 document=json.loads(path.read_text())
+                task_id=document.get('task_id','')
+                if task_id and (task_id.startswith('work-') or task_states.get(task_id) not in ('succeeded','failed')):
+                    continue  # Unknown or not-yet-acknowledged task evidence is separate.
                 if any(item.get('after',{}).get('credential_updated_at') is None for item in document.get('files',[])):
                     continue  # legacy unresolved write evidence needs explicit review
             retired.append(path)
@@ -94,7 +95,7 @@ def compact(root, *, apply=False):
             if path not in canonical_paths:
                 _atomic_json_write(path,document)
         for ref, expected in before.items():
-            selected=_find_credential(ref,root=root)
+            selected=_find_credential(ref,root=root,database=dsn)
             if not selected or versions.fingerprint(versions.tokens(selected[1]) or {})!=expected:
                 raise RuntimeError('CREDENTIAL_COMPACTION_VERIFICATION_FAILED')
         for path in retired:

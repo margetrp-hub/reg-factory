@@ -7,7 +7,7 @@ const accountIdentitySQL = `CASE WHEN trim(identity)='' THEN 'ref:'||ref ELSE 'i
 
 const accountProjectionPrefix = `WITH account_raw AS (
  SELECT accounts.*, ` + accountLibraryStatusSQL + ` AS library_state,
- ` + accountIdentitySQL + ` AS identity_key FROM accounts
+ ` + accountIdentitySQL + ` AS identity_key FROM accounts WHERE ` + accountNotTransferredSQL + `
 ), account_facts AS (
  SELECT account_raw.*, CASE WHEN platform<>'chatgpt' AND library_state NOT IN ('used','leased')
  THEN CASE WHEN status='ok' THEN 'available'

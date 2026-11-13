@@ -62,7 +62,7 @@ func (h *Handler) workArtifact(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "WORK_REQUEST_INVALID"})
 		return
 	}
-	verified, err := VerifyRead(doc, h.cfg.Key, h.cfg.NodeID, time.Now())
+	verified, err := VerifyRead(doc, h.config().Key, h.config().NodeID, time.Now())
 	if err != nil {
 		writeErr(c, err)
 		return
@@ -111,7 +111,7 @@ func (h *Handler) workArtifact(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "WORK_REQUEST_INVALID"})
 		return
 	}
-	cipher, err := fernetEncrypt(h.cfg.ArtifactKey, raw)
+	cipher, err := fernetEncrypt(h.config().ArtifactKey, raw)
 	if err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "TEAM_ARTIFACT_KEY_UNCONFIGURED"})
 		return

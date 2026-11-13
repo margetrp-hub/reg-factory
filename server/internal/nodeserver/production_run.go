@@ -31,13 +31,13 @@ func (h *Handler) continueProduction(c *gin.Context) {
 		writeErr(c, perr("WORK_REQUEST_INVALID", 422))
 		return
 	}
-	signed, err := signInventory(doc.Payload, h.cfg.Key, "work-production-continue-v1\n")
+	signed, err := signInventory(doc.Payload, h.config().Key, "work-production-continue-v1\n")
 	if err != nil || !hmac.Equal([]byte(ls(signed["signature"])), []byte(doc.Signature)) {
 		writeErr(c, perr("WORK_SIGNATURE_INVALID", 401))
 		return
 	}
-	doc.Signature, _ = Sign(doc.Payload, h.cfg.Key, false)
-	v, err := Verify(doc, h.cfg.Key, h.cfg.NodeID, time.Now())
+	doc.Signature, _ = Sign(doc.Payload, h.config().Key, false)
+	v, err := Verify(doc, h.config().Key, h.config().NodeID, time.Now())
 	if err != nil {
 		writeErr(c, err)
 		return
@@ -68,11 +68,11 @@ func (h *Handler) openProductionMaterial(envelope map[string]any, expectedSchema
 	if len(expectedSchema) > 0 {
 		schema = expectedSchema[0]
 	}
-	if len(envelope) != 6 || envelope["schema"] != schema || envelope["node_id"] != h.cfg.NodeID ||
+	if len(envelope) != 6 || envelope["schema"] != schema || envelope["node_id"] != h.config().NodeID ||
 		!uuidLike.MatchString(ls(envelope["grant_id"])) || !hex64Pattern.MatchString(ls(envelope["context_sha256"])) {
 		return nil, perr("PRODUCTION_MATERIAL_SCOPE_INVALID", 422)
 	}
-	key, err := decodeFernetKey(h.cfg.ArtifactKey)
+	key, err := decodeFernetKey(h.config().ArtifactKey)
 	if err != nil {
 		return nil, err
 	}
@@ -99,6 +99,20 @@ func (h *Handler) openProductionMaterial(envelope map[string]any, expectedSchema
 	aad, _ := Canonical(scope)
 	raw, err := box.Open(nil, nonce, sealed, aad)
 	if err != nil {
+		for _, old := range h.artifactKeys() {
+			key, keyErr := decodeFernetKey(old)
+			if keyErr != nil {
+				continue
+			}
+			block, _ := aes.NewCipher(key)
+			previous, _ := cipher.NewGCM(block)
+			raw, err = previous.Open(nil, nonce, sealed, aad)
+			if err == nil {
+				break
+			}
+		}
+	}
+	if err != nil {
 		return nil, perr("PRODUCTION_MATERIAL_INVALID", 422)
 	}
 	var material map[string]any
@@ -123,7 +137,7 @@ func (h *Handler) productionMaterial(c *gin.Context) {
 		writeErr(c, perr("PRODUCTION_MATERIAL_INVALID", 422))
 		return
 	}
-	signed, err := signInventory(doc.Payload, h.cfg.Key, "work-node-material-relay-v1\n")
+	signed, err := signInventory(doc.Payload, h.config().Key, "work-node-material-relay-v1\n")
 	if err != nil || !hmac.Equal([]byte(ls(signed["signature"])), []byte(doc.Signature)) {
 		writeErr(c, perr("WORK_SIGNATURE_INVALID", 401))
 		return
@@ -154,11 +168,16 @@ func (h *Handler) productionDriver(ctx context.Context, input map[string]any) ma
 		return map[string]any{"status": "unknown", "error_code": "PRODUCTION_STORAGE_UNAVAILABLE"}
 	}
 	input["root"], input["db_path"] = dataDir(), path
-	key, err := decodeFernetKey(h.cfg.ArtifactKey)
+	key, err := decodeFernetKey(h.config().ArtifactKey)
 	if err != nil {
 		return map[string]any{"status": "unknown", "error_code": "PRODUCTION_ARTIFACT_KEY_UNAVAILABLE"}
 	}
 	input["artifact_key"] = base64.URLEncoding.EncodeToString(key)
+	previousKeys := []string{}
+	for _, old := range h.artifactKeys() {
+		previousKeys = append(previousKeys, string(old))
+	}
+	input["artifact_keys"] = previousKeys
 	// This is local driver input, not a signed assignment. Renewal reasons may
 	// contain Unicode; the assignment-only ASCII encoder would silently drop it.
 	raw, err := json.Marshal(input)
@@ -253,6 +272,7 @@ func (h *Handler) StartProduction(ctx context.Context) {
 					h.productionActive[id] = done
 					h.productionMu.Unlock()
 					go func(id string, done chan struct{}) {
+						h := h.snapshot()
 						defer func() { h.productionMu.Lock(); delete(h.productionActive, id); close(done); h.productionMu.Unlock() }()
 						runCtx, cancel := context.WithTimeout(ctx, 9*time.Minute)
 						result := h.productionDriver(runCtx, map[string]any{"action": "advance", "operation_id": id})
@@ -308,13 +328,13 @@ func (h *Handler) stopProduction(c *gin.Context) {
 		writeErr(c, perr("WORK_REQUEST_INVALID", 422))
 		return
 	}
-	signed, err := signInventory(doc.Payload, h.cfg.Key, "work-node-stop-v1\n")
+	signed, err := signInventory(doc.Payload, h.config().Key, "work-node-stop-v1\n")
 	if err != nil || !hmac.Equal([]byte(ls(signed["signature"])), []byte(doc.Signature)) {
 		writeErr(c, perr("WORK_SIGNATURE_INVALID", 401))
 		return
 	}
-	doc.Signature, _ = Sign(doc.Payload, h.cfg.Key, false)
-	v, err := Verify(doc, h.cfg.Key, h.cfg.NodeID, time.Now())
+	doc.Signature, _ = Sign(doc.Payload, h.config().Key, false)
+	v, err := Verify(doc, h.config().Key, h.config().NodeID, time.Now())
 	if err != nil {
 		writeErr(c, err)
 		return

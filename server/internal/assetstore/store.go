@@ -108,6 +108,9 @@ func documentEmail(value any) string {
 // Put atomically publishes the current projection. Refresh recovery explicitly
 // pins its input with Snapshot; ordinary imports do not retain old credentials.
 func (s *Store) Put(asset Asset) error {
+	if s.withdrawn(asset) {
+		return fmt.Errorf("ASSET_SOURCE_TRANSFERRED")
+	}
 	if asset.Ref == "" || asset.Platform == "" || asset.Kind == "" {
 		return fmt.Errorf("asset 缺少 ref/platform/kind")
 	}
@@ -201,7 +204,7 @@ func (s *Store) List() ([]Asset, error) {
 		if jsonErr := json.Unmarshal(raw, &asset); jsonErr != nil {
 			return nil
 		}
-		if asset.Ref == "" {
+		if asset.Ref == "" || s.withdrawn(asset) {
 			return nil
 		}
 		if asset.Platform == "chatgpt" {
@@ -240,6 +243,13 @@ func (s *Store) List() ([]Asset, error) {
 
 // Get 按 ref 取资产。
 func (s *Store) Get(ref string, knownEmail ...string) (Asset, error) {
+	probe := Asset{Ref: ref, Platform: "chatgpt"}
+	if len(knownEmail) == 1 {
+		probe.Email = knownEmail[0]
+	}
+	if s.withdrawn(probe) {
+		return Asset{}, fmt.Errorf("ASSET_SOURCE_TRANSFERRED")
+	}
 	list, err := s.List()
 	if err != nil {
 		return Asset{}, err

@@ -3,9 +3,9 @@ import re
 
 from .assets import AssetProtocolError, IDENTIFIER
 
-VERSION = '1.0.0'
+VERSION = '1.1.0'
 CONTRACT = 1
-CAPABILITIES = ['asset_claim', 'durable_result', 'scoped_ack', 'repair_observation', 'runtime_versions']
+CAPABILITIES = ['asset_claim', 'durable_result', 'scoped_ack', 'repair_observation', 'runtime_versions', 'asset_handoff', 'asset_receive']
 
 
 def runtime(*, center_id='', configuration_revision='', materials=()):

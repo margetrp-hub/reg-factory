@@ -347,6 +347,9 @@ func openSQLiteStore(path string) (*Store, error) {
 // 这些都是「补字段 + 保证附属表存在」，ALTER TABLE ADD COLUMN 和
 // CREATE TABLE IF NOT EXISTS 在 SQLite 与 PG 上语法一致，可以共用。
 func (s *Store) postOpenInit() error {
+	if err := s.initSharing(); err != nil {
+		return err
+	}
 	if _, err := s.ex.Exec(centralAssetSchema); err != nil {
 		return fmt.Errorf("initialize central asset receipts: %w", err)
 	}
@@ -791,15 +794,19 @@ func (s *Store) CommitOperationResult(operationID, action, accountRef string, ex
 
 // AccountSeed 是从数据目录扫出来的一条资产，用于同步进 accounts 表。
 type AccountSeed struct {
-	Ref       string
-	Kind      string
-	Platform  string
-	Identity  string
-	SecretRef string
+	ImportBatch string
+	Ref         string
+	Kind        string
+	Platform    string
+	Identity    string
+	SecretRef   string
 }
 
 // Account 是账号主数据（对齐 account-node 的 identity/secret/business/health 分组语义）。
 type Account struct {
+	CreatedAt           string `json:"created_at"`
+	ImportedAt          string `json:"imported_at,omitempty"`
+	ImportBatch         string `json:"import_batch,omitempty"`
 	Ref                 string `json:"ref"`
 	Platform            string `json:"platform"`
 	Kind                string `json:"kind"`
@@ -816,6 +823,7 @@ type Account struct {
 	UpdatedAt           string `json:"updated_at"`
 	CredentialUpdatedAt string `json:"credential_updated_at,omitempty"`
 	CredentialRef       string `json:"credential_ref,omitempty"`
+	HasCredentials      bool   `json:"has_credentials"`
 
 	// Team 参考协议需要的判定字段（源号是否可派单）
 	Version           int    `json:"version"`
@@ -888,6 +896,10 @@ func (s *Store) ListAccounts(kind, platform, status string, limit int) ([]Accoun
 }
 
 func (s *Store) ListAccountsPage(kind, platform, status string, limit, offset int) ([]Account, int, error) {
+	return s.SearchAccounts(kind, platform, status, "", "", "", limit, offset)
+}
+
+func (s *Store) SearchAccounts(kind, platform, status, query, batch, library string, limit, offset int) ([]Account, int, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 200
 	}
@@ -912,6 +924,18 @@ func (s *Store) ListAccountsPage(kind, platform, status string, limit, offset in
 		where += " AND status=?"
 		args = append(args, status)
 	}
+	if query = strings.TrimSpace(query); query != "" {
+		where += " AND lower(identity) LIKE ?"
+		args = append(args, "%"+strings.ToLower(query)+"%")
+	}
+	if batch != "" {
+		where += " AND import_batch=?"
+		args = append(args, batch)
+	}
+	if library != "" {
+		where += " AND projected_library_status=?"
+		args = append(args, library)
+	}
 	tx, err := s.read.Begin()
 	if err != nil {
 		return nil, 0, err
@@ -921,9 +945,13 @@ func (s *Store) ListAccountsPage(kind, platform, status string, limit, offset in
 	if err := s.ex.QueryRowTx(tx, projection+"SELECT COUNT(*)"+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
+	orderTime := "julianday(COALESCE(NULLIF(imported_at,''),created_at))"
+	if s.dialect == DialectPG {
+		orderTime = "CAST(COALESCE(NULLIF(imported_at,''),created_at) AS timestamptz)"
+	}
 	q := projection + `SELECT ref, platform, kind, identity, secret_ref, status, health_checked_at, health_message,
 	             identity_claimed, claimed_at, refresh_state, refresh_at, note, updated_at, projected_library_status, source_count,
-	             version,oauth_status,join_status,liveness_status,liveness_checked_at` + where + " ORDER BY updated_at DESC, ref DESC LIMIT CAST(? AS BIGINT) OFFSET CAST(? AS BIGINT)"
+	             version,oauth_status,join_status,liveness_status,liveness_checked_at,created_at,imported_at,import_batch` + where + " ORDER BY " + orderTime + " DESC, ref DESC LIMIT CAST(? AS BIGINT) OFFSET CAST(? AS BIGINT)"
 	args = append(args, limit, offset)
 	rows, err := s.ex.QueryTx(tx, q, args...)
 	if err != nil {
@@ -936,7 +964,7 @@ func (s *Store) ListAccountsPage(kind, platform, status string, limit, offset in
 		if err := rows.Scan(&a.Ref, &a.Platform, &a.Kind, &a.Identity, &a.SecretRef, &a.Status,
 			&a.HealthCheckedAt, &a.HealthMessage, &a.Claimed, &a.ClaimedAt,
 			&a.RefreshState, &a.RefreshAt, &a.Note, &a.UpdatedAt, &a.LibraryStatus, &a.SourceCount,
-			&a.Version, &a.OAuthStatus, &a.JoinStatus, &a.LivenessStatus, &a.LivenessCheckedAt); err != nil {
+			&a.Version, &a.OAuthStatus, &a.JoinStatus, &a.LivenessStatus, &a.LivenessCheckedAt, &a.CreatedAt, &a.ImportedAt, &a.ImportBatch); err != nil {
 			return nil, 0, err
 		}
 		out = append(out, a)
@@ -956,11 +984,11 @@ func (s *Store) GetAccount(ref string) (Account, error) {
 	// Team 只能把每个候选号判成 pending，生产单永远起不来。
 	err := s.exRO.QueryRow(`SELECT ref, platform, kind, identity, secret_ref, status, health_checked_at,
 		health_message, claimed, claimed_at, refresh_state, refresh_at, note, version,
-		oauth_status, join_status, liveness_status, liveness_checked_at, updated_at, `+accountLibraryStatusSQL+`
-		FROM accounts WHERE ref=?`, ref).Scan(&a.Ref, &a.Platform, &a.Kind, &a.Identity, &a.SecretRef,
+		oauth_status, join_status, liveness_status, liveness_checked_at, updated_at, created_at, imported_at, import_batch, `+accountLibraryStatusSQL+`
+		FROM accounts WHERE ref=? AND `+accountNotTransferredSQL, ref).Scan(&a.Ref, &a.Platform, &a.Kind, &a.Identity, &a.SecretRef,
 		&a.Status, &a.HealthCheckedAt, &a.HealthMessage, &a.Claimed, &a.ClaimedAt,
 		&a.RefreshState, &a.RefreshAt, &a.Note, &a.Version,
-		&a.OAuthStatus, &a.JoinStatus, &a.LivenessStatus, &a.LivenessCheckedAt, &a.UpdatedAt, &a.LibraryStatus)
+		&a.OAuthStatus, &a.JoinStatus, &a.LivenessStatus, &a.LivenessCheckedAt, &a.UpdatedAt, &a.CreatedAt, &a.ImportedAt, &a.ImportBatch, &a.LibraryStatus)
 	return a, err
 }
 
@@ -1023,11 +1051,13 @@ func (s *Store) UpsertAccounts(seeds []AccountSeed) (int, error) {
 	}
 	defer tx.Rollback()
 
-	stmt, err := s.ex.PrepareTx(tx, `INSERT INTO accounts(ref, platform, kind, identity, secret_ref, status, created_at, updated_at)
-		VALUES(?,?,?,?,?,'unknown',?,?)
+	stmt, err := s.ex.PrepareTx(tx, `INSERT INTO accounts(ref, platform, kind, identity, secret_ref, status, created_at, updated_at, import_batch, imported_at)
+		VALUES(?,?,?,?,?,'unknown',?,?,?,?)
 		ON CONFLICT(ref) DO UPDATE SET
 		  platform=excluded.platform, kind=excluded.kind, identity=excluded.identity,
-		  secret_ref=excluded.secret_ref, updated_at=excluded.updated_at`)
+		  secret_ref=excluded.secret_ref, updated_at=excluded.updated_at,
+		  import_batch=CASE WHEN excluded.import_batch<>'' THEN excluded.import_batch ELSE accounts.import_batch END,
+		  imported_at=CASE WHEN excluded.import_batch<>'' THEN excluded.imported_at ELSE accounts.imported_at END`)
 	if err != nil {
 		return 0, err
 	}
@@ -1039,7 +1069,11 @@ func (s *Store) UpsertAccounts(seeds []AccountSeed) (int, error) {
 		if seed.Ref == "" {
 			continue
 		}
-		if _, err := stmt.Exec(seed.Ref, seed.Platform, seed.Kind, seed.Identity, seed.SecretRef, ts, ts); err != nil {
+		importedAt := ""
+		if seed.ImportBatch != "" {
+			importedAt = ts
+		}
+		if _, err := stmt.Exec(seed.Ref, seed.Platform, seed.Kind, seed.Identity, seed.SecretRef, ts, ts, seed.ImportBatch, importedAt); err != nil {
 			return count, err
 		}
 		count++
@@ -1047,9 +1081,9 @@ func (s *Store) UpsertAccounts(seeds []AccountSeed) (int, error) {
 	return count, tx.Commit()
 }
 
-// LibraryAccounts 分页返回账号库投影（Team 参考协议用），跨平台不过滤 NodePlatform。
+// LibraryAccounts returns technical availability for central discovery only.
 func (s *Store) LibraryAccounts(query, status, platform string, page, pageSize int) ([]Account, int, error) {
-	where := []string{"1=1"}
+	where := []string{accountNotTransferredSQL}
 	args := []any{}
 	if q := strings.TrimSpace(query); q != "" {
 		where = append(where, "(identity LIKE ? OR ref LIKE ?)")
@@ -1057,7 +1091,7 @@ func (s *Store) LibraryAccounts(query, status, platform string, page, pageSize i
 		args = append(args, like, like)
 	}
 	if st := strings.TrimSpace(status); st != "" {
-		where = append(where, "("+accountLibraryStatusSQL+") = ?")
+		where = append(where, "("+accountAvailabilitySQL+") = ?")
 		args = append(args, st)
 	}
 	if p := strings.TrimSpace(platform); p != "" {
@@ -1085,7 +1119,7 @@ func (s *Store) LibraryAccounts(query, status, platform string, page, pageSize i
 
 	rows, err := s.ex.QueryTx(tx, `SELECT ref, platform, kind, identity, secret_ref, status, health_checked_at,
 		health_message, claimed, claimed_at, refresh_state, refresh_at, note, version,
-		oauth_status, join_status, liveness_status, liveness_checked_at, updated_at, `+accountLibraryStatusSQL+`
+		oauth_status, join_status, liveness_status, liveness_checked_at, updated_at, `+accountAvailabilitySQL+`
 		FROM accounts WHERE `+cond+` ORDER BY updated_at DESC, ref DESC LIMIT CAST(? AS BIGINT) OFFSET CAST(? AS BIGINT)`,
 		append(args, pageSize, offset)...)
 	if err != nil {
@@ -1126,8 +1160,8 @@ func (s *Store) SaveCredential(ref, password, totp string) error {
 	_, err := s.ex.Exec(`INSERT INTO account_credentials(ref, password, totp, updated_at)
 		VALUES(?,?,?,?)
 		ON CONFLICT(ref) DO UPDATE SET
-		  password=CASE WHEN excluded.password != '' THEN excluded.password ELSE password END,
-		  totp=CASE WHEN excluded.totp != '' THEN excluded.totp ELSE totp END,
+		  password=CASE WHEN excluded.password != '' THEN excluded.password ELSE account_credentials.password END,
+		  totp=CASE WHEN excluded.totp != '' THEN excluded.totp ELSE account_credentials.totp END,
 		  updated_at=excluded.updated_at`, ref, password, totp, now())
 	return err
 }

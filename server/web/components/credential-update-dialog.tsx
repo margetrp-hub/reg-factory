@@ -6,15 +6,16 @@ import { ApiError } from "@/lib/api";
 import { accountAction, pendingCredentialUpdate, UPDATE_LABELS, type CredentialUpdateMethod } from "@/lib/account-actions";
 import { Drawer } from "@/components/drawer";
 import { Badge } from "@/components/ui";
+import { accountReturn } from "@/lib/account-context";
 
-export type UpdateTarget = {ref:string; platform:string; identity?:string; claimed?:boolean; library_status?:string};
+export type UpdateTarget = {ref:string; platform:string; identity?:string; claimed?:boolean; library_status?:string; has_credentials?:boolean};
 type Result = {task_id?:string; error?:string; method:CredentialUpdateMethod};
 type Request = {targets:UpdateTarget[]; method?:CredentialUpdateMethod; retryOf?:string};
 const storageKey = "sg-last-credential-update";
 const signature = (targets:UpdateTarget[]) => JSON.stringify(targets.map(row=>[row.platform,row.ref]).sort());
 
 /** One choice and one submission/recovery surface for all credential entry points. */
-export function CredentialUpdateDialog({request,onClose,onAccepted}: {request:Request | null; onClose:()=>void; onAccepted?:()=>void}) {
+export function CredentialUpdateDialog({request,onClose,onAccepted,returnTo}: {request:Request | null; onClose:()=>void; onAccepted?:()=>void; returnTo?:string}) {
   const [targets,setTargets]=useState<UpdateTarget[]>([]);
   const [method,setMethod]=useState<CredentialUpdateMethod | null>(null);
   const [results,setResults]=useState<Record<string,Result>>({});
@@ -27,7 +28,7 @@ export function CredentialUpdateDialog({request,onClose,onAccepted}: {request:Re
     const unique=Array.from(new Map(request.targets.map(row=>[row.ref,row])).values());
     const original=unique.map(row=>pendingCredentialUpdate(row.ref)).find(Boolean);
     const context=signature(unique)+(request.retryOf || "");
-    setContext(context);setTargets(unique);setMethod(original ? original.method || "refresh" : request.method || null);setResults({});setProgress(0);
+    setContext(context);setTargets(unique);setMethod(original ? original.method || "refresh" : request.method || (unique.length && unique.every(row=>row.platform==="chatgpt" && row.has_credentials===false) ? "authorize" : null));setResults({});setProgress(0);
     try {
       const saved=JSON.parse(sessionStorage.getItem(storageKey) || "null");
       if (saved?.signature===context && saved.results && ["refresh","authorize"].includes(saved.method)) {
@@ -80,7 +81,7 @@ export function CredentialUpdateDialog({request,onClose,onAccepted}: {request:Re
         {owned && <p className="mt-2 text-xs text-muted-foreground">已使用账号由主系统原任务更新，本次跳过。</p>}
         {result?.error && <p role="alert" className="mt-2 break-words text-xs text-destructive">{result.error}</p>}
         {pending && <p className="mt-2 text-xs text-muted-foreground">先找回原任务{pending.method ? `（${UPDATE_LABELS[pending.method]}）` : ""}，不会重复提交已受理操作。</p>}
-        {result?.task_id && <Link className="btn-ghost mt-2" onClick={close} href={`/platform/${row.platform}/runs/?mode=refresh&task=${encodeURIComponent(result.task_id)}`}>查看运行</Link>}
+        {result?.task_id && <Link className="btn-ghost mt-2" onClick={close} href={`/platform/${row.platform}/runs/?mode=refresh&task=${encodeURIComponent(result.task_id)}&return_to=${encodeURIComponent(accountReturn(returnTo,`/platform/${row.platform}/accounts/`))}`}>查看运行</Link>}
       </div>;
     })}</div>
     <p role="status" className="mt-4 text-xs text-muted-foreground">{accepted ? `已受理 ${accepted} 项，不代表凭据已经更新成功。已受理任务不会随关闭弹窗而取消。` : "只提交你选择的方式；任务和失败原因均保留在处理记录。"}</p>

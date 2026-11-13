@@ -45,7 +45,7 @@ export type CredentialCheckDetail = { task: Task; items: CredentialCheckItem[] }
 export type CredentialCheckHistory = { page: TaskPage; counts: Record<string, CredentialCheckCounts> };
 export type TaskFilter = { status?: string; q?: string; scripts?: string[]; offset?: number };
 export type AccountSummary = { platform: string; total: number; available: number; abnormal: number; unknown: number; used: number; leased: number; source_count: number };
-export type ConfigEntry = { key: string; value: string; secret: boolean; line: number; label?: string; help?: string; type?: string; choices?: string[]; default?: unknown; apply?: string; readonly?: boolean; area?: string; empty_default?: boolean; effective_value?: string; effective_source?: string; effective_set?: boolean; overridden?: boolean };
+export type ConfigEntry = { key: string; value: string; secret: boolean; line: number; label?: string; help?: string; type?: string; choices?: string[]; default?: unknown; apply?: string; readonly?: boolean; advanced?: boolean; generate?: boolean; area?: string; empty_default?: boolean; effective_value?: string; effective_source?: string; effective_set?: boolean; overridden?: boolean };
 
 export type SystemInfo = {
   version: string;
@@ -91,6 +91,10 @@ export type NodeReady = {
 };
 
 export type AccountRow = {
+	created_at?: string;
+	imported_at?: string;
+	import_batch?: string;
+	has_credentials?: boolean;
 
   credential_updated_at?: string;
   credential_ref?: string;
@@ -139,7 +143,7 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit, options?: { noRedirect?: boolean; timeoutMs?: number }): Promise<T> {
+export async function request<T>(path: string, init?: RequestInit, options?: { noRedirect?: boolean; timeoutMs?: number }): Promise<T> {
   const controller = new AbortController();
   let timedOut = false;
   const abort = () => controller.abort();
@@ -273,11 +277,14 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ accounts, concurrency }),
     }),
-  accounts: (q: { kind?: string; platform?: string; status?: string; limit?: number; offset?: number } = {}, signal?: AbortSignal) => {
+  accounts: (q: { kind?: string; platform?: string; status?: string; q?: string; batch?: string; library_status?: string; limit?: number; offset?: number } = {}, signal?: AbortSignal) => {
     const params = new URLSearchParams();
     if (q.kind) params.set("kind", q.kind);
     if (q.platform) params.set("platform", q.platform);
     if (q.status) params.set("status", q.status);
+    if (q.q) params.set("q", q.q);
+    if (q.batch) params.set("batch", q.batch);
+    if (q.library_status) params.set("library_status", q.library_status);
     params.set("limit", String(q.limit ?? 200));
     params.set("offset", String(q.offset ?? 0));
     return request<{ accounts: AccountRow[]; count: number; total: number }>(`/api/accounts?${params.toString()}`, { signal });

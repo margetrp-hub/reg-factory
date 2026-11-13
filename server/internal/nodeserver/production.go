@@ -29,10 +29,10 @@ const productionAdmitDomain = "work-production-admit-v1\n"
 const productionAdmitProtocol = "work.production-admit.v1"
 
 func (h *Handler) productionReadiness() string {
-	if _, err := decodeFernetKey(h.cfg.ArtifactKey); err != nil {
+	if _, err := decodeFernetKey(h.config().ArtifactKey); err != nil {
 		return "PRODUCTION_ADMISSION_ARTIFACT_KEY_UNCONFIGURED"
 	}
-	if len(h.cfg.BusinessKey) < minKeyLength || len(h.cfg.ReceiptKey) < minKeyLength {
+	if len(h.config().BusinessKey) < minKeyLength || len(h.config().ReceiptKey) < minKeyLength {
 		return "PRODUCTION_ADMISSION_KEYS_UNCONFIGURED"
 	}
 	return ""
@@ -54,14 +54,14 @@ func (h *Handler) resumeProduction(c *gin.Context) {
 	if c.Request.URL.Path == "/internal/work/v1/production/admit" {
 		domain, mode = productionAdmitDomain, "produce"
 	}
-	expected, err := signInventory(doc.Payload, h.cfg.Key, domain)
+	expected, err := signInventory(doc.Payload, h.config().Key, domain)
 	if err != nil || !hmac.Equal([]byte(ls(expected["signature"])), []byte(doc.Signature)) {
 		writeErr(c, perr("WORK_SIGNATURE_INVALID", 401))
 		return
 	}
 	// Reuse the full mutation validator after checking the dedicated domain.
-	doc.Signature, _ = Sign(doc.Payload, h.cfg.Key, false)
-	v, err := Verify(doc, h.cfg.Key, h.cfg.NodeID, time.Now())
+	doc.Signature, _ = Sign(doc.Payload, h.config().Key, false)
+	v, err := Verify(doc, h.config().Key, h.config().NodeID, time.Now())
 	if err != nil {
 		writeErr(c, err)
 		return
@@ -217,7 +217,7 @@ func (h *Handler) productionSources(request map[string]any, data map[string]any)
 		}
 	}
 	stamp := time.Now().Unix()
-	return signInventory(map[string]any{"schema": "work.production-sources.v1", "node_id": h.cfg.NodeID,
+	return signInventory(map[string]any{"schema": "work.production-sources.v1", "node_id": h.config().NodeID,
 		"request_id": request["request_id"], "issued_at": stamp, "expires_at": stamp + 120, "items": items}, h.receiptKey(), domainWork)
 }
 
@@ -306,7 +306,7 @@ func (h *Handler) acceptProduction(c *gin.Context, v *Verified) {
 		reject(perr("PRODUCTION_DOCUMENT_INVALID", 422))
 		return
 	}
-	sealed, err := fernetEncrypt(h.cfg.ArtifactKey, raw)
+	sealed, err := fernetEncrypt(h.config().ArtifactKey, raw)
 	if err != nil {
 		reject(perr("PRODUCTION_ADMISSION_ENCRYPTION_UNAVAILABLE", 503))
 		return
@@ -489,7 +489,14 @@ func productionSignedReceipt(v *Verified, p store.Production, key []byte) (map[s
 }
 
 func (h *Handler) productionDocument(sealed string) (map[string]any, error) {
-	raw, err := fernetDecrypt(h.cfg.ArtifactKey, []byte(sealed), 0)
+	var raw []byte
+	var err error
+	for _, key := range h.artifactKeys() {
+		raw, err = fernetDecrypt(key, []byte(sealed), 0)
+		if err == nil {
+			break
+		}
+	}
 	var document map[string]any
 	if err != nil || json.Unmarshal(raw, &document) != nil {
 		return nil, perr("PRODUCTION_ARTIFACT_UNAVAILABLE", 409)

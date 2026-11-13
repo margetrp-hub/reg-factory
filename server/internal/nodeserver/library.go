@@ -41,26 +41,8 @@ func li(v any) int64 {
 // 条目用 map 而非 struct：Team 侧 canonical 做 sort_keys 重排，
 // Go 的 struct 按字段声明顺序序列化，两者不一致会导致签名永远对不上。
 
-// libraryStatus 把节点内部状态收敛到 Team 认可的五个取值。
-// Team 只接受 available/pending/leased/used/invalid；其余一律 invalid，
-// 让不可用的号在选号阶段就被排除，而不是派单后才失败。
-func libraryStatus(oauth, liveness, join string) string {
-	switch {
-	case join == "joined" || join == "switched":
-		return "used"
-	case oauth == "completed" && liveness == "alive" && join == "none":
-		return "available"
-	case oauth == "pending" || oauth == "" || liveness == "unchecked":
-		return "pending"
-	case liveness == "dead" || oauth == "failed":
-		return "invalid"
-	default:
-		return "invalid"
-	}
-}
-
 // businessKey 返回 Team 侧配置给本节点的业务密钥（账号库投影签名用）。
-func (h *Handler) businessKey() []byte { return h.cfg.BusinessKey }
+func (h *Handler) businessKey() []byte { return h.config().BusinessKey }
 
 // signLibrary 用 business_key 对 payload 做 HMAC-SHA256 签名。
 func signLibrary(payload map[string]any, key []byte) (string, error) {
@@ -119,7 +101,7 @@ func (h *Handler) accountLibrary(c *gin.Context) {
 		writeErr(c, perr("WORK_INVENTORY_REQUEST_INVALID", http.StatusUnprocessableEntity))
 		return
 	}
-	payload, err := verifyLibraryRequest(doc, h.cfg.Key, h.cfg.NodeID, time.Now())
+	payload, err := verifyLibraryRequest(doc, h.config().Key, h.config().NodeID, time.Now())
 	if err != nil {
 		writeErr(c, err)
 		return
@@ -155,15 +137,15 @@ func (h *Handler) accountLibrary(c *gin.Context) {
 		items = append(items, map[string]any{
 			"id": "account_center:" + subject, "source": "account_center", "source_id": subject,
 			"email": a.Identity, "status": st, "resource_version": ver, "updated_at": a.UpdatedAt,
-			"sources":      map[string]string{"account_center": subject},
-			"oauth_status": a.OAuthStatus, "join_status": a.JoinStatus,
+			"sources":         map[string]string{"account_center": subject},
+			"oauth_status":    a.OAuthStatus,
 			"liveness_status": a.LivenessStatus,
 		})
 	}
 
 	stamp := time.Now().Unix()
 	body := map[string]any{
-		"schema": librarySchema, "node_id": h.cfg.NodeID, "request_id": ls(payload["request_id"]),
+		"schema": librarySchema, "node_id": h.config().NodeID, "request_id": ls(payload["request_id"]),
 		"issued_at": stamp, "expires_at": stamp + 120,
 		"query": map[string]any{
 			"source": ls(data["source"]), "q": ls(data["q"]), "status": wantStatus,

@@ -27,7 +27,7 @@ const CONTEXT_LINKS: Record<NavSection, { href: string; label: string }[]> = {
   runtime: [
     { href: "/tasks/", label: "任务队列" },
   ],
-  assets: [{ href: "/accounts/", label: "账号主数据" }, { href: "/assets/", label: "当前凭据与导出" }],
+  assets: [{ href: "/accounts/", label: "账号管理" }, { href: "/assets/", label: "当前凭据与导出" }],
   supply: [
     { href: "/materials/", label: "物料总览" },
     { href: "/apps/icmail/", label: "邮箱池管理" },
@@ -35,6 +35,9 @@ const CONTEXT_LINKS: Record<NavSection, { href: string; label: string }[]> = {
   nodes: [
     { href: "/nodes/", label: "节点总览" },
     { href: "/nodes/config/", label: "节点配置" },
+    { href: "/nodes/sharing/", label: "节点现有资料" },
+    { href: "/nodes/sharing/history/", label: "移交记录" },
+    { href: "/nodes/sharing/received/", label: "收到的资料" },
   ],
   system: [
     { href: "/settings/", label: "配置" },
@@ -111,7 +114,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const activeItem = NAV.find((item) =>
     item.href === "/" ? pathname === "/" : pathname.startsWith(item.href.replace(/\/$/, "")),
   );
-  const activeSection: NavSection = activeItem?.section ||
+  const activeSection: NavSection = /^\/platform\/[^/]+\/(accounts|checks|runs)(\/|$)/.test(pathname) ? "assets" : activeItem?.section ||
     (pathname.startsWith("/assets") ? "assets" : pathname.startsWith("/platform/") ? "production" :
       pathname.startsWith("/apps/icmail") || pathname.startsWith("/materials") ? "supply" :
       pathname.startsWith("/nodes") ? "nodes" :
@@ -124,7 +127,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex min-h-screen bg-background text-foreground">
       <aside
-        className={`fixed inset-y-0 left-0 z-30 flex w-[228px] flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground transition-transform duration-200 md:static md:translate-x-0 ${
+        className={`fixed inset-y-0 left-0 z-30 flex w-[228px] flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground transition-transform duration-200 motion-reduce:transition-none md:static md:translate-x-0 ${
           open ? "translate-x-0" : "-translate-x-full"
         }`}
       >

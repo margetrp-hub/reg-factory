@@ -538,6 +538,11 @@ func (s Source) Addr() string {
 func (d *DB) UpsertSource(src Source) (Source, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if moved, err := d.MailboxTransferred(src.Username); err != nil {
+		return Source{}, err
+	} else if moved {
+		return Source{}, ErrMailboxUnavailable
+	}
 	now := float64(time.Now().Unix())
 	id := src.ID
 	if id == 0 {
@@ -899,6 +904,17 @@ ON CONFLICT(alias_hme) DO UPDATE SET state=excluded.state, manual=1, updated_at=
 func (d *DB) SetSourceEnabled(ctx context.Context, id int64, enabled bool) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if enabled {
+		src, err := d.getSource(id)
+		if err != nil {
+			return err
+		}
+		if moved, err := d.MailboxTransferred(src.Username); err != nil {
+			return err
+		} else if moved {
+			return ErrMailboxUnavailable
+		}
+	}
 	result, err := d.ex.ExecContext(ctx, `UPDATE mail_sources SET enabled=? WHERE id=?`, boolInt(enabled), id)
 	return sourceWriteResult(result, err)
 }

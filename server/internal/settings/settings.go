@@ -86,7 +86,8 @@ func (s *Settings) Validate() error {
 	return nil
 }
 
-// LoadEnvFile 把 .env 注入进程环境，已存在的变量优先（与 Python config._load_dotenv 一致）。
+// LoadEnvFile seeds the process once. Editable file settings override deployment
+// seeds; later requests/workers read their own snapshots without changing os.Environ.
 func LoadEnvFile(path string) int {
 	file, err := os.Open(path)
 	if err != nil {
@@ -97,6 +98,7 @@ func LoadEnvFile(path string) int {
 	count := 0
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	seen := map[string]bool{}
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") || !strings.Contains(line, "=") {
@@ -104,20 +106,23 @@ func LoadEnvFile(path string) int {
 		}
 		key, value, _ := strings.Cut(line, "=")
 		key = strings.TrimSpace(key)
-		if key == "" {
+		if key == "" || seen[key] {
 			continue
 		}
-		// 默认「进程环境优先」：Dockerfile / compose 设的值不被 .env 覆盖。
-		// 但少数 key 是「部署配置」而不是「镜像默认值」，必须允许 .env 覆盖，
-		// 否则面板改不动 —— 比如 REGD_DB 在 Dockerfile 里是 /data/regd.db，
-		// 想切 PostgreSQL 就只能改镜像。
-		if _, exists := os.LookupEnv(key); exists && !envFileOverrides[key] {
+		seen[key] = true
+		// Existing machine bootstrap overrides are read only at startup.
+		if _, exists := os.LookupEnv(key); exists && DeploymentOnly(key) && !envFileOverrides[key] {
 			continue
 		}
-		os.Setenv(key, strings.Trim(strings.TrimSpace(value), "\"'"))
 		fileEnvironment.Lock()
+		if !fileEnvironment.keys[key] {
+			if initial, exists := os.LookupEnv(key); exists {
+				fileEnvironment.seeds[key] = initial
+			}
+		}
 		fileEnvironment.keys[key] = true
 		fileEnvironment.Unlock()
+		os.Setenv(key, strings.Trim(strings.TrimSpace(value), "\"'"))
 		count++
 	}
 	return count
@@ -126,7 +131,7 @@ func LoadEnvFile(path string) int {
 // envFileOverrides 是允许 /data/.env 覆盖进程环境的 key。
 //
 // 这些 key 在 Dockerfile 里被设成固定值（如 REGD_DB=/data/regd.db），
-// 但它们本质是部署配置，必须能在面板改：
+// 由部署文件在启动时覆盖，运行中只读：
 //
 //	· REGD_DB    主库位置，切 SQLite ↔ PostgreSQL
 //	· MAIL_DB    邮件库位置
@@ -139,21 +144,24 @@ var envFileOverrides = map[string]bool{
 
 var fileEnvironment = struct {
 	sync.RWMutex
-	keys map[string]bool
-}{keys: map[string]bool{}}
+	keys  map[string]bool
+	seeds map[string]string
+}{keys: map[string]bool{}, seeds: map[string]string{}}
 
 // DeploymentValue excludes the process snapshot injected from the env file.
 func DeploymentValue(key string) (string, bool) {
 	fileEnvironment.RLock()
 	defer fileEnvironment.RUnlock()
-	if fileEnvironment.keys[key] {
-		return "", false
+	if fileEnvironment.keys[key] && !DeploymentOnly(key) {
+		value, ok := fileEnvironment.seeds[key]
+		return value, ok
 	}
 	return os.LookupEnv(key)
 }
 
-// WorkerEnvironment freezes the latest file settings when a worker starts.
-// Deployment environment overrides still win. Running workers are unchanged.
+// WorkerEnvironment freezes the latest editable settings when a worker starts.
+// Saved values (including an explicit empty value) override deployment seeds.
+// Machine settings remain owned by deployment. Running workers are unchanged.
 func WorkerEnvironment(path string) ([]string, error) {
 	entries, err := parseFile(path)
 	if err != nil {
@@ -163,13 +171,23 @@ func WorkerEnvironment(path string) ([]string, error) {
 	fileEnvironment.RLock()
 	for _, item := range os.Environ() {
 		key, value, _ := strings.Cut(item, "=")
-		if !fileEnvironment.keys[key] {
+		if !fileEnvironment.keys[key] || DeploymentOnly(key) {
+			values[key] = value
+		}
+	}
+	for key, value := range fileEnvironment.seeds {
+		if !DeploymentOnly(key) {
 			values[key] = value
 		}
 	}
 	fileEnvironment.RUnlock()
+	seen := map[string]bool{}
 	for _, entry := range entries {
-		if _, exists := values[entry.Key]; !exists {
+		if seen[entry.Key] {
+			continue
+		}
+		seen[entry.Key] = true
+		if _, exists := values[entry.Key]; !exists || !DeploymentOnly(entry.Key) {
 			values[entry.Key] = entry.Value
 		}
 	}
@@ -275,6 +293,43 @@ func (e *Env) Get(key string) string {
 	return ""
 }
 
+// Effective is shared by native Go consumers and the configuration projection.
+func (e *Env) Effective(key string) string {
+	entries, _ := e.Parse()
+	if !DeploymentOnly(key) {
+		for _, entry := range entries {
+			if entry.Key == key {
+				return entry.Value
+			}
+		}
+	}
+	if value, ok := DeploymentValue(key); ok {
+		return value
+	}
+	return e.Get(key)
+}
+
+// DeploymentOnly identifies machine/bootstrap facts, never an editable control.
+// Unknown provider options remain editable and are passed to new workers.
+func DeploymentOnly(key string) bool {
+	switch key {
+	case "REGD_DB", "MAIL_DB", "REGD_ADDR", "REGD_APP_ROOT", "REGD_PYTHON",
+		"REG_FACTORY_DATA_DIR", "REG_FACTORY_ENV_FILE", "REG_FACTORY_CGROUP_ROOT",
+		"REG_FACTORY_NODE_ID", "REG_FACTORY_PANEL_USER", "REG_FACTORY_PANEL_PASSWORD",
+		"REG_FACTORY_ALLOW_ANONYMOUS", "TZ", "PATH", "HOME", "PYTHONPATH":
+		return true
+	}
+	return strings.HasPrefix(key, "ICMAIL_") || strings.HasPrefix(key, "MAIL_IMAP_")
+}
+
+func (s *Settings) RuntimeInt(key string, fallback, minimum, maximum int) int {
+	value := atoiDefault(NewEnv(s.EnvFile).Effective(key), fallback)
+	if value < minimum || value > maximum {
+		return fallback
+	}
+	return value
+}
+
 // Update 就地替换已存在的键，不存在的追加到末尾；返回实际变更的键。
 func (e *Env) Update(updates map[string]string) ([]string, error) {
 	e.mu.Lock()
@@ -323,17 +378,16 @@ func (e *Env) Update(updates map[string]string) ([]string, error) {
 	}
 
 	content := strings.Join(lines, "\n") + "\n"
-	tmp := e.path + ".tmp"
-	if err := os.MkdirAll(filepath.Dir(e.path), 0o755); err != nil {
-		return nil, err
-	}
-	if err := os.WriteFile(tmp, []byte(content), 0o600); err != nil {
-		return nil, err
-	}
-	if err := os.Rename(tmp, e.path); err != nil {
+	if err := writePrivate(e.path, []byte(content)); err != nil {
 		return nil, err
 	}
 	return changed, nil
+}
+
+func (e *Env) Replace(content string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return writePrivate(e.path, []byte(content))
 }
 
 // ---------------------------------------------------------------- 小工具

@@ -33,6 +33,11 @@ CREATE INDEX IF NOT EXISTS idx_inventory_relay_bindings_account
 // to call on every process start and works with databases created before the
 // inventory relay existed.
 func (s *Store) EnsureInventoryRelay() error {
+	for _, column := range []string{"import_batch", "imported_at"} {
+		if err := s.ex.EnsureColumn("accounts", column, "TEXT NOT NULL DEFAULT ''"); err != nil {
+			return err
+		}
+	}
 	// Older SG databases predate the reference/binding columns. Add them before
 	// the first relay request so production can be upgraded in place.
 	s.ensureColumns("accounts", map[string]string{

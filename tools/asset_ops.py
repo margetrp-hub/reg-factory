@@ -297,7 +297,7 @@ def _credential_matches(ref: str, path: Path, document: dict) -> bool:
     return target in candidates
 
 
-def _find_credential(ref: str, root=None) -> tuple[Path, dict] | None:
+def _find_credential(ref: str, root=None, database=None) -> tuple[Path, dict] | None:
     matches, all_documents = [], []
     for directory in _credential_dirs(root):
         if not directory.is_dir():
@@ -320,13 +320,17 @@ def _find_credential(ref: str, root=None) -> tuple[Path, dict] | None:
     if not candidates:
         # A retired source file may still have an authorized Core subject.
         # Resolve only an existing account row, never a caller-supplied email.
-        import sqlite3
+        from contextlib import closing
+        from common.production_database import connect
+        explicit_root = root is not None
         root = Path(root or os.environ.get('REG_FACTORY_DATA_DIR') or ROOT)
-        database = root / 'regd.db'
-        if not database.is_file():
+        dsn = database or os.environ.get('REGD_DB')
+        if not dsn and explicit_root and (root / 'regd.db').is_file():
+            dsn = str(root / 'regd.db')  # explicitly supplied offline test fixture
+        if not dsn:
             return None
-        with sqlite3.connect(database.resolve().as_uri() + '?mode=ro', uri=True) as db:
-            rows = db.execute("SELECT ref,identity FROM accounts WHERE platform='chatgpt'").fetchall()
+        with closing(connect(dsn)) as db:
+            rows = [(r[0], r[1]) for r in db.execute("SELECT ref,identity FROM accounts WHERE platform='chatgpt'").fetchall()]
         verified = [(key, identity) for key, identity in rows if key == ref or _subject_id(key) == ref]
         if len(verified) != 1 or not verified[0][1]:
             return None
@@ -411,6 +415,27 @@ def _update_oauth_document(document: dict, tokens: dict) -> dict:
     return document
 
 
+def _retire_credential_copies(root, selected_path, document):
+    """Called under the account lock, after the complete current save."""
+    current = versions.tokens(document)
+    if not current or not current.get('refresh_token'):
+        return
+    email = _json_email(document).strip().lower()
+    for directory in _credential_dirs(root):
+        for path in directory.glob('*.json'):
+            if path == selected_path or path.is_symlink():
+                continue
+            old = json.loads(path.read_text(encoding='utf-8'))
+            if not email or _json_email(old).strip().lower() != email or not versions.compatible(old, document):
+                continue
+            bundle = versions.tokens(old)
+            if not bundle or versions.saved_time(old) > versions.saved_time(document):
+                continue
+            if versions.saved_time(old) == versions.saved_time(document) and versions.fingerprint(bundle) != versions.fingerprint(current):
+                continue
+            _atomic_json_write(path, versions.reference_stub(old, document.get('ref', '')))
+
+
 def _refresh_document_copies(ref: str, email: str, selected_path: Path,
                              selected_document: dict, updates: dict) -> list[str]:
     """Publish one complete result atomically; every alias resolves this version."""
@@ -466,6 +491,7 @@ def _refresh_document_copies(ref: str, email: str, selected_path: Path,
     for path, _, updated in prepared:
         _atomic_json_write(path, updated)
         written.append(str(path))
+    _retire_credential_copies(root, prepared[-1][0], prepared[-1][2])
     # The runner acknowledges only after the task/account transaction commits.
     # Keep this journal through process exit and service restart.
     if not task_id:

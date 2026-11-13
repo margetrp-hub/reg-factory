@@ -57,7 +57,7 @@ func (h *Handler) accountsInventory(c *gin.Context) {
 	}
 	if len(entriesByDir) == 0 {
 		c.JSON(http.StatusOK, gin.H{
-			"schema": "account-node.accounts.v1", "node_id": h.cfg.NodeID,
+			"schema": "account-node.accounts.v1", "node_id": h.config().NodeID,
 			"revision": 0, "total": 0, "cursor": nil, "accounts": []any{},
 		})
 		return
@@ -113,7 +113,7 @@ func (h *Handler) accountsInventory(c *gin.Context) {
 					"email_key":         hex.EncodeToString(keySum[:])[:32],
 					"version":           version,
 					"state":             accountState(doc),
-					"platform":          h.cfg.Platform,
+					"platform":          h.config().Platform,
 					"credential_sha256": hex.EncodeToString(digest[:]),
 					"last_verified_at":  version,
 				},
@@ -148,7 +148,7 @@ func (h *Handler) accountsInventory(c *gin.Context) {
 	log.Printf("[node] accounts report total=%d page=%d revision=%d", len(rows), len(page), revision)
 	c.JSON(http.StatusOK, gin.H{
 		"schema":   "account-node.accounts.v1",
-		"node_id":  h.cfg.NodeID,
+		"node_id":  h.config().NodeID,
 		"revision": revision,
 		"total":    len(rows),
 		"cursor":   next,

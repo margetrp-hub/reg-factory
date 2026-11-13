@@ -2,9 +2,10 @@ package plus
 
 import (
 	"fmt"
-	"os"
 	"strings"
 	"sync"
+
+	"github.com/tiantianGPU/reg-factory/server/internal/settings"
 )
 
 // Stage 是流水线的一个阶段。每个阶段可以独立选出口。
@@ -243,8 +244,9 @@ func (s *Session) CheckStages(cfg StagesCfg) []StageCheckResult {
 //
 // 配置文件里的值优先，环境变量只做兜底。
 func StagesFromEnv() StagesCfg {
+	env := settings.NewEnv(settings.Load().EnvFile)
 	get := func(suffix string) string {
-		return strings.TrimSpace(os.Getenv("REG_FACTORY_PLUS_" + suffix))
+		return strings.TrimSpace(env.Effective("REG_FACTORY_PLUS_" + suffix))
 	}
 	return StagesCfg{
 		Link: StageConfig{

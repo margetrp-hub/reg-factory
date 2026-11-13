@@ -14,7 +14,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/tiantianGPU/reg-factory/server/internal/assetstore"
 	"github.com/tiantianGPU/reg-factory/server/internal/probe"
-	"github.com/tiantianGPU/reg-factory/server/internal/settings"
 	"github.com/tiantianGPU/reg-factory/server/internal/store"
 )
 
@@ -229,10 +228,7 @@ func (s *Server) checkCredential(ctx context.Context, batchID string, item store
 		if err != nil || asset.Platform != "chatgpt" {
 			return item
 		}
-		proxy := s.env.Get("REG_FACTORY_PRODUCTION_PROXY")
-		if value, exists := settings.DeploymentValue("REG_FACTORY_PRODUCTION_PROXY"); exists {
-			proxy = value
-		}
+		proxy := s.env.Effective("REG_FACTORY_PRODUCTION_PROXY")
 		creds, credentialErr := assetstore.OAuthDocument(asset.Payload, item.Identity)
 		if credentialErr != nil {
 			item.Message = "未找到唯一可核验凭据，请核对账号资料；未使用 RT"
