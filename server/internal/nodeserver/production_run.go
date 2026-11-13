@@ -168,16 +168,17 @@ func (h *Handler) productionDriver(ctx context.Context, input map[string]any) ma
 		return map[string]any{"status": "unknown", "error_code": "PRODUCTION_STORAGE_UNAVAILABLE"}
 	}
 	input["root"], input["db_path"] = dataDir(), path
-	key, err := decodeFernetKey(h.config().ArtifactKey)
-	if err != nil {
-		return map[string]any{"status": "unknown", "error_code": "PRODUCTION_ARTIFACT_KEY_UNAVAILABLE"}
+	// The Python boundary uses one Fernet encoding for both active and retained
+	// keys. Passing raw Go key bytes here made production admission fail.
+	encodedKeys := []string{}
+	for _, key := range h.artifactKeys() {
+		decoded, err := decodeFernetKey(key)
+		if err != nil {
+			return map[string]any{"status": "unknown", "error_code": "PRODUCTION_ARTIFACT_KEY_UNAVAILABLE"}
+		}
+		encodedKeys = append(encodedKeys, base64.URLEncoding.EncodeToString(decoded))
 	}
-	input["artifact_key"] = base64.URLEncoding.EncodeToString(key)
-	previousKeys := []string{}
-	for _, old := range h.artifactKeys() {
-		previousKeys = append(previousKeys, string(old))
-	}
-	input["artifact_keys"] = previousKeys
+	input["artifact_key"], input["artifact_keys"] = encodedKeys[0], encodedKeys[1:]
 	// This is local driver input, not a signed assignment. Renewal reasons may
 	// contain Unicode; the assignment-only ASCII encoder would silently drop it.
 	raw, err := json.Marshal(input)
