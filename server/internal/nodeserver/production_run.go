@@ -191,6 +191,10 @@ func (h *Handler) productionDriver(ctx context.Context, input map[string]any) ma
 	if err != nil {
 		return map[string]any{"status": "unknown", "error_code": "PRODUCTION_CONFIG_UNAVAILABLE"}
 	}
+	command.Env, err = settings.BindProductionProxy(command.Env, cfg.AppRoot)
+	if err != nil {
+		return map[string]any{"status": "unknown", "error_code": "PRODUCTION_PROXY_NOT_CONFIGURED"}
+	}
 	command.Stdin = bytes.NewReader(raw)
 	var buffer bytes.Buffer
 	command.Stdout = &buffer

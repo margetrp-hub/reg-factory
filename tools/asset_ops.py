@@ -33,6 +33,7 @@ if str(ROOT) not in sys.path:
 
 from common import credential_versions as versions
 from common.oauth_errors import account_failure, error_code
+from common.proxy_switch import production_proxy
 
 PLATFORMS = ("claude", "chatgpt", "grok", "kiro", "outlook")
 OPENAI_TOKEN_URL = "https://auth.openai.com/oauth/token"
@@ -639,7 +640,7 @@ def _refresh_chatgpt(ref: str, email: str = "") -> dict:
     try:
         session = requests.Session()
         session.trust_env = False
-        proxy = str(os.environ.get("REG_FACTORY_PRODUCTION_PROXY") or "").strip()
+        proxy = production_proxy()
         if proxy:
             session.proxies.update({"http": proxy, "https": proxy})
         response = session.post(

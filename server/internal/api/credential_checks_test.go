@@ -21,7 +21,7 @@ func TestCredentialChecksPersistUnknownRetryAndOriginalReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &Server{st: st, assets: assetstore.New(root), env: settings.NewEnv(filepath.Join(root, "fixture.env"))}
+	s := &Server{cfg: &settings.Settings{AppRoot: root}, st: st, assets: assetstore.New(root), env: settings.NewEnv(filepath.Join(root, "fixture.env"))}
 	defer func() { s.st.Close() }()
 	_, err = st.UpsertAccounts([]store.AccountSeed{{Ref: "one", Identity: "one@example.test", Platform: "chatgpt", Kind: "oauth"}, {Ref: "missing", Platform: "chatgpt", Kind: "oauth"}, {Ref: "three", Platform: "chatgpt", Kind: "oauth"}})
 	if err != nil {

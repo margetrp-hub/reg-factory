@@ -65,6 +65,12 @@ func TestConfigurationSaveReadbackWorkerAndRejectedUpdate(t *testing.T) {
 	if mgr.Capacity() != 7 {
 		t.Fatal("raw editor bypassed validation")
 	}
+	put("/api/config", map[string]any{"updates": map[string]string{"CLAUDE_VISION_SOURCE": "primary", "VISION_API_BASE": "https://vision.example.test", "VISION_API_KEY": ""}}, 400)
+	put("/api/config", map[string]any{"updates": map[string]string{"CLAUDE_VISION_SOURCE": "primary", "VISION_API_BASE": "https://vision.example.test", "VISION_API_KEY": "synthetic-shared-key"}}, 200)
+	put("/api/config/raw", map[string]any{"content": "CLAUDE_VISION_SOURCE=primary\nVISION_API_BASE=https://vision.example.test\nVISION_API_KEY="}, 400)
+	if s.env.Effective("VISION_API_KEY") != "synthetic-shared-key" {
+		t.Fatal("rejected raw save cleared shared credentials")
+	}
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("GET", "/api/config", nil))
 	if w.Code != 200 {

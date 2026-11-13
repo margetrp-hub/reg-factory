@@ -6,13 +6,13 @@ Credentials travel only through the private process pipes, never argv or logs.
 import asyncio
 import contextlib
 import json
-import os
 from pathlib import Path
 import sys
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+from common.proxy_switch import production_proxy
 
 
 def execute(context, material):
@@ -60,7 +60,7 @@ def execute(context, material):
         return {'status': 'failed', 'document': None, 'error_code': 'ASSET_REFRESH_TOKEN_REQUIRED'}
     with requests.Session() as session:
         session.trust_env = False
-        proxy = os.getenv('REG_FACTORY_PRODUCTION_PROXY', '').strip()
+        proxy = production_proxy()
         if proxy:
             session.proxies.update(http=proxy, https=proxy)
         response = session.post(OPENAI_TOKEN_URL, data={'client_id': token.get('client_id') or OPENAI_CLIENT_ID,

@@ -1357,7 +1357,10 @@ func (s *Server) probeOAuthAccount(ref string) (bool, error) {
 	if err != nil || asset.Platform != "chatgpt" || asset.Kind != "oauth" {
 		return false, nil
 	}
-	proxy := s.env.Effective("REG_FACTORY_PRODUCTION_PROXY")
+	proxy, err := s.env.ProductionProxy(s.cfg.AppRoot)
+	if err != nil {
+		return true, err
+	}
 	result := probe.OAuth(asset.Payload, proxy, 30*time.Second)
 	current, readErr := s.assets.Get(ref, account.Identity)
 	if readErr != nil || current.ResultSHA != asset.ResultSHA {

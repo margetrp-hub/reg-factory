@@ -338,6 +338,10 @@ func checkProductionDocument(document map[string]any) map[string]any {
 	if err != nil {
 		return map[string]any{"status": "unknown", "error_code": "PRODUCTION_CONFIG_UNAVAILABLE"}
 	}
+	env, err = settings.BindProductionProxy(env, settings.Load().AppRoot)
+	if err != nil {
+		return map[string]any{"status": "unknown", "error_code": "PRODUCTION_PROXY_NOT_CONFIGURED"}
+	}
 	command.Env = env
 	raw, _ := Canonical(document)
 	command.Stdin = bytes.NewReader(raw)

@@ -672,8 +672,9 @@ ENV_SCHEMA = [
     {"group": "指纹浏览器", "tests": [{"target": "bitbrowser", "label": "测试 指纹浏览器连通"}], "items": [
         {"key": "BROWSER_ENGINE", "type": "choice", "choices": ["patchright", "camoufox"], "default": "patchright",
          "help": "Patchright 使用下方浏览器服务；Camoufox 使用镜像内置 Firefox。Ruyipage 保留独立适配入口，不作为现有流程的可互换引擎。"},
-        {"key": "CAMOUFOX_BROWSER_PATH", "help": "默认从安装包与共享缓存自动发现；只在使用自定义内核时填写。"},
+        {"key": "CAMOUFOX_BROWSER_PATH", "when": {"BROWSER_ENGINE": ["camoufox"]}, "help": "默认从安装包与共享缓存自动发现；只在使用自定义内核时填写。"},
         {"key": "FINGERPRINT_BROWSER", "type": "choice", "choices": ["bitbrowser", "cloak", "roxy", "bundled", "custom", "adspower", "custom_api"],
+         "when": {"BROWSER_ENGINE": ["patchright"]},
          "default": "bitbrowser", "help": "默认保持 BitBrowser 兼容；选择 CloakBrowser/RoxyBrowser 即使用参考项目的指纹浏览器方案。"},
         {"key": "CLOAK_HEADLESS", "type": "bool", "default": True, "help": "CloakBrowser 无头运行；关闭后显示浏览器窗口。"},
         {"key": "CLOAK_HUMANIZE", "type": "bool", "default": True, "help": "启用 CloakBrowser 人工节奏和鼠标键盘行为。"},
@@ -756,10 +757,14 @@ ENV_SCHEMA = [
          "help": "自动求解失败后等待人工接管秒数；0 表示关闭"},
         {"key": "CLAUDE_HCAPTCHA_SOLVE_RETRIES", "default": "2",
          "help": "YesCaptcha 备用求解器的瞬时失败重试次数"},
-        {"key": "CLAUDE_VISION_API_BASE", "required": True,
-         "help": "必填：Claude hCaptcha 视觉解码 API 地址；未配置无法自动通过图形验证"},
-        {"key": "CLAUDE_VISION_API_KEY", "required": True, "secret": True,
-         "help": "必填：Claude hCaptcha 视觉解码 API key"},
+        {"key": "CLAUDE_VISION_SOURCE", "label": "Claude 视觉识别使用", "type": "choice", "default": "auto",
+         "choices": ["auto", "primary", "vote", "custom"],
+         "choice_labels": {"auto": "原有自动选择", "primary": "公共视觉网关", "vote": "公共投票网关", "custom": "专用连接"},
+         "help": "选择公共网关时直接复用它的地址和密钥；模型由当前流程选择。"},
+        {"key": "CLAUDE_VISION_API_BASE", "when": {"CLAUDE_VISION_SOURCE": ["auto", "custom"]},
+         "help": "专用连接的 API 地址；选择公共网关时无需填写。"},
+        {"key": "CLAUDE_VISION_API_KEY", "secret": True, "when": {"CLAUDE_VISION_SOURCE": ["auto", "custom"]},
+         "help": "专用连接的 API key；选择公共网关时无需填写。"},
         {"key": "CLAUDE_VISION_MODEL", "default": "gemini-3.6-flash",
          "help": "Claude hCaptcha 主视觉模型"},
         {"key": "CLAUDE_REGISTRATION_PROTOCOL", "type": "choice", "choices": ["browser", "http"],
@@ -1030,6 +1035,7 @@ _ENV_LABELS = {
     "CLAUDE_CAPTCHA_MANUAL_TIMEOUT": "Claude 人工验证码等待时间",
     "CLAUDE_HCAPTCHA_SOLVE_RETRIES": "Claude hCaptcha 重试次数",
     "CLAUDE_VISION_API_BASE": "Claude 视觉识别 API 地址",
+    "CLAUDE_VISION_SOURCE": "Claude 视觉识别使用",
     "CLAUDE_VISION_API_KEY": "Claude 视觉识别 API 密钥",
     "CLAUDE_VISION_MODEL": "Claude 视觉识别模型",
     "CLAUDE_BROWSER_CORE_VERSION": "Claude 浏览器内核版本",
@@ -1132,8 +1138,13 @@ ENV_SCHEMA.extend([
          "help": "保留历史保存值。本字段不控制当前AT检查；AT每项总时限30秒，网络/TLS/5xx最多3次，401/429不重试。"},
     ]},
     {"group": "生产与修复出口", "items": [
+        {"key": "REG_FACTORY_PRODUCTION_PROXY_SOURCE", "label": "生产与凭据修复使用", "type": "choice", "default": "custom",
+         "choices": ["custom", "direct", "residential", "clash"],
+         "choice_labels": {"custom": "专用出口", "direct": "直连", "residential": "共享住宅代理", "clash": "共享 Clash"},
+         "help": "共用已有代理连接，不另填地址。住宅代理在任务启动时选取当前出口并固定；不轮换正在执行的会话。"},
         {"key": "REG_FACTORY_PRODUCTION_PROXY", "label": "生产与重新授权出口", "secret": True,
-         "help": "账号修复、TEAM 生产与核验使用的出口。留空直连，不继承注册住宅代理。"},
+         "when": {"REG_FACTORY_PRODUCTION_PROXY_SOURCE": ["custom"]},
+         "help": "只供专用出口使用；留空直连。共享模式复用网络能力连接，不复制此值。"},
     ]},
     {"group": "控制面运行", "items": [
         {"key": "REG_FACTORY_MAX_CONCURRENCY", "label": "最大执行并发", "type": "int", "default": 3, "apply": "live", "help": "范围 1–32。调低后等待运行中任务释放名额，不中断原任务。"},
@@ -1180,7 +1191,7 @@ def _config_location(key, area, group):
         return "runtime", "运行 · 并发与资源"
     if key == "REG_FACTORY_ASSET_API_KEY":
         return "runtime", "运行 · 接口访问"
-    if key == "REG_FACTORY_PRODUCTION_PROXY":
+    if key.startswith("REG_FACTORY_PRODUCTION_PROXY"):
         return "proxy", "网络 · 生产与凭据修复"
     if key.startswith("CLASH_"):
         return "proxy", "网络 · Clash"
@@ -1197,6 +1208,8 @@ def _config_location(key, area, group):
         return "browser", "浏览器 · BitBrowser 与内核"
     if key == "CUSTOM_BROWSER_PATH":
         return "browser", "浏览器 · 本机 Chrome"
+    if key == "CAMOUFOX_BROWSER_PATH":
+        return "browser", "浏览器 · Camoufox"
     if area == "browser":
         return area, "浏览器 · 通用设置"
     if key in {"SMS_API_NAME", "SMS_TOKEN"}:
@@ -1212,6 +1225,10 @@ def _config_location(key, area, group):
             return "captcha", "验证 · " + label
     if key.startswith(("CLAUDE_VISION_", "CLAUDE_HCAPTCHA_", "CLAUDE_CAPTCHA_")):
         return "captcha", "验证 · Claude 识别与验证"
+    if key.startswith("VISION_"):
+        return "captcha", "验证 · 公共视觉网关"
+    if key in {"VOTE_ZZ_BASE", "VOTE_ZZ_KEY", "VOTE_GPT_KEY"}:
+        return "captcha", "验证 · 公共投票网关"
     if area == "captcha":
         return area, "验证 · 视觉模型与投票"
     if key == "CHATGPT_ENABLE_2FA":
@@ -1263,8 +1280,11 @@ CONFIG_MODES = {
     "captcha": {
         "selectors": [],  # These tools can coexist; viewing one never disables another.
         "common": [],
+        "dependencies": {"claude": {"CLAUDE_VISION_SOURCE": {
+            "primary": ["验证 · 公共视觉网关"], "vote": ["验证 · 公共投票网关"],
+        }}},
         "choices": {
-            "vision": {"label": "视觉模型与投票", "groups": ["验证 · 视觉模型与投票"]},
+            "vision": {"label": "视觉模型与投票", "groups": ["验证 · 公共视觉网关", "验证 · 公共投票网关", "验证 · 视觉模型与投票"]},
             "claude": {"label": "Claude 识别与验证", "groups": ["验证 · Claude 识别与验证"]},
             "capsolver": {"label": "CapSolver", "groups": ["验证 · CapSolver"]},
             "ezcaptcha": {"label": "EZCaptcha", "groups": ["验证 · EZCaptcha"]},
@@ -1272,9 +1292,11 @@ CONFIG_MODES = {
         },
     },
     "browser": {
-        "selectors": ["FINGERPRINT_BROWSER"],
+        "selectors": ["BROWSER_ENGINE", "FINGERPRINT_BROWSER"],
         "common": ["浏览器 · 通用设置"],
         "choices": {
+            "patchright": {"label": "Patchright", "groups": []},
+            "camoufox": {"label": "Camoufox", "groups": ["浏览器 · Camoufox"]},
             "bitbrowser": {"label": "BitBrowser", "groups": ["浏览器 · BitBrowser 与内核"]},
             "cloak": {"label": "CloakBrowser", "groups": ["浏览器 · CloakBrowser"]},
             "roxy": {"label": "RoxyBrowser", "groups": ["浏览器 · RoxyBrowser"]},
@@ -1285,10 +1307,13 @@ CONFIG_MODES = {
         },
     },
     "proxy": {
-        "selectors": ["PROXY_MODE", *[item["slug"].upper() + "_PROXY_MODE" for item in PLATFORMS]],
+        "selectors": ["PROXY_MODE", *[item["slug"].upper() + "_PROXY_MODE" for item in PLATFORMS], "REG_FACTORY_PRODUCTION_PROXY_SOURCE"],
         "common": ["网络 · 模式与平台覆盖", "网络 · 生产与凭据修复"],
         "choices": {
             "inherit": {"label": "继承全局", "groups": []},
+            "custom": {"label": "专用出口", "groups": []},
+            "direct": {"label": "直连", "groups": []},
+            "clash": {"label": "共享 Clash", "groups": ["网络 · Clash"]},
             "clash_auto": {"label": "Clash 自动轮换", "groups": ["网络 · Clash"]},
             "clash_fixed": {"label": "Clash 固定节点", "groups": ["网络 · Clash"]},
             "residential": {"label": "住宅代理池", "groups": ["网络 · 住宅代理"]},

@@ -145,6 +145,53 @@ try {
   assert.equal(await value('HERO_SMS_API_KEY'),'synthetic-hero');
   await save(); await page.getByRole('button',{name:'保存全部修改',exact:true}).waitFor();
   await button('浏览器').click();
+  await input('BROWSER_ENGINE').selectOption('camoufox');
+  assert.equal(await input('FINGERPRINT_BROWSER').count(),0,'Firefox must not ask for a Chromium provider');
+  assert.equal(await input('CLOAK_LOCALE').count(),0);
+  assert.equal(await input('CAMOUFOX_BROWSER_PATH').count(),1);
+  await input('BROWSER_ENGINE').selectOption('patchright');
+  assert.equal(await value('FINGERPRINT_BROWSER'),'cloak');
+  assert.equal(await value('CLOAK_LOCALE'),'en-GB');
+  assert(await page.getByRole('button',{name:'保存全部修改',exact:true}).isDisabled(),'returning to the saved engine should not create a change');
+
+  await button('网络与代理').click();
+  await input('REG_FACTORY_PRODUCTION_PROXY').fill('http://private.example.test:8080');
+  await input('REG_FACTORY_PRODUCTION_PROXY_SOURCE').selectOption('residential');
+  assert.equal(await input('REG_FACTORY_PRODUCTION_PROXY').count(),0);
+  assert.equal(await input('REG_FACTORY_PROXY').count(),1,'production and registration share one connection row');
+  await input('REG_FACTORY_PROXY').fill('http://shared.example.test:8080');
+  await save(); await page.getByRole('button',{name:'保存全部修改',exact:true}).waitFor();
+  assert.equal(values.REG_FACTORY_PRODUCTION_PROXY,'http://private.example.test:8080','switching preserves inactive credentials');
+  await input('REG_FACTORY_PRODUCTION_PROXY_SOURCE').selectOption('clash');
+  assert.equal(await input('CLASH_PROXY').count(),1);
+  await input('REG_FACTORY_PRODUCTION_PROXY_SOURCE').selectOption('custom');
+  assert.equal(await value('REG_FACTORY_PRODUCTION_PROXY'),'http://private.example.test:8080');
+  await input('REG_FACTORY_PRODUCTION_PROXY_SOURCE').selectOption('residential');
+  await page.screenshot({path:path.join(output,'shared-proxy-desktop.png'),fullPage:true});
+
+  await button('图形验证').click();
+  await page.getByLabel('配置方式',{exact:true}).selectOption('claude');
+  await input('CLAUDE_VISION_SOURCE').selectOption('primary');
+  assert.equal(await input('CLAUDE_VISION_API_KEY').count(),0);
+  assert.equal(await input('VISION_API_KEY').count(),1);
+  await input('VISION_API_BASE').fill('https://shared-vision.example.test');
+  await input('VISION_API_KEY').fill('synthetic-shared-vision-key');
+  saveMode='reject'; await save();
+  await page.getByText(/保存未确认：synthetic validation rejection/).waitFor();
+  assert.equal(await value('CLAUDE_VISION_SOURCE'),'primary');
+  assert.equal(await value('VISION_API_KEY'),'synthetic-shared-vision-key');
+  saveMode='lost'; await save(); await page.getByText(/保存未确认：/).waitFor();
+  await button('重新读取').click(); await page.getByRole('button',{name:'保存全部修改',exact:true}).waitFor();
+  await page.getByLabel('配置方式',{exact:true}).selectOption('capsolver');
+  assert.equal(await input('VISION_API_KEY').count(),0,'unrelated providers must not show this binding');
+  await page.getByLabel('配置方式',{exact:true}).selectOption('claude');
+  assert.equal(await value('CLAUDE_VISION_SOURCE'),'primary');
+  await page.screenshot({path:path.join(output,'shared-vision-desktop.png'),fullPage:true});
+  await page.setViewportSize({width:390,height:844});
+  assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'shared capability page overflow');
+  await page.screenshot({path:path.join(output,'shared-vision-mobile.png'),fullPage:true,animations:'disabled'});
+  await page.setViewportSize({width:1440,height:1000});
+  await button('浏览器').click();
   await page.screenshot({path:path.join(output,'config-desktop.png'),fullPage:true});
 
   // Every script and all of its original arguments remain reachable.

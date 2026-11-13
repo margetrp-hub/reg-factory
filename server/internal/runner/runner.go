@@ -44,7 +44,7 @@ type Manager struct {
 	centralCheckMu   sync.Mutex
 	centralCheckedAt time.Time
 	centralCheckErr  error
-	assetRestorer func(context.Context, map[string]any, map[string]any) (map[string]any, error)
+	assetRestorer    func(context.Context, map[string]any, map[string]any) (map[string]any, error)
 	workers          sync.WaitGroup
 	procs            map[string]*proc
 	slots            int
@@ -658,6 +658,18 @@ func (m *Manager) buildArgv(task store.Task) ([]string, string, []string, error)
 		var argvTail []string
 		if err := json.Unmarshal([]byte(task.ArgsJSON), &argvTail); err != nil {
 			return nil, "", nil, fmt.Errorf("raw 参数无效: %w", err)
+		}
+		usesProduction := task.Script == "import_free_json"
+		for i := 1; task.Script == "asset_ops" && i+1 < len(argvTail); i++ {
+			if argvTail[0] == "refresh" && argvTail[i] == "--platform" && argvTail[i+1] == "chatgpt" {
+				usesProduction = true
+			}
+		}
+		if usesProduction {
+			baseEnv, envErr = settings.BindProductionProxy(baseEnv, m.cfg.AppRoot)
+			if envErr != nil {
+				return nil, "", nil, envErr
+			}
 		}
 		script := filepath.Join(m.cfg.AppRoot, "tools", task.Script+".py")
 		if _, err := os.Stat(script); err != nil {

@@ -106,6 +106,10 @@ func (b *boundedOutput) Write(p []byte) (int, error) {
 }
 
 func (m *Manager) executeCentral(ctx context.Context, task store.Task, env []string, material map[string]any) (map[string]any, error) {
+	env, err := settings.BindProductionProxy(env, m.cfg.AppRoot)
+	if err != nil {
+		return map[string]any{"status": "failed", "document": nil, "error_code": "PRODUCTION_PROXY_NOT_CONFIGURED"}, nil
+	}
 	scope, err := CentralContext(task)
 	if err != nil {
 		return nil, err

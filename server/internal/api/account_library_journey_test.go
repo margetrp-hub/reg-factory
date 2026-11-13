@@ -66,7 +66,7 @@ func TestAccountLibraryJourneyFromATCheckThroughUnknownRecovery(t *testing.T) {
 	previous := http.DefaultTransport
 	http.DefaultTransport = transport
 	defer func() { http.DefaultTransport = previous; transport.CloseIdleConnections() }()
-	s := &Server{st: st, assets: assets, env: settings.NewEnv(filepath.Join(root, "fixture.env"))}
+	s := &Server{cfg: &settings.Settings{AppRoot: root}, st: st, assets: assets, env: settings.NewEnv(filepath.Join(root, "fixture.env"))}
 	router := gin.New()
 	router.POST("/checks", s.createCredentialCheck)
 	key := bytes.Repeat([]byte("k"), 32)

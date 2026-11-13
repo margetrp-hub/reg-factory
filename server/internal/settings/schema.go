@@ -8,19 +8,21 @@ import (
 )
 
 type ConfigField struct {
-	Key          string   `json:"key"`
-	Label        string   `json:"label"`
-	Help         string   `json:"help"`
-	Type         string   `json:"type"`
-	Choices      []string `json:"choices,omitempty"`
-	Default      any      `json:"default,omitempty"`
-	Secret       bool     `json:"secret"`
-	Apply        string   `json:"apply,omitempty"`
-	ReadOnly     bool     `json:"readonly,omitempty"`
-	Advanced     bool     `json:"advanced,omitempty"`
-	Generate     bool     `json:"generate,omitempty"`
-	Area         string   `json:"area,omitempty"`
-	EmptyDefault bool     `json:"empty_default,omitempty"`
+	Key          string              `json:"key"`
+	Label        string              `json:"label"`
+	Help         string              `json:"help"`
+	Type         string              `json:"type"`
+	Choices      []string            `json:"choices,omitempty"`
+	ChoiceLabels map[string]string   `json:"choice_labels,omitempty"`
+	When         map[string][]string `json:"when,omitempty"`
+	Default      any                 `json:"default,omitempty"`
+	Secret       bool                `json:"secret"`
+	Apply        string              `json:"apply,omitempty"`
+	ReadOnly     bool                `json:"readonly,omitempty"`
+	Advanced     bool                `json:"advanced,omitempty"`
+	Generate     bool                `json:"generate,omitempty"`
+	Area         string              `json:"area,omitempty"`
+	EmptyDefault bool                `json:"empty_default,omitempty"`
 }
 type ConfigGroup struct {
 	Group string        `json:"group"`

@@ -228,7 +228,11 @@ func (s *Server) checkCredential(ctx context.Context, batchID string, item store
 		if err != nil || asset.Platform != "chatgpt" {
 			return item
 		}
-		proxy := s.env.Effective("REG_FACTORY_PRODUCTION_PROXY")
+		proxy, err := s.env.ProductionProxy(s.cfg.AppRoot)
+		if err != nil {
+			item.Message = err.Error()
+			return item
+		}
 		creds, credentialErr := assetstore.OAuthDocument(asset.Payload, item.Identity)
 		if credentialErr != nil {
 			item.Message = "未找到唯一可核验凭据，请核对账号资料；未使用 RT"

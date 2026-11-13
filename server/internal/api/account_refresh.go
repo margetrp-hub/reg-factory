@@ -93,7 +93,11 @@ func (s *Server) reconcileAccountRefresh(c *gin.Context) {
 		c.JSON(409, gin.H{"error": "refresh_not_confirmed", "detail": err.Error()})
 		return
 	}
-	proxy := s.env.Effective("REG_FACTORY_PRODUCTION_PROXY")
+	proxy, err := s.env.ProductionProxy(s.cfg.AppRoot)
+	if err != nil {
+		c.JSON(422, gin.H{"error": "proxy_not_configured", "detail": err.Error()})
+		return
+	}
 	result := probe.OAuthContext(c.Request.Context(), credentials, proxy, 30*time.Second)
 	if result.Status != "ok" {
 		c.JSON(409, gin.H{"error": "refresh_not_confirmed", "detail": result.Message + "；保留原任务，未再次交换 RT"})

@@ -105,10 +105,24 @@
     "captcha": {
       "selectors": [],
       "common": [],
+      "dependencies": {
+        "claude": {
+          "CLAUDE_VISION_SOURCE": {
+            "primary": [
+              "验证 · 公共视觉网关"
+            ],
+            "vote": [
+              "验证 · 公共投票网关"
+            ]
+          }
+        }
+      },
       "choices": {
         "vision": {
           "label": "视觉模型与投票",
           "groups": [
+            "验证 · 公共视觉网关",
+            "验证 · 公共投票网关",
             "验证 · 视觉模型与投票"
           ]
         },
@@ -140,12 +154,23 @@
     },
     "browser": {
       "selectors": [
+        "BROWSER_ENGINE",
         "FINGERPRINT_BROWSER"
       ],
       "common": [
         "浏览器 · 通用设置"
       ],
       "choices": {
+        "patchright": {
+          "label": "Patchright",
+          "groups": []
+        },
+        "camoufox": {
+          "label": "Camoufox",
+          "groups": [
+            "浏览器 · Camoufox"
+          ]
+        },
         "bitbrowser": {
           "label": "BitBrowser",
           "groups": [
@@ -196,7 +221,8 @@
         "GROK_PROXY_MODE",
         "OUTLOOK_PROXY_MODE",
         "KIRO_PROXY_MODE",
-        "GITHUB_PROXY_MODE"
+        "GITHUB_PROXY_MODE",
+        "REG_FACTORY_PRODUCTION_PROXY_SOURCE"
       ],
       "common": [
         "网络 · 模式与平台覆盖",
@@ -206,6 +232,20 @@
         "inherit": {
           "label": "继承全局",
           "groups": []
+        },
+        "custom": {
+          "label": "专用出口",
+          "groups": []
+        },
+        "direct": {
+          "label": "直连",
+          "groups": []
+        },
+        "clash": {
+          "label": "共享 Clash",
+          "groups": [
+            "网络 · Clash"
+          ]
         },
         "clash_auto": {
           "label": "Clash 自动轮换",

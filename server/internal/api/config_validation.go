@@ -87,6 +87,32 @@ func (s *Server) validateConfiguration(updates map[string]string) error {
 	if err != nil {
 		return err
 	}
+	// Validate only affected capability bindings, using the same snapshot as
+	// execution. Unrelated settings do not require unused suppliers to be ready.
+	nextEnv := append([]string{}, env...)
+	values := map[string]string{}
+	for _, entry := range env {
+		key, value, _ := strings.Cut(entry, "=")
+		values[key] = value
+	}
+	proxyChanged, visionChanged := false, false
+	for key, value := range updates {
+		nextEnv = append(nextEnv, key+"="+value)
+		values[key] = value
+		proxyChanged = proxyChanged || key == "REG_FACTORY_PRODUCTION_PROXY_SOURCE" || key == "REG_FACTORY_PROXY" || key == "REG_FACTORY_PROXY_POOL" || key == "CLASH_PROXY"
+		visionChanged = visionChanged || strings.HasPrefix(key, "CLAUDE_VISION_") || key == "VISION_API_BASE" || key == "VISION_API_KEY" || key == "VOTE_ZZ_BASE" || key == "VOTE_ZZ_KEY"
+	}
+	if proxyChanged {
+		if _, err := settings.ProductionProxy(nextEnv, s.cfg.AppRoot); err != nil {
+			return err
+		}
+	}
+	if visionChanged {
+		connection := map[string][2]string{"primary": {"VISION_API_BASE", "VISION_API_KEY"}, "vote": {"VOTE_ZZ_BASE", "VOTE_ZZ_KEY"}, "custom": {"CLAUDE_VISION_API_BASE", "CLAUDE_VISION_API_KEY"}}[values["CLAUDE_VISION_SOURCE"]]
+		if connection[0] != "" && (strings.TrimSpace(values[connection[0]]) == "" || strings.TrimSpace(values[connection[1]]) == "") {
+			return fmt.Errorf("Claude 视觉识别所选连接未配置地址或密钥，请补齐后保存")
+		}
+	}
 	current, _ := centralasset.FromEnvironment(s.cfg.DataDir, env)
 	changed := false
 	for key, value := range updates {
