@@ -52,7 +52,7 @@ class ControlCatalogTests(unittest.TestCase):
         group, concurrency = fields["REG_FACTORY_MAX_CONCURRENCY"]
         self.assertEqual(group["area"], "runtime")
         self.assertEqual(concurrency["default"], 3)
-        self.assertEqual(concurrency["apply"], "restart")
+        self.assertEqual(concurrency["apply"], "live")
         self.assertEqual(fields["REG_FACTORY_LIVENESS_ENABLED"][1]["default"], "0")
         self.assertEqual(fields["REG_FACTORY_LIVENESS_ENABLED"][1]["apply"], "live")
 

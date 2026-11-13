@@ -1,12 +1,12 @@
 # reg-factory Go 控制面部署
 
-SG控制面为Go regd + 内嵌Next.js页面 + Python worker，默认宿主回环8800。旧Python 8799面板已退役。实际提交、镜像与恢复位置只在[当前验收](../docs/acceptance.md)登记；本页提供操作流程。
+SG独立系统由Go regd + 内嵌Next.js页面 + Python worker组成，默认宿主回环8800。生产、账号资料、邮箱池、日志与独立CLI可在没有Work配置时使用；节点签名接口仅负责Work接入。旧Python 8799面板已退役。实际提交、镜像与恢复位置只在[当前验收](../docs/acceptance.md)登记；本页提供操作流程。
 
 | 目录 | 责任 |
 | --- | --- |
 | `server/cmd/regd`、`server/internal/api` | 进程装配与面板接口 |
 | `server/internal/auth`、`settings` | 面板认证与配置 |
-| `server/internal/store`、`runner` | 本机PostgreSQL任务/日志/领取事实及受控Python进程 |
+| `server/internal/store`、`runner`、`assetstore` | 本机PostgreSQL任务/日志、当前资料、Go凭据发布恢复及受控Python进程 |
 | `server/internal/nodeserver` | Work签名接单、原结果与恢复 |
 | `server/internal/centralasset` | Go中央资产执行宿主、旧工件读取、加密结果及有界补传 |
 | `server/web`、`server/webdist` | Next.js源码及构建时嵌入的静态产物 |

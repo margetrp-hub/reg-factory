@@ -1,6 +1,8 @@
 # reg-factory
 
-reg-factory 是独立账号生产与凭据管理节点。当前 SG 服务由 Go `regd` 管理任务、账号投影、配置和日志，Next.js 静态页面内嵌到程序，Python worker 执行平台流程。Core 负责平台商品、库存、订单、权益和资金；SG 只接受明确授权并返回证据，不建第二份平台业务账。
+reg-factory 是独立的生产与账号资料管理系统。Go `regd` 管理本机任务、账号、凭据保存恢复、邮箱池、导入导出、配置和日志，Next.js 静态页面内嵌到程序；Python worker 与独立 CLI 继续执行各平台流程。上述本机能力不需要配置 Work 节点身份或中央资产密钥。
+
+Work 节点是 SG 的一个接入职责：接受 Core 经 Work 派发的授权任务、接收或移交资料、回传执行证据。Core 拥有平台商品、库存、订单、权益和资金；SG 不建第二份平台业务账。本机操作与 Work 任务共用执行和凭据能力，分别保留自己的任务与授权入口。
 
 本仓维护在 [margetrp-hub/reg-factory](https://github.com/margetrp-hub/reg-factory)。源码版本见[VERSION](VERSION)，实际上线身份、验证范围与恢复材料只在[当前验收](docs/acceptance.md)维护，不能用源码版本推断服务器已升级。
 

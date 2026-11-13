@@ -15,6 +15,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/tiantianGPU/reg-factory/server/internal/assetstore"
+	"github.com/tiantianGPU/reg-factory/server/internal/auth"
+	"github.com/tiantianGPU/reg-factory/server/internal/nodeserver"
 	"github.com/tiantianGPU/reg-factory/server/internal/runner"
 	"github.com/tiantianGPU/reg-factory/server/internal/settings"
 	"github.com/tiantianGPU/reg-factory/server/internal/store"
@@ -72,17 +74,49 @@ func TestCurrentCredentialJourneyThroughPythonWorker(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(app, "tools", "asset_ops.py"), []byte(script), 0600); err != nil {
 		t.Fatal(err)
 	}
-	cfg := &settings.Settings{DataDir: root, EnvFile: filepath.Join(root, ".env"), AppRoot: app, Python: python, MaxParallel: 1}
+	cfg := &settings.Settings{DataDir: root, EnvFile: filepath.Join(root, ".env"), AppRoot: app, Python: python, MaxParallel: 1,
+		PanelUser: "operator", PanelPass: "fixture-password"}
 	m := runner.New(cfg, st)
 	defer m.Shutdown(context.Background())
-	s := &Server{cfg: cfg, st: st, run: m, assets: assets}
+	s := New(cfg, settings.NewEnv(cfg.EnvFile), st, m, auth.New(cfg), "fixture", nil)
 	r := gin.New()
-	r.POST("/refresh", s.accountRefresh)
-	r.GET("/export", s.assetExport)
-	invokeMode := func(id, ref string, authorize bool) store.Task {
+	s.Register(r)
+	nodeserver.New(nodeserver.Config{}, m, st).Register(r)
+	request := func(method, path, body string) *httptest.ResponseRecorder {
+		t.Helper()
 		w := httptest.NewRecorder()
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.SetBasicAuth(cfg.PanelUser, cfg.PanelPass)
+		r.ServeHTTP(w, req)
+		return w
+	}
+	// Work is deliberately unconfigured. Local management remains authenticated
+	// and fully usable, including the actual panel routes and task history.
+	ready := request("GET", "/ready", "")
+	var readiness struct {
+		Ready bool `json:"ready"`
+	}
+	if ready.Code != 200 || json.Unmarshal(ready.Body.Bytes(), &readiness) != nil || readiness.Ready {
+		t.Fatal("fixture unexpectedly enabled Work", ready.Code)
+	}
+	anonymous := httptest.NewRecorder()
+	r.ServeHTTP(anonymous, httptest.NewRequest("GET", "/api/accounts", nil))
+	if anonymous.Code != 401 {
+		t.Fatal("standalone mode lost panel authentication", anonymous.Code)
+	}
+	imported := request("POST", "/api/accounts/import", `{"platform":"chatgpt","accounts":"local@example.test----fixture-password----JBSWY3DPEHPK3PXP"}`)
+	if imported.Code != 200 {
+		t.Fatal("standalone import failed", imported.Code)
+	}
+	for _, path := range []string{"/api/health", "/api/accounts?platform=chatgpt", "/api/assets/export?ref=import:local@example.test", "/api/config"} {
+		if response := request("GET", path, ""); response.Code != 200 {
+			t.Fatal("standalone route failed", path, response.Code)
+		}
+	}
+	invokeMode := func(id, ref string, authorize bool) store.Task {
 		body, _ := json.Marshal(map[string]any{"ref": ref, "request_id": id, "allow_relogin": authorize})
-		r.ServeHTTP(w, httptest.NewRequest("POST", "/refresh", strings.NewReader(string(body))))
+		w := request("POST", "/api/accounts/refresh", string(body))
 		if w.Code != 202 && w.Code != 200 {
 			t.Fatal(w.Code, w.Body.String())
 		}
@@ -128,8 +162,7 @@ func TestCurrentCredentialJourneyThroughPythonWorker(t *testing.T) {
 	if last.Status != "succeeded" || calls.Load() != 3 {
 		t.Fatal("retry failed or duplicated exchange", last.Status, calls.Load())
 	}
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest("GET", "/export?ref=old", nil))
+	w := request("GET", "/api/assets/export?ref=old", "")
 	if w.Code != 200 || !strings.Contains(w.Body.String(), "new-3-at") || strings.Contains(w.Body.String(), "new-1-at") {
 		t.Fatal("download did not use latest", w.Code)
 	}
@@ -168,5 +201,11 @@ func TestCurrentCredentialJourneyThroughPythonWorker(t *testing.T) {
 	resumed := invoke("b552c0f8-0ec8-4fa9-9871-c482f7741009")
 	if resumed.Status != "succeeded" || calls.Load() != 7 {
 		t.Fatal("new successful credentials still fenced", resumed.Status, resumed.Error, calls.Load())
+	}
+	for _, suffix := range []string{"", "/logs", "/stream"} {
+		response := request("GET", "/api/tasks/"+resumed.ID+suffix, "")
+		if response.Code != 200 || strings.Contains(response.Body.String(), "new-7-rt") {
+			t.Fatal("standalone task evidence failed or exposed credentials", suffix, response.Code)
+		}
 	}
 }

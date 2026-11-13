@@ -1,11 +1,9 @@
 package runner
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
-	"os/exec"
-	"path/filepath"
+	"os"
 	"time"
 
 	"github.com/tiantianGPU/reg-factory/server/internal/assetstore"
@@ -60,26 +58,11 @@ func (m *Manager) recoverPublication(task store.Task) bool {
 	if ref == "" {
 		return false
 	}
-	// A complete receipt/current pair is already durable. Do not make a
-	// confirmed result depend on starting another Python process.
-	if _, err := assetstore.New(m.cfg.DataDir).ConfirmCredentialTask(task.ID, ref); err == nil {
-		return true
+	_, err := assetstore.New(m.cfg.DataDir).RecoverCredentialTask(task.ID, ref)
+	if err != nil && !os.IsNotExist(err) {
+		m.record(task.ID, "system", "本地凭据收尾未完成: "+err.Error())
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, m.cfg.Python, filepath.Join(m.cfg.AppRoot, "tools", "asset_ops.py"), "recover-publication", "--ref", ref)
-	cmd.Dir = m.cfg.AppRoot
-	env, err := settings.WorkerEnvironment(m.cfg.EnvFile)
-	if err != nil {
-		return false
-	}
-	cmd.Env = append(env, "REG_FACTORY_DATA_DIR="+m.cfg.DataDir, "REG_FACTORY_RUN_ID="+task.ID, "PYTHONIOENCODING=utf-8")
-	raw, err := cmd.Output()
-	var result struct {
-		Ref    string `json:"ref"`
-		Result string `json:"result"`
-	}
-	return err == nil && json.Unmarshal(raw, &result) == nil && result.Ref == ref && result.Result == "refreshed"
+	return err == nil
 }
 
 func isChatGPTCredential(task store.Task) bool {
