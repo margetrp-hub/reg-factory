@@ -217,10 +217,10 @@ func TestLivenessEmptyAndInvalidConfigurationCannotReportSuccess(t *testing.T) {
 	if s.env.Get("REG_FACTORY_LIVENESS_ENABLED") != "" {
 		t.Fatal("invalid configuration saved")
 	}
-	livenessRequest(t, router, "PUT", "/config", `{"updates":{"REG_FACTORY_LIVENESS_ENABLED":"1"}}`, 200)
+	livenessRequest(t, router, "PUT", "/config", `{"updates":{"REG_FACTORY_LIVENESS_ENABLED":"1","REG_FACTORY_LIVENESS_PLATFORMS":"chatgpt,claude,grok,kiro,outlook"}}`, 200)
 	state := livenessSchedule{}
 	at := time.Now()
-	for _, current := range []time.Time{at, at.Add(6 * time.Hour)} {
+	for _, current := range []time.Time{at, at.Add(6 * time.Hour), at.Add(12 * time.Hour), at.Add(18 * time.Hour), at.Add(24 * time.Hour)} {
 		if err := s.livenessTick(context.Background(), current, &state); err != nil {
 			t.Fatal(err)
 		}
@@ -228,5 +228,9 @@ func TestLivenessEmptyAndInvalidConfigurationCannotReportSuccess(t *testing.T) {
 	page, _ := s.st.QueryTasks(store.TaskQuery{})
 	if page.Total != 0 {
 		t.Fatal("empty scan masqueraded as successful work", page)
+	}
+	events, err := s.st.TailEvents("", 100)
+	if err != nil || len(events) != 0 {
+		t.Fatal("empty scans generated task logs", events, err)
 	}
 }

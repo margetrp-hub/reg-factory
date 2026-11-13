@@ -80,7 +80,7 @@ func main() {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 	router.Use(gin.Recovery())
-	router.Use(requestLogger())
+	router.Use(requestLogger(os.Stderr))
 
 	// 统一资产库：把旧路径（creds/ cookies/ tokens/）搬进 /data/assets/
 	if moved, err := assetstore.New(cfg.DataDir).Migrate(cfg.DataDir); err != nil {
@@ -180,20 +180,21 @@ func readVersion(cfg *settings.Settings) string {
 	return "dev"
 }
 
-// requestLogger 只记录 API 与非静态请求，避免刷屏。
-func requestLogger() gin.HandlerFunc {
+// HTTP diagnostics belong to the container log, not task events/SSE. Successful
+// polling is silent; business changes retain their own task and audit records.
+func requestLogger(output io.Writer) gin.HandlerFunc {
+	accessLog := log.New(output, "", log.LstdFlags|log.LUTC)
 	return func(c *gin.Context) {
 		start := time.Now()
 		c.Next()
 		path := c.Request.URL.Path
+		if c.Writer.Status() < http.StatusBadRequest {
+			return
+		}
 		if !strings.HasPrefix(path, "/api/") && !strings.HasPrefix(path, "/internal/work/") {
 			return
 		}
-		if path == "/api/health" || path == "/api/memory" || path == "/api/system" ||
-			path == "/api/logs" || path == "/api/logs/stream" || strings.HasSuffix(path, "/stream") {
-			return
-		}
-		log.Printf("[api] %s %s %d %dms", c.Request.Method, path, c.Writer.Status(), time.Since(start).Milliseconds())
+		accessLog.Printf("[api] %s %s %d %dms", c.Request.Method, path, c.Writer.Status(), time.Since(start).Milliseconds())
 	}
 }
 
