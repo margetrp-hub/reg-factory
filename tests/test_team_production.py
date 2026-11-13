@@ -41,7 +41,7 @@ class ProductionTests(unittest.TestCase):
           CREATE TABLE production_admissions(operation_id TEXT,state TEXT,error_code TEXT,finished_at TEXT DEFAULT '',parameters TEXT);
           CREATE TABLE production_outputs(operation_id TEXT,attempt INT,artifact TEXT,created_at INT);
           CREATE TABLE tasks(id TEXT,status TEXT,error TEXT);
-          CREATE TABLE events(task_id TEXT,ts TEXT,stream TEXT,line TEXT);
+          CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT,task_id TEXT,ts TEXT,stream TEXT,line TEXT);
         ''')
         self.db.execute("INSERT INTO accounts VALUES('free','chatgpt',?,0,'none','active')", (self.email,))
         self.db.execute("INSERT INTO account_credentials VALUES('free','synthetic-password','synthetic-totp')")
@@ -264,7 +264,7 @@ class ProductionTests(unittest.TestCase):
             })
         self.backend.authorize = authorize
         self.assertEqual(self.run.advance(self.backend)['status'],'unknown')
-        event = json.loads(self.db.execute('SELECT line FROM events ORDER BY rowid DESC LIMIT 1').fetchone()[0])
+        event = json.loads(self.db.execute('SELECT line FROM events ORDER BY id DESC LIMIT 1').fetchone()[0])
         self.assertEqual(event['diagnostic']['error_code'],'oauth_cloudflare_challenge')
         self.assertEqual(event['diagnostic']['http_status'],403)
         self.assertIn('HTTP 403',event['next_action'])
@@ -284,7 +284,7 @@ class ProductionTests(unittest.TestCase):
             })
         self.backend.authorize = authorize
         self.assertEqual(self.run.advance(self.backend)['status'],'unknown')
-        event = json.loads(self.db.execute('SELECT line FROM events ORDER BY rowid DESC LIMIT 1').fetchone()[0])
+        event = json.loads(self.db.execute('SELECT line FROM events ORDER BY id DESC LIMIT 1').fetchone()[0])
         self.assertEqual(event['diagnostic']['error_code'],'oauth_authorization_failed')
         self.assertEqual(event['diagnostic']['page_type'],'unknown')
         self.assertEqual(event['diagnostic']['http_status'],0)

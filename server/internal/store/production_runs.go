@@ -77,15 +77,12 @@ func (s *Store) SaveProductionMaterial(scope, raw string, expiry int64) error {
 	return err
 }
 
-func (s *Store) ProductionDBPath() (string, error) {
-	var seq int
-	var name, path string
-	var dbPath string
-	dbPath, err := s.ex.DatabasePath()
-	_ = seq
-	_ = name
-	path = dbPath
-	return path, err
+// ProductionDatabaseDSN is private child-process input, never a diagnostic label.
+func (s *Store) ProductionDatabaseDSN() (string, error) {
+	if s.workerDSN == "" {
+		return "", errors.New("PRODUCTION_STORAGE_UNAVAILABLE")
+	}
+	return s.workerDSN, nil
 }
 
 func (s *Store) PendingProductions(stamp int64) ([]string, error) {
@@ -119,7 +116,11 @@ func (s *Store) ControlProduction(id, action string) error {
 	}
 	defer tx.Rollback()
 	var stage, status string
-	err = s.ex.QueryRowTx(tx, `SELECT stage,status FROM production_runs WHERE operation_id=?`, id).Scan(&stage, &status)
+	lock := ""
+	if s.dialect == DialectPG {
+		lock = " FOR UPDATE"
+	}
+	err = s.ex.QueryRowTx(tx, `SELECT stage,status FROM production_runs WHERE operation_id=?`+lock, id).Scan(&stage, &status)
 	if err != nil {
 		return err
 	}
@@ -175,7 +176,11 @@ func (s *Store) StopProduction(id, scope string, stamp int64) error {
 	}
 	defer tx.Rollback()
 	var old string
-	if err = s.ex.QueryRowTx(tx, `SELECT request_sha FROM production_admissions WHERE operation_id=?`, id).Scan(&old); err != nil {
+	lock := ""
+	if s.dialect == DialectPG {
+		lock = " FOR UPDATE"
+	}
+	if err = s.ex.QueryRowTx(tx, `SELECT request_sha FROM production_admissions WHERE operation_id=?`+lock, id).Scan(&old); err != nil {
 		return err
 	}
 	if old != scope {

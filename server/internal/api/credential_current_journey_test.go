@@ -18,6 +18,7 @@ import (
 	"github.com/tiantianGPU/reg-factory/server/internal/runner"
 	"github.com/tiantianGPU/reg-factory/server/internal/settings"
 	"github.com/tiantianGPU/reg-factory/server/internal/store"
+	"github.com/tiantianGPU/reg-factory/server/internal/testutil/testdatabase"
 )
 
 // Exercises the actual panel entry, Go queue/runner, Python CLI, HTTP exchange,
@@ -28,11 +29,7 @@ func TestCurrentCredentialJourneyThroughPythonWorker(t *testing.T) {
 		t.Skip("set REG_FACTORY_TEST_PYTHON for the cross-language acceptance journey")
 	}
 	root := t.TempDir()
-	st, err := store.Open(filepath.Join(root, "regd.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer st.Close()
+	st := testdatabase.Open(t, root)
 	assets := assetstore.New(root)
 	for _, ref := range []string{"old", "current"} {
 		st.UpsertAccounts([]store.AccountSeed{{Ref: ref, Platform: "chatgpt", Kind: "oauth", Identity: "same@example.test"}})
@@ -45,7 +42,7 @@ func TestCurrentCredentialJourneyThroughPythonWorker(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		r.ParseForm()
-		if r.Method != "POST" || r.FormValue("grant_type") != "refresh_token" {
+		if r.Method != "POST" || (r.FormValue("grant_type") != "refresh_token" && r.FormValue("grant_type") != "fixture_authorize") {
 			t.Error("unexpected upstream action")
 			w.WriteHeader(400)
 			return
@@ -71,7 +68,7 @@ func TestCurrentCredentialJourneyThroughPythonWorker(t *testing.T) {
 	app := filepath.Join(root, "worker")
 	os.MkdirAll(filepath.Join(app, "tools"), 0700)
 	// Only the fixture transport changes. The released CLI and persistence code run unmodified.
-	script := fmt.Sprintf("import sys\nsys.path.insert(0,%q)\nfrom tools import asset_ops\nasset_ops.OPENAI_TOKEN_URL=%q\nraise SystemExit(asset_ops.main())\n", repo, upstream.URL)
+	script := fmt.Sprintf("import sys,requests\nsys.path.insert(0,%q)\nfrom tools import asset_ops,chatgpt_reauthorize\nasset_ops.OPENAI_TOKEN_URL=%q\nasync def authorize(document,**kwargs):\n s=requests.Session();s.trust_env=False\n return s.post(asset_ops.OPENAI_TOKEN_URL,data={'grant_type':'fixture_authorize'},timeout=5).json()\nchatgpt_reauthorize.authorize_document=authorize\nraise SystemExit(asset_ops.main())\n", repo, upstream.URL)
 	if err := os.WriteFile(filepath.Join(app, "tools", "asset_ops.py"), []byte(script), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -82,9 +79,10 @@ func TestCurrentCredentialJourneyThroughPythonWorker(t *testing.T) {
 	r := gin.New()
 	r.POST("/refresh", s.accountRefresh)
 	r.GET("/export", s.assetExport)
-	invoke := func(id string) store.Task {
+	invokeMode := func(id, ref string, authorize bool) store.Task {
 		w := httptest.NewRecorder()
-		r.ServeHTTP(w, httptest.NewRequest("POST", "/refresh", strings.NewReader(`{"ref":"old","request_id":"`+id+`"}`)))
+		body, _ := json.Marshal(map[string]any{"ref": ref, "request_id": id, "allow_relogin": authorize})
+		r.ServeHTTP(w, httptest.NewRequest("POST", "/refresh", strings.NewReader(string(body))))
 		if w.Code != 202 && w.Code != 200 {
 			t.Fatal(w.Code, w.Body.String())
 		}
@@ -101,6 +99,7 @@ func TestCurrentCredentialJourneyThroughPythonWorker(t *testing.T) {
 		t.Fatal("worker did not finish")
 		return store.Task{}
 	}
+	invoke := func(id string) store.Task { return invokeMode(id, "old", false) }
 	first := invoke("b552c0f8-0ec8-4fa9-9871-c482f7741001")
 	if first.Status != "succeeded" {
 		events, _ := st.TailEvents(first.ID, 20)
@@ -143,5 +142,31 @@ func TestCurrentCredentialJourneyThroughPythonWorker(t *testing.T) {
 	current, _ := assets.Get("old")
 	if account.LibraryStatus == "leased" || current.Payload["access_token"] != "new-3-at" {
 		t.Fatal("failed exchange retained a lock or replaced credentials")
+	}
+	mode.Store(0)
+	blocked := invoke("b552c0f8-0ec8-4fa9-9871-c482f7741005")
+	if blocked.Status != "failed" || calls.Load() != 4 || !strings.Contains(blocked.Error, "重新授权") {
+		t.Fatal("lost RT was replayed by a new task", blocked.Status, blocked.Error, calls.Load())
+	}
+	// A different alias of the same account is protected by the same PG history.
+	blocked = invokeMode("b552c0f8-0ec8-4fa9-9871-c482f7741006", "current", false)
+	if blocked.Status != "failed" || calls.Load() != 4 {
+		t.Fatal("alias bypassed RT guard", blocked.Status, calls.Load())
+	}
+	st.UpsertAccounts([]store.AccountSeed{{Ref: "independent", Platform: "chatgpt", Kind: "oauth", Identity: "other@example.test"}})
+	if err := assets.Put(assetstore.Asset{Ref: "independent", Platform: "chatgpt", Kind: "oauth", Email: "other@example.test", Payload: map[string]any{"email": "other@example.test", "access_token": "other-at", "refresh_token": "other-rt"}}); err != nil {
+		t.Fatal(err)
+	}
+	other := invokeMode("b552c0f8-0ec8-4fa9-9871-c482f7741007", "independent", false)
+	if other.Status != "succeeded" || calls.Load() != 5 {
+		t.Fatal("independent account blocked", other.Status, other.Error, calls.Load())
+	}
+	authorized := invokeMode("b552c0f8-0ec8-4fa9-9871-c482f7741008", "old", true)
+	if authorized.Status != "succeeded" || calls.Load() != 6 {
+		t.Fatal("explicit login did not recover", authorized.Status, authorized.Error, calls.Load())
+	}
+	resumed := invoke("b552c0f8-0ec8-4fa9-9871-c482f7741009")
+	if resumed.Status != "succeeded" || calls.Load() != 7 {
+		t.Fatal("new successful credentials still fenced", resumed.Status, resumed.Error, calls.Load())
 	}
 }

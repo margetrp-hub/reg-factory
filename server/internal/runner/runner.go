@@ -387,6 +387,30 @@ func (m *Manager) launch(task store.Task, weight int) error {
 		return errors.New("服务正在停止，未启动进程")
 	default:
 	}
+	if credentialRef != "" {
+		guard, guardErr := m.st.CredentialExecutionGuard(task)
+		if guardErr != nil {
+			m.launchMu.Unlock()
+			return guardErr
+		}
+		if guard != "" {
+			message := "原账号凭据任务尚未结案，本次未执行；请从原任务核对或恢复"
+			if guard == "relogin_required" {
+				message = "上次RT交换结果未确认，本次未重复使用旧RT；请在更新凭据中选择登录重新授权"
+			}
+			_ = m.st.Stage(task.ID, store.StageEvent{Stage: "credential_history", Status: "failed", Code: guard, Action: message})
+			if refreshRef != "" {
+				guardErr = m.st.FinishAccountRefresh(task.ID, refreshRef, "failed", 1, message, "")
+			} else {
+				guardErr = m.st.Finish(task.ID, "failed", 1, message)
+			}
+			m.launchMu.Unlock()
+			if guardErr != nil {
+				return guardErr
+			}
+			return errors.New(message)
+		}
+	}
 	if refreshRef != "" {
 		if err := m.st.BeginAccountRefresh(task.ID, refreshRef, sourceSHA); err != nil {
 			m.launchMu.Unlock()

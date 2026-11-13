@@ -581,11 +581,8 @@ def _credential_operation(fn):
             identity = _json_email(found[1]) if found else email
             root = Path(os.environ.get('REG_FACTORY_DATA_DIR') or ROOT)
             with versions.account_lock(root, identity, ref):
-                if _other_credential_task(root, identity, ref):
-                    return {'ref': ref, 'result': 'failed', 'message': '原账号凭据任务尚未结案，本次未执行；请从原任务核对或恢复'}
-                if fn.__name__ == '_refresh_chatgpt' and _retry_needs_authorization(root, identity, ref):
-                    return {'ref': ref, 'result': 'relogin_required',
-                            'message': '上次 RT 交换未确认完成，本次未重复使用旧 RT；请在更新凭据中选择登录重新授权'}
+                # Go checked current task history before spawning this executor.
+                # This file lock still protects publication across worker processes.
                 _stage('credential_rt' if fn.__name__ == '_refresh_chatgpt' else 'credential_authorize',
                        '使用 RT 获取新凭据' if fn.__name__ == '_refresh_chatgpt' else '使用原账号资料重新登录授权')
                 return fn(ref, email, *args, **kwargs)
@@ -594,51 +591,6 @@ def _credential_operation(fn):
         except ValueError:
             return {'ref': ref, 'result': 'failed', 'message': '账号工作区或凭据版本不明确，请核对当前资料后重试'}
     return guarded
-
-
-def _other_credential_task(root, email, ref):
-    import sqlite3
-    path = root / 'regd.db'
-    if not path.is_file():
-        return False
-    with sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True) as db:
-        aliases = {ref}
-        if email:
-            aliases.update(row[0] for row in db.execute("SELECT ref FROM accounts WHERE platform='chatgpt' AND lower(trim(identity))=?", (email.lower().strip(),)))
-        own = os.environ.get('REG_FACTORY_RUN_ID', '')
-        rows = db.execute("SELECT id,args_json FROM tasks WHERE script='asset_ops' AND id<>? AND status IN ('running','stopping')", (own,))
-        for _, raw in rows:
-            try:
-                args = json.loads(raw)
-                if args[0] == 'refresh' and args[args.index('--ref') + 1] in aliases:
-                    return True
-            except (ValueError, IndexError, TypeError):
-                continue
-    return False
-
-
-def _retry_needs_authorization(root, email, ref):
-    """A lost RT response is a failed task; a new attempt must not replay that RT."""
-    import sqlite3
-    path = root / 'regd.db'
-    if not path.is_file():
-        return False
-    with sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True) as db:
-        aliases = {ref}
-        if email:
-            aliases.update(row[0] for row in db.execute("SELECT ref FROM accounts WHERE platform='chatgpt' AND lower(trim(identity))=?", (email.lower().strip(),)))
-        own = os.environ.get('REG_FACTORY_RUN_ID', '')
-        for state, code, raw in db.execute("SELECT status,exit_code,args_json FROM tasks WHERE script='asset_ops' AND id<>? AND status IN ('succeeded','failed','unknown','interrupted','stopped') ORDER BY finished_at DESC,created_at DESC,id DESC", (own,)):
-            try:
-                args = json.loads(raw)
-                if args[0] == 'refresh' and args[args.index('--ref') + 1] in aliases:
-                    if state == 'succeeded':
-                        return False
-                    if state in ('unknown','interrupted','stopped') or state == 'failed' and code == 75:
-                        return True
-            except (ValueError,IndexError,TypeError):
-                continue
-    return False
 
 
 @_credential_operation

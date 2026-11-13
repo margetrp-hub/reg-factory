@@ -14,12 +14,12 @@ import io
 import json
 import os
 from pathlib import Path
-import sqlite3
 import sys
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from cryptography.fernet import Fernet
+from common.production_database import connect
 
 AUTH = 'https://api.openai.com/auth'
 PROFILE = 'https://api.openai.com/profile'
@@ -58,7 +58,8 @@ def document_metadata(doc):
 def candidates(db, root):
     """Conservatively reconcile every alias and retained result, not filenames."""
     root = root.resolve()
-    aliases = list(db.execute('SELECT a.*,c.password,c.totp FROM accounts a LEFT JOIN account_credentials c ON c.ref=a.ref WHERE platform=?', ('chatgpt',)))
+    lock = ' FOR UPDATE OF a' if getattr(db, 'postgres', False) and db.in_transaction else ''
+    aliases = list(db.execute('SELECT a.*,c.password,c.totp FROM accounts a LEFT JOIN account_credentials c ON c.ref=a.ref WHERE platform=?' + lock, ('chatgpt',)))
     blocked = {str(r['identity']).lower() for r in aliases if r['claimed'] or r['join_status'] in ('joined', 'switched', 'verified')}
     blocked |= {r[0].lower() for r in db.execute('SELECT email FROM production_results')}
     blocked |= {r[0].lower() for r in db.execute("SELECT email FROM production_runs WHERE email<>'' AND NOT (status='cancelled' AND stop_effect='none' AND external_started=0)")}
@@ -198,7 +199,8 @@ class Run:
         self.db, self.operation, self.box, self.root = db, operation, Fernet(key), root
 
     def row(self):
-        return self.db.execute('SELECT * FROM production_runs WHERE operation_id=?', (self.operation,)).fetchone()
+        lock = ' FOR UPDATE' if getattr(self.db, 'postgres', False) and self.db.in_transaction else ''
+        return self.db.execute('SELECT * FROM production_runs WHERE operation_id=?' + lock, (self.operation,)).fetchone()
 
     def seal(self, value):
         return self.box.encrypt(canonical(value).encode()).decode()
@@ -496,11 +498,14 @@ class Run:
 
 
 def main(request):
+    with contextlib.closing(connect(request['db_path'])) as db:
+        return _run(request, db)
+
+
+def _run(request, db):
     import fcntl
     root = Path(request['root'])
     operation = request['operation_id']
-    db = sqlite3.connect(request['db_path'], timeout=15, check_same_thread=False)
-    db.row_factory = sqlite3.Row
     run = Run(db, operation, request['artifact_key'].encode(), root)
     locks = root / 'runtime' / 'production-locks'
     locks.mkdir(parents=True, exist_ok=True)
@@ -513,6 +518,10 @@ def main(request):
             return run.renew_readback(request['material'])
         if request['action'] == 'admit':
             db.execute('BEGIN IMMEDIATE')
+            if getattr(db, 'postgres', False):
+                # StopProduction locks the same admission before writing its
+                # tombstone, so a late admission cannot escape the stop fence.
+                db.execute('SELECT operation_id FROM production_admissions WHERE operation_id=? FOR UPDATE', (operation,)).fetchone()
             if run.row():
                 db.commit()
                 return {'status': run.row()['status'], 'error_code': run.row()['error_code']}

@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -28,6 +29,11 @@ func TestProductionReadbackPythonDriver(t *testing.T) {
 		t.Skip("production driver requires Linux flock")
 	}
 	t.Chdir("../../..")
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("REGD_APP_ROOT", root)
 	testProductionReadbackHTTP(t, true)
 }
 
@@ -38,11 +44,17 @@ func testProductionReadbackHTTP(t *testing.T, driver bool) {
 	root := t.TempDir()
 	t.Setenv("REG_FACTORY_DATA_DIR", root)
 	t.Setenv("REG_FACTORY_ENV_FILE", filepath.Join(root, ".env"))
-	db, err := store.Open(filepath.Join(root, "node.db"))
-	if err != nil {
-		t.Fatal(err)
+	var db *store.Store
+	var err error
+	if driver && os.Getenv("REG_FACTORY_TEST_POSTGRES_DSN") != "" {
+		db = centralJourneyStore(t, root)
+	} else {
+		db, err = store.Open(filepath.Join(root, "node.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
 	}
-	defer db.Close()
 	h := New(Config{Enabled: true, NodeID: "sg", Key: key, ReceiptKey: key, ArtifactKey: key}, nil, db)
 	router := gin.New()
 	h.Register(router)

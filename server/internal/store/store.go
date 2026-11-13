@@ -58,8 +58,9 @@ type Audit struct {
 
 // Store 包装数据库句柄。
 type Store struct {
-	db   *sql.DB
-	read *sql.DB // WAL readers never occupy the single task-state writer connection.
+	db        *sql.DB
+	read      *sql.DB // WAL readers never occupy the single task-state writer connection.
+	workerDSN string  // private process input; never expose through diagnostics or JSON
 
 	// 后端方言。SQLite 保持原行为，PG 需要 rebind 占位符。
 	dialect Dialect
@@ -282,7 +283,7 @@ func openPGStore(dsn string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	st := &Store{db: db, dialect: d, ex: NewExecer(db, d)}
+	st := &Store{db: db, workerDSN: dsn, dialect: d, ex: NewExecer(db, d)}
 	if _, err = st.ex.Exec(SchemaDDL(schema, d)); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("initialize PostgreSQL tables: %w", err)
@@ -320,7 +321,7 @@ func openSQLiteStore(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("初始化表结构失败: %w", err)
 	}
-	st := &Store{db: db, dialect: DialectSQLite, ex: NewExecer(db, DialectSQLite)}
+	st := &Store{db: db, workerDSN: path, dialect: DialectSQLite, ex: NewExecer(db, DialectSQLite)}
 	if err := st.postOpenInit(); err != nil {
 		db.Close()
 		return nil, err

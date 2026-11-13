@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"os/exec"
+	"path/filepath"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -148,7 +149,7 @@ func (h *Handler) productionMaterial(c *gin.Context) {
 }
 
 func (h *Handler) productionDriver(ctx context.Context, input map[string]any) map[string]any {
-	path, err := h.st.ProductionDBPath()
+	path, err := h.st.ProductionDatabaseDSN()
 	if err != nil {
 		return map[string]any{"status": "unknown", "error_code": "PRODUCTION_STORAGE_UNAVAILABLE"}
 	}
@@ -164,8 +165,10 @@ func (h *Handler) productionDriver(ctx context.Context, input map[string]any) ma
 	if err != nil {
 		return map[string]any{"status": "unknown", "error_code": "PRODUCTION_DRIVER_INPUT_INVALID"}
 	}
-	command := exec.CommandContext(ctx, "python", "tools/team_production.py")
-	command.Env, err = settings.WorkerEnvironment(settings.Load().EnvFile)
+	cfg := settings.Load()
+	command := exec.CommandContext(ctx, cfg.Python, filepath.Join(cfg.AppRoot, "tools", "team_production.py"))
+	command.Dir = cfg.AppRoot
+	command.Env, err = settings.WorkerEnvironment(cfg.EnvFile)
 	if err != nil {
 		return map[string]any{"status": "unknown", "error_code": "PRODUCTION_CONFIG_UNAVAILABLE"}
 	}
