@@ -551,10 +551,18 @@ func (d *DB) UpsertSource(src Source) (Source, error) {
 	}
 	src.Transport = defaultStr(src.Transport, TransportIMAP)
 	src.Folder = defaultStr(src.Folder, "INBOX")
-	if strings.TrimSpace(src.Name) == "" || strings.TrimSpace(src.Username) == "" {
-		return Source{}, errors.New("请填写来源名称和登录账号")
+	if strings.TrimSpace(src.Name) == "" {
+		return Source{}, errors.New("请填写来源名称")
+	}
+	if src.Transport != TransportCloudmail && strings.TrimSpace(src.Username) == "" {
+		return Source{}, errors.New("请填写登录账号")
 	}
 	switch src.Transport {
+	case TransportCloudmail:
+		src.CredentialMode, src.Idle = "address_jwt", false
+		if strings.TrimSpace(src.Endpoint) == "" {
+			return Source{}, errors.New("请填写 cloudmail 接口地址")
+		}
 	case TransportIMAP, TransportPOP3:
 		src.CredentialMode = "password"
 		if src.Host == "" || src.Password == "" || strings.ContainsAny(src.Host, " /\\\r\n") || strings.ContainsAny(src.Username+src.Password, "\r\n") {

@@ -4,7 +4,8 @@ package mail
 // recipient. Temporary HTTP providers belong to common/temp_email.py; they do
 // not advertise an IMAP fallback in this ingestion service.
 const (
-	TransportIMAP  = "imap"
-	TransportPOP3  = "pop3"
-	TransportGraph = "graph"
+	TransportIMAP      = "imap"
+	TransportPOP3      = "pop3"
+	TransportGraph     = "graph"
+	TransportCloudmail = "cloudmail"
 )

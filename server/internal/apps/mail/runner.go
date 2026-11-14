@@ -97,6 +97,10 @@ func (r *Runner) tick(ctx context.Context) error {
 		op, cancel := context.WithTimeout(ctx, 60*time.Second)
 		err = r.pollTransport(op)
 		cancel()
+	case TransportCloudmail:
+		op, cancel := context.WithTimeout(ctx, 90*time.Second)
+		err = r.pollCloudmail(op)
+		cancel()
 	default:
 		err = fmt.Errorf("不支持此收件协议：%s", r.Src.Transport)
 	}
