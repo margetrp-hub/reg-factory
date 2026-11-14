@@ -2,7 +2,9 @@
 
 ## 工作基线收敛（2026-11-14）
 
-后续修改统一在 `sg-integrated-release/reg-factory` 的 `main` 完成。原中央资产分支的能力已由 `f3f4b78` 集成，并由 `474cd96` 收拢为 Go 执行与回库；旧树残留草稿不重新覆盖现役实现。`sg-modes-config` 已完全合入，`sg-go-asset-runtime` 独有的 2.1.31 部署验收补入下方同版本记录。旧工作树按可恢复快照归档，历史 tag 保留。
+后续修改统一在 `sg-integrated-release/reg-factory` 的 `main` 完成。原中央资产分支的能力已由 `f3f4b78` 集成，并由 `474cd96` 收拢为 Go 执行与回库；旧树残留草稿不重新覆盖现役实现。`sg-modes-config` 已完全合入，`sg-go-asset-runtime` 独有的 2.1.31 部署验收补入下方同版本记录，并以 `archive/sg-go-asset-runtime-2b5f644` 保存原提交。
+
+上述两份旧工作树已解除登记，对应及已合并的阶段分支已移除；本地残留材料保存在集成树私有 `.runtime/retired-worktrees-20261114/`。`sg-central-assets` 仍有其它任务占用，Codex拒绝归档；该树和未提交草稿保持，待原任务释放后再归档，不绕过占用保护删除。
 
 这次收拢不改变运行版本：主 SG 仍以已验收的 `800fb81` / 2.1.36 为准。`a452cb9` 的 2FA 403/409 分类修正已在源码基线内，其运行发布与验收须另记，不能把分支合并视为上线。
 
