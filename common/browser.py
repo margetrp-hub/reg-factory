@@ -233,7 +233,16 @@ async def open_and_connect(name, p=None, browser_options=None):
         raise ValueError("此流程需要 Playwright API；请选择 patchright 或 camoufox。Ruyipage 使用独立适配入口。")
     if _engine == "camoufox":
         _opts = dict(browser_options or {})
-        _proxy = _opts.get("proxy") or ""
+        from common.direct_proxy import parse_proxy, proxy_from_browser_fields
+        from common.proxy_switch import effective_proxy_url
+        _proxy = _opts.get("proxy")
+        if not _proxy:
+            # Authorization supplies the same profile fields as registration.
+            # Preserve that selected proxy instead of silently launching direct.
+            proxy = proxy_from_browser_fields(_opts)
+            if proxy is None and _opts.get("proxyType") != "noproxy":
+                proxy = parse_proxy(effective_proxy_url())
+            _proxy = proxy.as_playwright() if proxy else ""
         print(f"  [engine] camoufox   proxy={'yes' if _proxy else 'no'}")
         _handle, _browser, _ctx, _page = await launch_camoufox(
             name,

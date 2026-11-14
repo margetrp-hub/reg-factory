@@ -12,7 +12,7 @@ import time
 import uuid
 from pathlib import Path
 
-from common.direct_proxy import ProxySpec, parse_proxy
+from common.direct_proxy import parse_proxy, proxy_from_browser_fields
 
 
 def find_browser_path() -> str:
@@ -71,25 +71,11 @@ class BundledBrowser:
             "Chrome/Chromium is unavailable; configure CUSTOM_BROWSER_PATH or REG_FACTORY_BROWSER_PATH"
         )
 
-    @staticmethod
-    def _proxy_from_fields(fields: dict) -> ProxySpec | None:
-        raw = fields.get("proxy_str") or fields.get("proxyUrl") or fields.get("proxy")
-        if raw:
-            return parse_proxy(str(raw))
-        host = str(fields.get("host") or "").strip()
-        port = str(fields.get("port") or "").strip()
-        if not host or not port or str(fields.get("proxyType") or "").lower() == "noproxy":
-            return None
-        scheme = "socks5" if str(fields.get("proxyType") or "").lower() == "socks5" else "http"
-        user = str(fields.get("proxyUserName") or "")
-        password = str(fields.get("proxyPassword") or "")
-        return parse_proxy(f"{scheme}://{user}:{password}@{host}:{port}" if user else f"{scheme}://{host}:{port}")
-
     def create_browser(self, name="reg_factory", **kwargs):
         profile_id = uuid.uuid4().hex
         profiles = self._load()
-        proxy = self._proxy_from_fields(kwargs)
-        if proxy is None:
+        proxy = proxy_from_browser_fields(kwargs)
+        if proxy is None and kwargs.get("proxyType") != "noproxy":
             from common import proxy_switch
             proxy = parse_proxy(proxy_switch.effective_proxy_url())
         profiles[profile_id] = {
@@ -215,7 +201,7 @@ class BundledBrowser:
                 profile_id = self.create_browser(name=name, **payload)
                 return {"success": True, "data": self._profile(profile_id)}
             profile = self._profile(profile_id)
-            proxy = self._proxy_from_fields(payload)
+            proxy = proxy_from_browser_fields(payload)
             if proxy is not None or str(payload.get("proxyType") or "").lower() == "noproxy":
                 profile["proxy"] = proxy.url if proxy else ""
             if payload.get("name"):

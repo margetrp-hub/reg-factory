@@ -62,6 +62,20 @@ def parse_proxy(value: str | None) -> ProxySpec | None:
     )
 
 
+def proxy_from_browser_fields(fields: dict) -> ProxySpec | None:
+    """Resolve the profile fields shared by Chromium and Camoufox callers."""
+    raw = fields.get("proxy_str") or fields.get("proxyUrl") or fields.get("proxy")
+    if raw:
+        return parse_proxy(str(raw))
+    host = str(fields.get("host") or "").strip()
+    port = str(fields.get("port") or "").strip()
+    if not host or not port or str(fields.get("proxyType") or "").lower() == "noproxy":
+        return None
+    scheme = "socks5" if str(fields.get("proxyType") or "").lower() == "socks5" else "http"
+    return ProxySpec(scheme, host, int(port),
+                     str(fields.get("proxyUserName") or ""), str(fields.get("proxyPassword") or ""))
+
+
 def _env(environ=None):
     return task_environment(os.environ) if environ is None else environ
 
