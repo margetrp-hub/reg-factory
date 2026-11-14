@@ -47,7 +47,7 @@ Core的 `X-Admin-API-Key` 和客户开发者Bearer属于Aishop平台，不是SG�
 
 ### 任务受理与重试
 
-账号页的“更新凭据”统一调用 `POST /api/accounts/refresh`，输入 `ref/platform/request_id/allow_relogin`。ChatGPT 的 `allow_relogin=false` 为纯RT刷新，`true` 为登录重新授权；不因RT失败自动切换登录。批量按账号独立受理，保留已受理任务；丢响应先查询 `request-<request_id>`，同编号不能切换方式。原 `/api/accounts/convert` 保留既有明确重新授权契约，前端不再把它命名为笼统“修复凭证”。已领取与原任务占用限制继续由服务端校验。
+账号页的“更新凭据”统一调用 `POST /api/accounts/refresh`，输入 `ref/platform/request_id/allow_relogin`。ChatGPT 的 `allow_relogin=false` 为纯RT刷新，`true` 为登录重新授权；不因RT失败自动切换登录。批量按账号独立受理，保留已受理任务；丢响应先查询 `request-<request_id>`，同编号不能切换方式。原 `/api/accounts/convert` 保留既有明确重新授权契约，前端不再把它命名为笼统“修复凭证”。已领取、已使用和生产历史不禁止本地更新、重新授权、改密或失败后重新发起；仅同一身份正在执行的凭据操作互斥，Work 任务结束后可再次本地发起。成功后的自动 AT 检查也覆盖已领取账号，使用记录保持。
 
 先从 `GET /api/scripts` 取得实际script及参数，再提交：
 

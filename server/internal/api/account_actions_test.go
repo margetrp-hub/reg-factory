@@ -53,7 +53,7 @@ func TestLivenessWithOnlyRefreshTokenDoesNotExchangeOrRewriteCredentials(t *test
 	}
 }
 
-func TestRefreshReplaysOriginalAndProtectsDeliveredAccount(t *testing.T) {
+func TestRefreshReplaysOriginalAndAcceptsDeliveredAccount(t *testing.T) {
 	root := t.TempDir()
 	st, err := store.Open(filepath.Join(root, "state.db"))
 	if err != nil {
@@ -99,16 +99,16 @@ func TestRefreshReplaysOriginalAndProtectsDeliveredAccount(t *testing.T) {
 	if replay.Code != 200 || body["status"] != "unknown" || body["task_id"] != task.ID {
 		t.Fatal(replay.Code, replay.Body)
 	}
-	if result := invoke("delivered", "e5f879d2-88c9-4fdc-9726-0e597246bc11"); result.Code != 409 {
-		t.Fatal("delivered refresh permitted", result.Code)
+	if result := invoke("delivered", "e5f879d2-88c9-4fdc-9726-0e597246bc11"); result.Code != 202 {
+		t.Fatal("delivered refresh blocked", result.Code, result.Body)
 	}
 	page, err := st.QueryTasks(store.TaskQuery{})
-	if err != nil || page.Total != 1 {
-		t.Fatal("duplicate or unauthorized task", page, err)
+	if err != nil || page.Total != 2 {
+		t.Fatal("duplicate or missing task", page, err)
 	}
 }
 
-func TestImportConversionUsesDurableRepairAndRejectsDeliveredAccount(t *testing.T) {
+func TestImportConversionUsesDurableRepairForDeliveredAccount(t *testing.T) {
 	root := t.TempDir()
 	st, err := store.Open(filepath.Join(root, "state.db"))
 	if err != nil {
@@ -141,7 +141,7 @@ func TestImportConversionUsesDurableRepairAndRejectsDeliveredAccount(t *testing.
 		if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
 			t.Fatal(err)
 		}
-		if len(result.Queued) != 1 || len(result.Skipped) != 1 || result.Skipped[0].Reason != "claimed" {
+		if len(result.Queued) != 2 || len(result.Skipped) != 0 {
 			t.Fatal(w.Body)
 		}
 		return result.Queued[0].TaskID

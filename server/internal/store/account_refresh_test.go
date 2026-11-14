@@ -116,7 +116,7 @@ func TestRefreshAliasesSharePendingTaskAndFailedTaskCanRetry(t *testing.T) {
 	}
 }
 
-func TestRefreshStopRestartAndCoreOwnership(t *testing.T) {
+func TestRefreshStopRestartAndUsedAccountMaintenance(t *testing.T) {
 	s, task := refreshFixture(t)
 	if _, _, err := s.QueueAccountRefresh(task, "one"); err != nil {
 		t.Fatal(err)
@@ -142,7 +142,6 @@ func TestRefreshStopRestartAndCoreOwnership(t *testing.T) {
 	if account.RefreshState != "failed" {
 		t.Fatal(account.RefreshState)
 	}
-	original := task.ID
 	task.ID = "after-restart"
 	if id, created, err := s.QueueAccountRefresh(task, "one"); err != nil || !created || id != task.ID {
 		t.Fatal(id, created, err)
@@ -150,11 +149,45 @@ func TestRefreshStopRestartAndCoreOwnership(t *testing.T) {
 	if err := s.MarkClaimed("one"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ResolveAccountRefresh(original, "operator", "确认失败证据", "failed", ""); err != ErrAccountOwned {
-		t.Fatal("claimed resolution", err)
+	if err := s.BeginAccountRefresh(task.ID, "one", "before"); err != nil {
+		t.Fatal("used account could not start", err)
+	}
+	if err := s.FinishAccountRefresh(task.ID, "one", "succeeded", 0, "", "after"); err != nil {
+		t.Fatal("used account could not save success", err)
+	}
+	account, _ = s.GetAccount("one")
+	if !account.Claimed || account.LibraryStatus != "used" || account.RefreshState != "succeeded" {
+		t.Fatal("credential update changed use history", account)
+	}
+	check, err := s.GetTask(RefreshVerificationID(task.ID))
+	if err != nil || check.Status != "queued" {
+		t.Fatal("used account AT check not scheduled", check, err)
+	}
+	items, err := s.CredentialCheckItems(check.ID)
+	if err != nil || len(items) != 1 || !items[0].CanRefresh {
+		t.Fatal("used account check cannot update credentials", items, err)
 	}
 	task.ID = "after-claimed"
-	if _, _, err := s.QueueAccountRefresh(task, "one"); err != ErrAccountOwned {
-		t.Fatal("claimed refresh", err)
+	if _, created, err := s.QueueAccountRefresh(task, "one"); err != nil || !created {
+		t.Fatal("used account could not update again", err)
+	}
+}
+
+func TestLocalRefreshWaitsOnlyForActiveWorkOnSameIdentity(t *testing.T) {
+	s, task := refreshFixture(t)
+	s.MarkClaimed("one")
+	work := task
+	work.ID = "work-operation"
+	if err := s.CreateTask(work); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.QueueAccountRefresh(task, "one"); err != ErrAccountBusy {
+		t.Fatal("concurrent credential rotation admitted", err)
+	}
+	if err := s.Finish(work.ID, "failed", 1, "upstream rejected"); err != nil {
+		t.Fatal(err)
+	}
+	if _, created, err := s.QueueAccountRefresh(task, "one"); err != nil || !created {
+		t.Fatal("ended Work task blocked local update", created, err)
 	}
 }

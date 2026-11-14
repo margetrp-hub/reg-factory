@@ -27,7 +27,7 @@ func (s *Server) getAccountRefresh(c *gin.Context) {
 		return
 	}
 	account, err := s.st.GetAccount(evidence.Ref)
-	owned := err != nil || account.Claimed
+	available := err == nil
 	pending := refreshNeedsResolution(task)
 	verificationID, verificationStatus := "", ""
 	if check, err := s.st.GetTask(store.RefreshVerificationID(task.ID)); err == nil {
@@ -57,11 +57,11 @@ func (s *Server) getAccountRefresh(c *gin.Context) {
 		progress.Status = task.Status
 		progress.Action = task.Error
 	}
-	c.JSON(200, gin.H{"task": task, "evidence": evidence, "can_resolve": pending && !owned,
+	c.JSON(200, gin.H{"task": task, "evidence": evidence, "can_resolve": pending && available,
 		"method": method, "progress": progress,
 		"library_status": account.LibraryStatus, "verification_task_id": verificationID, "verification_status": verificationStatus,
-		"can_reconcile": pending && !owned && account.Platform == "chatgpt" && evidence.SourceSHA != "",
-		"can_retry":     !owned && (task.Status == "failed" || ((task.Status == "stopped" || task.Status == "interrupted") && task.StartedAt == ""))})
+		"can_reconcile": pending && available && account.Platform == "chatgpt" && evidence.SourceSHA != "",
+		"can_retry":     available && (task.Status == "failed" || ((task.Status == "stopped" || task.Status == "interrupted") && task.StartedAt == ""))})
 }
 
 func (s *Server) reconcileAccountRefresh(c *gin.Context) {
@@ -80,8 +80,8 @@ func (s *Server) reconcileAccountRefresh(c *gin.Context) {
 		return
 	}
 	account, err := s.st.GetAccount(evidence.Ref)
-	if err != nil || account.Claimed {
-		c.JSON(409, gin.H{"error": "account_owned_by_core", "detail": "已领取账号在主系统原任务处理"})
+	if err != nil {
+		c.JSON(404, gin.H{"error": "account_not_found"})
 		return
 	}
 	if !refreshNeedsResolution(task) || account.Platform != "chatgpt" {

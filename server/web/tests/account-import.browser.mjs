@@ -12,6 +12,7 @@ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
 const origin=`http://127.0.0.1:${server.address().port}`,browser=await chromium.launch({headless:true}),page=await browser.newPage({viewport:{width:1536,height:1000},reducedMotion:'reduce'});
 const errors=[],writes=[],reads=[];let imported=false,failRead=false;
 const accounts=Array.from({length:10},(_,i)=>({ref:`import:new-${i}@example.test`,identity:`new-${i}@example.test`,platform:'chatgpt',kind:'imported',status:'unknown',library_status:'pending',created_at:'2026-11-13T10:47:15Z',imported_at:'2026-11-13T10:47:15Z',import_batch:'import-test',has_credentials:false}));
+Object.assign(accounts[3],{claimed:true,library_status:'used'});
 page.setDefaultTimeout(30000);page.on('pageerror',e=>errors.push(e.message));
 await page.route('**/*',async route=>{
  const request=route.request(),url=new URL(request.url()),p=url.pathname;assert.equal(url.origin,origin);
@@ -29,6 +30,7 @@ await page.route('**/*',async route=>{
   return json({accounts:rows,total:rows.length,count:rows.length});
  }
  if(p==='/api/accounts/detail')return json({account:accounts.find(a=>a.ref===url.searchParams.get('ref'))});
+ if(p==='/api/accounts/refresh')return route.fulfill({status:202,json:{ok:true,task_id:'request-'+request.postDataJSON().request_id,status:'queued'}});
  if(p==='/api/accounts/checks')return json({page:{tasks:[],total:0,offset:0,limit:50},counts:{}});
  throw Error('Unexpected API '+p);
 });
@@ -78,6 +80,28 @@ try{
  await page.goto(origin+'/platform/chatgpt/accounts/?q=new-3');await table.waitFor();
  assert.equal(await table.locator('tbody tr').count(),1);
  assert.equal(writes.length,1);assert(reads.filter(p=>p==='/api/accounts').length<16,'unbounded account reloads');
+ await page.setViewportSize({width:1536,height:1000});
+ Object.assign(accounts[3],{kind:'oauth',has_credentials:true});
+ await page.getByRole('button',{name:'更新列表',exact:true}).click();
+ const used=table.locator('tbody tr').filter({hasText:'new-3@example.test'});
+ await used.getByRole('button',{name:'更新凭据',exact:true}).click();
+ await update.locator('input[value="refresh"]').check();
+ await update.getByRole('button',{name:'开始更新',exact:true}).click();
+ await update.getByRole('link',{name:'查看运行',exact:true}).waitFor();
+ assert.equal(writes.at(-1)[0],'/api/accounts/refresh');
+ assert.equal(writes.at(-1)[1].allow_relogin,false);
+ await update.getByRole('button',{name:'返回账号',exact:true}).click();
+ await used.getByText('new-3@example.test',{exact:true}).click();
+ const detail=page.getByRole('dialog').filter({has:page.getByRole('button',{name:'更新凭据',exact:true})});
+ await detail.getByRole('button',{name:'更新凭据',exact:true}).click();
+ await update.getByRole('button',{name:'再次更新',exact:true}).click();
+ await update.locator('input[value="authorize"]').check();
+ await update.getByRole('button',{name:'开始更新',exact:true}).click();
+ await update.getByRole('link',{name:'查看运行',exact:true}).waitFor();
+ assert.equal(writes.at(-1)[1].allow_relogin,true);
+ assert.equal(writes.filter(([endpoint])=>endpoint==='/api/accounts/refresh').length,2);
+ assert.equal(await update.getByText('主系统处理',{exact:true}).count(),0);
+ await page.screenshot({path:path.join(output,'used-account-update.png'),fullPage:true});
  assert.deepEqual(errors,[]);
  console.log(JSON.stringify({passed:true,checks:['10 imports immediately visible','stable explicit time','no source category','authorization choice without submission','search and return URL','failed reload preserves results','standard table and smaller mobile buttons','shared platform account view']}));
 }catch(error){await page.screenshot({path:path.join(output,'failure.png'),fullPage:true});console.error({errors,url:page.url(),body:await page.locator('body').innerText()});throw error;}

@@ -91,12 +91,18 @@ func receiptSafe(full map[string]any) map[string]any {
 
 // Only new structured outcomes carry a public reason. Historical receipts keep
 // their original generic code and digest when polled after an upgrade.
-func (h *Handler) refreshFailureCode(taskID string) string {
+func (h *Handler) refreshFailureCode(ticket string) string {
 	const fallback = "WORK_ACCOUNT_REFRESH_FAILED"
-	if h.st == nil || taskID == "" {
+	if h.st == nil || ticket == "" {
 		return fallback
 	}
-	events, err := h.st.TailEvents(taskID, 100)
+	// Receipts expose the operation ticket; runner events belong to the local
+	// task. Use the same resolved owner as taskReceipt/resolveTask.
+	task, err := h.taskByTicket(ticket)
+	if err != nil {
+		return fallback
+	}
+	events, err := h.st.TailEvents(task.ID, 100)
 	if err != nil {
 		return fallback
 	}

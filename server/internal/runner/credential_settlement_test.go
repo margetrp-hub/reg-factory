@@ -21,7 +21,7 @@ func TestCredentialPublicationRecoveryAndSettlement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, mode := range []string{"restart", "database-retry", "work-restart", "saved-python-unavailable", "work-saved-python-unavailable", "before-receipt", "current-without-receipt", "changed-current", "imported-login"} {
+	for _, mode := range []string{"restart", "used-restart", "database-retry", "work-restart", "saved-python-unavailable", "work-saved-python-unavailable", "before-receipt", "current-without-receipt", "changed-current", "imported-login"} {
 		t.Run(mode, func(t *testing.T) {
 			root := t.TempDir()
 			st := testdatabase.Open(t, root)
@@ -29,6 +29,11 @@ func TestCredentialPublicationRecoveryAndSettlement(t *testing.T) {
 				t.Fatal(err)
 			}
 			assets := assetstore.New(root)
+			if mode == "used-restart" {
+				if err := st.MarkClaimed("one"); err != nil {
+					t.Fatal(err)
+				}
+			}
 			initial := assetstore.Asset{Ref: "one", Email: "one@example.test", Platform: "chatgpt", Kind: "oauth", Payload: map[string]any{"access_token": "old-at", "refresh_token": "old-rt"}}
 			if mode == "imported-login" {
 				initial.Kind, initial.Payload = "imported", map[string]any{"password": "fixture-password"}

@@ -19,6 +19,7 @@ func TestRefreshFailureReceiptReasonAndHistoricalDigest(t *testing.T) {
 		exit                                 int
 	}{
 		{"new", "account.failure.v1", "mfa_totp_verification_failed", "stdout", "WORK_ACCOUNT_MFA_TOTP_VERIFICATION_FAILED", 1},
+		{"totp-v2", "account.failure.v2", "mfa_totp_verification_failed", "stdout", "WORK_ACCOUNT_MFA_TOTP_VERIFICATION_FAILED", 1},
 		{"unsupported-platform", "account.failure.v2", "platform_authorization_unsupported", "stdout", "WORK_ACCOUNT_PLATFORM_AUTHORIZATION_UNSUPPORTED", 1},
 		{"email-code", "account.failure.v2", "email_otp_not_found", "stdout", "WORK_ACCOUNT_EMAIL_OTP_NOT_FOUND", 1},
 		{"refresh-rejected", "account.failure.v2", "invalid_grant", "stdout", "WORK_ACCOUNT_INVALID_GRANT", 1},
@@ -38,11 +39,17 @@ func TestRefreshFailureReceiptReasonAndHistoricalDigest(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer st.Close()
-			if err = st.CreateTask(store.Task{ID: "failure-task", Script: "asset_ops"}); err != nil {
+			// Work uses the operation ticket; runner events use the local task ID.
+			// Keeping both identical hid lost failure reasons in real receipts.
+			const ticket, localID = "failure-operation", "work-failure-operation"
+			if err = st.CreateTask(store.Task{ID: localID, Script: "asset_ops"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err = st.ReserveOperation(ticket, localID, "account.authorize", 1); err != nil {
 				t.Fatal(err)
 			}
 			line, _ := json.Marshal(map[string]any{"result": "failed", "error_schema": sample.schema, "error_code": sample.code, "message": "provider-private"})
-			if err = st.AppendEvent("failure-task", sample.stream, string(line)); err != nil {
+			if err = st.AppendEvent(localID, sample.stream, string(line)); err != nil {
 				t.Fatal(err)
 			}
 			h := New(Config{NodeID: "fixture-node"}, nil, st)
@@ -51,7 +58,7 @@ func TestRefreshFailureReceiptReasonAndHistoricalDigest(t *testing.T) {
 				"operation_id": "failure-operation", "action": "account.authorize",
 			}}
 			key, now := bytes.Repeat([]byte("k"), 32), time.Now()
-			doc, err := h.ReceiptFor(verified, "failure-task", "failed", sample.exit, key, now)
+			doc, err := h.ReceiptFor(verified, ticket, "failed", sample.exit, key, now)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -78,10 +85,10 @@ func TestRefreshFailureReceiptReasonAndHistoricalDigest(t *testing.T) {
 					t.Fatal("historical result digest changed")
 				}
 			}
-			if err = st.AppendEvent("failure-task", "stdout", "process finished"); err != nil {
+			if err = st.AppendEvent(localID, "stdout", "process finished"); err != nil {
 				t.Fatal(err)
 			}
-			replayed, err := h.ReceiptFor(verified, "failure-task", "failed", sample.exit, key, now.Add(time.Second))
+			replayed, err := h.ReceiptFor(verified, ticket, "failed", sample.exit, key, now.Add(time.Second))
 			if err != nil || replayed["payload"].(map[string]any)["result_sha256"] != payload["result_sha256"] {
 				t.Fatal("poll changed result", err)
 			}

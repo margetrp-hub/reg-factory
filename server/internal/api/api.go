@@ -1152,10 +1152,6 @@ func (s *Server) changePasswords(c *gin.Context) {
 			skipped = append(skipped, gin.H{"ref": refValue, "reason": "not_found"})
 			continue
 		}
-		if account.Claimed {
-			skipped = append(skipped, gin.H{"ref": refValue, "reason": "claimed"})
-			continue
-		}
 		email := account.Identity
 		if email == "" {
 			email = strings.TrimPrefix(strings.TrimPrefix(refValue, "import:"), "emails:")
@@ -1258,8 +1254,8 @@ func (s *Server) convertAccounts(c *gin.Context) {
 		task, _, err := s.queueAccountRefresh(accountOpRequest{Ref: refValue, AllowRelogin: true, RequestID: requestID}, toString(actor))
 		if err != nil {
 			reason := "submit_failed"
-			if errors.Is(err, store.ErrAccountOwned) {
-				reason = "claimed"
+			if errors.Is(err, store.ErrAccountBusy) {
+				reason = "account_refresh_in_progress"
 			}
 			skipped = append(skipped, gin.H{"ref": refValue, "reason": reason})
 			continue
@@ -1430,8 +1426,8 @@ func (s *Server) accountRefresh(c *gin.Context) {
 			c.JSON(404, gin.H{"error": "account_not_found"})
 			return
 		}
-		if errors.Is(err, store.ErrAccountOwned) {
-			c.JSON(409, gin.H{"error": "account_owned_by_core", "detail": "已领取账号通过主系统原任务刷新"})
+		if errors.Is(err, store.ErrAccountBusy) {
+			c.JSON(409, gin.H{"error": "account_refresh_in_progress", "detail": "该账号正在执行凭据更新，请查看当前运行记录"})
 			return
 		}
 		if err.Error() == "task_request_conflict" {

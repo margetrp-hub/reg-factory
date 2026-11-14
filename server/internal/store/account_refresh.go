@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-var ErrAccountOwned = errors.New("account_owned_by_core")
+var ErrAccountBusy = errors.New("account_refresh_in_progress")
 var ErrRefreshState = errors.New("refresh_not_awaiting_resolution")
 
 func AccountRefreshRef(task Task) string {
@@ -64,20 +64,15 @@ func (s *Store) QueueAccountRefresh(task Task, ref string) (string, bool, error)
 	if !errors.Is(err, sql.ErrNoRows) {
 		return "", false, err
 	}
-	var claimed bool
 	var platform, identity string
-	if err = s.ex.QueryRowTx(tx, `SELECT claimed,platform,`+accountIdentitySQL+` FROM accounts WHERE ref=?`, ref).Scan(&claimed, &platform, &identity); err != nil {
+	if err = s.ex.QueryRowTx(tx, `SELECT platform,`+accountIdentitySQL+` FROM accounts WHERE ref=?`, ref).Scan(&platform, &identity); err != nil {
 		return "", false, err
 	}
 	if err = s.ex.LockKey(tx, "refresh-account:"+platform+":"+identity); err != nil {
 		return "", false, err
 	}
-	if err = s.ex.QueryRowTx(tx, `SELECT MAX(claimed) FROM accounts WHERE platform=? AND (`+accountIdentitySQL+`)=?`, platform, identity).Scan(&claimed); err != nil {
-		return "", false, err
-	}
-	if claimed {
-		return "", false, ErrAccountOwned
-	}
+	// Use/stock history does not prohibit maintenance. Serialize only live
+	// credential operations for this identity, including Work-owned execution.
 	err = s.ex.QueryRowTx(tx, `SELECT id FROM tasks WHERE script='asset_ops'
  AND `+s.ex.JSONText("args_json", "0")+`='refresh' AND `+s.ex.JSONText("args_json", "2")+` IN
  (SELECT ref FROM accounts WHERE platform=? AND (`+accountIdentitySQL+`)=?)
@@ -88,7 +83,7 @@ func (s *Store) QueueAccountRefresh(task Task, ref string) (string, bool, error)
 		return "", false, err
 	}
 	if !created && strings.HasPrefix(old, "work-") {
-		return "", false, ErrAccountOwned
+		return "", false, ErrAccountBusy
 	}
 	if created {
 		old = task.ID
@@ -119,15 +114,11 @@ func (s *Store) BeginAccountRefresh(taskID, ref, sha string) error {
 	}
 	defer tx.Rollback()
 	var status string
-	var claimed bool
-	if err = s.ex.QueryRowTx(tx, `SELECT t.status,a.claimed FROM tasks t JOIN accounts a ON a.ref=? WHERE t.id=?`, ref, taskID).Scan(&status, &claimed); err != nil {
+	if err = s.ex.QueryRowTx(tx, `SELECT t.status FROM tasks t JOIN accounts a ON a.ref=? WHERE t.id=?`, ref, taskID).Scan(&status); err != nil {
 		return err
 	}
 	if status != "queued" {
 		return errors.New("refresh_not_queued")
-	}
-	if claimed {
-		return ErrAccountOwned
 	}
 	if _, err = s.ex.ExecTxArgs(tx, `INSERT INTO account_refreshes(task_id,ref,source_sha) VALUES(?,?,?) ON CONFLICT(task_id) DO UPDATE SET source_sha=excluded.source_sha`, taskID, ref, sha); err != nil {
 		return err
@@ -235,7 +226,7 @@ func recordRefreshFailureState(s *Store, tx *sql.Tx, taskID, ref string) error {
 		return err
 	}
 	_, err = s.ex.ExecTxArgs(tx, `UPDATE accounts SET status=?,liveness_status=?,health_checked_at=?,liveness_checked_at=?,health_message=?
- WHERE ref=? AND claimed=0 AND health_checked_at<=COALESCE((SELECT started_at FROM tasks WHERE id=?),'')`,
+ WHERE ref=? AND health_checked_at<=COALESCE((SELECT started_at FROM tasks WHERE id=?),'')`,
 		state, state, now(), now(), "上游明确返回："+state, ref, taskID)
 	return err
 }
@@ -294,12 +285,8 @@ func (s *Store) ResolveAccountRefresh(taskID, actor, reason, outcome, resultSHA 
 	}
 	defer tx.Rollback()
 	var status, resolution string
-	var claimed bool
-	if err = s.ex.QueryRowTx(tx, `SELECT t.status,a.claimed,COALESCE(r.resolution,'') FROM tasks t JOIN accounts a ON a.ref=? LEFT JOIN account_refreshes r ON r.task_id=t.id WHERE t.id=?`, ref, taskID).Scan(&status, &claimed, &resolution); err != nil {
+	if err = s.ex.QueryRowTx(tx, `SELECT t.status,COALESCE(r.resolution,'') FROM tasks t JOIN accounts a ON a.ref=? LEFT JOIN account_refreshes r ON r.task_id=t.id WHERE t.id=?`, ref, taskID).Scan(&status, &resolution); err != nil {
 		return err
-	}
-	if claimed {
-		return ErrAccountOwned
 	}
 	if resolution != "" && status == outcome {
 		return nil

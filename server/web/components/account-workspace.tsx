@@ -286,8 +286,7 @@ function AccountsTable({platformScope}: {platformScope:string}) {
                         </button>
                         <button
                           className="btn-ghost px-2 py-0.5 text-[11px]"
-                          disabled={!!busy || used}
-                          title={used ? "已使用账号在主系统原任务中刷新" : undefined}
+                          disabled={!!busy}
                           onClick={() => openUpdate([row])}
                         >
                           {row.platform==="chatgpt" && row.has_credentials===false ? "生成凭据" : "更新凭据"}
@@ -438,8 +437,7 @@ function AccountsTable({platformScope}: {platformScope:string}) {
               </button>
               <button
                 className="btn-primary px-3 py-1 text-[11px]"
-                disabled={!!busy || detail.claimed || detail.library_status==="used"}
-                title={detail.claimed || detail.library_status==="used" ? "已使用账号在主系统原任务中刷新" : undefined}
+                disabled={!!busy}
                 onClick={() => openUpdate([detail])}
               >
                 {detail.platform==="chatgpt" && detail.has_credentials===false ? "生成凭据" : "更新凭据"}

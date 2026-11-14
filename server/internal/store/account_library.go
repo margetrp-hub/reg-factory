@@ -83,7 +83,7 @@ func prepareRefreshedAccount(s *Store, tx *sql.Tx, taskID, ref string) error {
  status='unknown',health_checked_at='',health_message='凭据已更新，自动测试 AT 已排队',
  liveness_status='unchecked',liveness_checked_at='',
  join_status=CASE WHEN join_status='' THEN 'none' ELSE join_status END,version=version+1
- WHERE ref=? AND platform='chatgpt' AND claimed=0`, ref)
+ WHERE ref=? AND platform='chatgpt'`, ref)
 	if err != nil {
 		return err
 	}

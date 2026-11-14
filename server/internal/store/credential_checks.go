@@ -90,7 +90,7 @@ func (s *Store) ClaimCredentialCheck() (Task, error) {
 
 func (s *Store) CredentialCheckItems(taskID string) ([]CredentialCheckItem, error) {
 	rows, err := s.ex.Query(`SELECT i.ordinal,i.ref,i.identity,i.status,i.message,i.checked_at,i.child_task_id,i.mode,
- CASE WHEN a.ref IS NOT NULL AND a.claimed=0 THEN 1 ELSE 0 END
+ CASE WHEN a.ref IS NOT NULL THEN 1 ELSE 0 END
  FROM credential_check_items i LEFT JOIN accounts a ON a.ref=i.ref WHERE i.task_id=? ORDER BY i.ordinal`, taskID)
 	if err != nil {
 		return nil, err
