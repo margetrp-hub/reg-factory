@@ -32,7 +32,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from common import credential_versions as versions
-from common.oauth_errors import account_failure, error_code
+from common.oauth_errors import REFRESH_RELOGIN_CODES, account_failure, error_code
 from common.proxy_switch import production_proxy
 
 PLATFORMS = ("claude", "chatgpt", "grok", "kiro", "outlook")
@@ -176,7 +176,7 @@ def cmd_refresh(args) -> int:
 
     if platform == "chatgpt":
         if args.allow_relogin:
-            return _emit(_reauthorize_chatgpt(args.ref, args.email, args.timeout))
+            return _emit(_reauthorize_chatgpt(args.ref, args.email, args.timeout, login_mode=args.login_mode))
         return _emit(_refresh_chatgpt(args.ref, args.email))
 
     return _emit({
@@ -681,8 +681,8 @@ def _refresh_chatgpt(ref: str, email: str = "") -> dict:
     if explicit:
         return {'ref': ref, 'result': 'failed', 'error_schema': 'account.failure.v1', **explicit}
     code = error_code(payload)
-    if response.status_code in {400, 401} and code in {"invalid_grant", "invalid_token", "refresh_token_reused", "refresh_token_expired", "refresh_token_revoked"}:
-        return {"ref": ref, "result": "relogin_required", "error_code": code, "message": f"刷新授权被拒绝（{code}）"}
+    if response.status_code in {400, 401} and code in REFRESH_RELOGIN_CODES:
+        return {"ref": ref, "result": "relogin_required", "error_code": code, "message": "刷新凭据已失效，需要重新登录授权"}
     code = "rate_limit_exceeded" if response.status_code == 429 else "oauth_service_unavailable" if response.status_code >= 500 else "oauth_response_invalid" if response.status_code == 200 else "oauth_request_rejected"
     return {"ref": ref, "result": "failed", "error_code": code, "message": f"OAuth HTTP {response.status_code}"}
 
@@ -740,7 +740,7 @@ def _reauthorization_document(document: dict) -> dict:
 
 
 @_credential_operation
-def _reauthorize_chatgpt(ref: str, email: str = "", timeout: int = 600) -> dict:
+def _reauthorize_chatgpt(ref: str, email: str = "", timeout: int = 600, *, login_mode: str = "browser") -> dict:
     """An authorize command must perform a fresh supplier-owned OAuth login."""
     import asyncio
     from tools.chatgpt_reauthorize import authorize_document
@@ -754,7 +754,7 @@ def _reauthorize_chatgpt(ref: str, email: str = "", timeout: int = 600) -> dict:
     path, document = found
     try:
         login_document = _reauthorization_document(document)
-        updates = asyncio.run(authorize_document(login_document, timeout=timeout))
+        updates = asyncio.run(authorize_document(login_document, timeout=timeout, login_mode=login_mode))
     except ReauthError as exc:
         evidence = exc.evidence
         code = evidence.get("error_code") or "credential_result_incomplete"
@@ -884,6 +884,42 @@ def _refresh_outlook(args) -> int:
             pass
 
 
+def cmd_login_options(args) -> int:
+    """Inspect available material only; no upstream requests or credential writes."""
+    from tools.chatgpt_reauthorize import login_record
+    from common.account_records import is_icloud_email, is_outlook_email
+    result = {}
+    for ref in json.load(sys.stdin):
+        found = _find_credential(ref)
+        if not found:
+            result[ref] = {"has_refresh_token": False, "modes": [], "reason": "找不到账号资料"}
+            continue
+        document = found[1]
+        token = _token_map(document) or {}
+        option = {"has_refresh_token": bool(token.get("refresh_token") or token.get("refreshToken")), "modes": [], "reason": ""}
+        try:
+            record = login_record(_reauthorization_document(document))
+        except ValueError:
+            option["reason"] = "登录资料格式无效"
+            result[ref] = option
+            continue
+        password, totp = bool(record.get("account_password")), bool(record.get("two_factor"))
+        mailbox = bool(record.get("provider") == "icmail" or record.get("mail_api_url")
+            or is_icloud_email(record["email"])
+            or (record.get("refresh_token") and record.get("client_id"))
+            or (is_outlook_email(record["email"]) and (record.get("password") or record.get("pickup_password"))))
+        if password or mailbox:
+            option["modes"].append("browser")
+        if password and totp:
+            option["modes"].append("protocol")
+        option["materials"] = {"password": password, "totp": totp, "mailbox": mailbox}
+        if not option["modes"]:
+            option["reason"] = "需要补充账号密码或收信资料"
+        result[ref] = option
+    print(json.dumps(result, ensure_ascii=False))
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="reg-factory 账号测活 / 修复")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -906,9 +942,13 @@ def main() -> int:
     refresh.add_argument("--email", default="", help="节点本地账号映射出的邮箱（不含密码）")
     refresh.add_argument("--platform", default="")
     refresh.add_argument("--allow-relogin", action="store_true")
+    refresh.add_argument("--login-mode", choices=("browser", "protocol"), default="browser")
     refresh.add_argument("--account", default="", help="email----password（仅 outlook 重授权用）")
     refresh.add_argument("--timeout", type=int, default=600)
     refresh.set_defaults(func=cmd_refresh)
+
+    options = sub.add_parser("login-options", help="只读检查账号可用执行模式")
+    options.set_defaults(func=cmd_login_options)
 
     recover = sub.add_parser('recover-publication', help=argparse.SUPPRESS)
     recover.add_argument('--ref', required=True)

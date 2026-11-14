@@ -31,6 +31,43 @@ func refreshFixture(t *testing.T) (*Store, Task) {
 	return s, Task{ID: "first", Script: "asset_ops", ArgsJSON: `["refresh","--ref","one","--platform","chatgpt"]`, Actor: "operator"}
 }
 
+func TestLoginChoiceFollowsAccountAndDoesNotChangeOnReplay(t *testing.T) {
+	s, task := refreshFixture(t)
+	_, err := s.UpsertAccounts([]AccountSeed{{Ref: "one", Platform: "chatgpt", Kind: "oauth", Identity: "same@example.test"}, {Ref: "produced", Platform: "chatgpt", Kind: "oauth", Identity: "same@example.test"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task.ArgsJSON = `["refresh","--ref","one","--platform","chatgpt","--allow-relogin","--login-mode","protocol"]`
+	if _, created, err := s.QueueAccountRefresh(task, "one"); err != nil || !created {
+		t.Fatal(created, err)
+	}
+	if mode, err := s.AccountLoginMode("produced"); err != nil || mode != "protocol" {
+		t.Fatal(mode, err)
+	}
+	coalesced := task
+	coalesced.ID = "second-request"
+	coalesced.ArgsJSON = `["refresh","--ref","produced","--platform","chatgpt","--allow-relogin","--login-mode","browser"]`
+	if id, created, err := s.QueueAccountRefresh(coalesced, "produced"); err != nil || created || id != task.ID {
+		t.Fatal(id, created, err)
+	}
+	if mode, _ := s.AccountLoginMode("one"); mode != "protocol" {
+		t.Fatal(mode)
+	}
+	if err = s.FinishAccountRefresh(task.ID, "one", "failed", 1, "mfa_totp_verification_failed", ""); err != nil {
+		t.Fatal(err)
+	}
+	coalesced.ID = "new-after-failure"
+	if _, created, err := s.QueueAccountRefresh(coalesced, "produced"); err != nil || !created {
+		t.Fatal(created, err)
+	}
+	if _, created, err := s.QueueAccountRefresh(task, "one"); err != nil || created {
+		t.Fatal(created, err)
+	}
+	if mode, _ := s.AccountLoginMode("one"); mode != "browser" {
+		t.Fatal("old replay overwrote latest selection", mode)
+	}
+}
+
 func TestRefreshConcurrentRequestsRemainBoundAfterResolution(t *testing.T) {
 	s, task := refreshFixture(t)
 	var wg sync.WaitGroup

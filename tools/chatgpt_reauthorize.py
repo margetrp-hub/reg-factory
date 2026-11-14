@@ -29,10 +29,13 @@ async def _drive_authorization(page, url, **kwargs):
     async def observe(response):
         if urlsplit(response.url).hostname not in {'auth.openai.com', 'chatgpt.com'} or not 400 <= response.status < 500:
             return
-        try:
-            explicit = account_failure(await response.json())
-        except Exception:
-            return
+        if response.status == 429:
+            explicit = {'error_code': 'rate_limit_exceeded', 'message': '授权服务请求过于频繁'}
+        else:
+            try:
+                explicit = account_failure(await response.json())
+            except ValueError:
+                return
         if explicit and not refused.done():
             refused.set_result((explicit, response.status))
     page.on('response', observe)
@@ -97,16 +100,23 @@ def validate_identity(document: dict, tokens: dict) -> None:
         raise ValueError("OAuth workspace identity mismatch")
 
 
-async def authorize_document(document: dict, *, timeout: int = 600, on_tokens=None, on_progress=None, mailbox=None) -> dict:
+async def authorize_document(document: dict, *, timeout: int = 600, login_mode: str = "browser", on_tokens=None, on_progress=None, mailbox=None) -> dict:
     from vendor.reauth_web.engine import ReauthError
     try:
-        record = login_record(document)
+        # Central material already contains a separately validated mailbox.
+        # Do not require a node-local mailbox/password to use that association.
+        record = ({"email": document["email"], "account_password": document.get("password", ""),
+                   "two_factor": document.get("totp", "")} if mailbox else login_record(document))
     except ValueError as exc:
         raise ReauthError("登录资料格式无效", evidence={"error_code": "credential_login_material_invalid", "token_exchange_started": False}) from exc
-    if record.get("account_password") and record.get("two_factor"):
-        # The supplier already has a complete protocol login implementation.
-        # Password/TOTP accounts do not depend on a desktop browser process.
+    # The saved/selected mode chooses transport. Merely having password + TOTP
+    # must never force protocol login over the operator's browser selection.
+    if login_mode == "protocol":
+        if not record.get("account_password") or not record.get("two_factor"):
+            raise ReauthError("协议授权需要账号密码和2FA资料", evidence={"error_code": "credential_login_material_invalid", "token_exchange_started": False})
         return await asyncio.to_thread(_authorize_protocol, document, record, timeout, on_tokens, on_progress)
+    if login_mode != "browser":
+        raise ReauthError("登录执行模式无效", evidence={"error_code": "credential_login_mode_invalid", "token_exchange_started": False})
     from patchright.async_api import async_playwright, Error as BrowserError
     from common.browser import open_and_connect, teardown
     from common.oauth_codex import REDIRECT_URI
@@ -115,7 +125,6 @@ async def authorize_document(document: dict, *, timeout: int = 600, on_tokens=No
 
     proxy = production_proxy()
 
-    value = document.get("payload", document)
     verifier, state = secrets.token_urlsafe(48), secrets.token_urlsafe(32)
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
     client_id = "app_EMoamEEZ73f0CkXaXp7hrann"
@@ -147,16 +156,41 @@ async def authorize_document(document: dict, *, timeout: int = 600, on_tokens=No
                 mail = CentralMail()
             else:
                 mail = MailCodeProvider(record, context, page, max_wait=min(timeout, 150))
-            await mail.prepare()
+            # Snapshot before requesting OTP; doing this after mail arrives
+            # would incorrectly discard the current code as old mail. A mailbox
+            # outage only fails login if that login actually needs email OTP.
+            from requests import RequestException
+            mail_error = None
+            try:
+                await asyncio.wait_for(mail.prepare(), timeout=min(timeout, 15))
+            except (RuntimeError, ValueError, RequestException, TimeoutError, BrowserError) as exc:
+                mail_error = exc
+            metadata = {}
+            async def email_code(account_email, received_after):
+                if mail_error is not None:
+                    metadata['error_code'] = 'email_otp_provider_required'
+                    raise ReauthError("邮箱收信服务不可用", evidence={"error_code": 'email_otp_provider_required', "token_exchange_started": False}) from mail_error
+                metadata['error_code'] = 'email_otp_not_found'
+                result = await mail(account_email, received_after)
+                if result:
+                    metadata['error_code'] = 'email_otp_verification_failed'
+                return result
+
+            if on_progress:
+                on_progress("authorize")
             code, callback_state, _ = await asyncio.wait_for(_drive_authorization(
                 page, url, timeout=timeout, account_email=record["email"],
-                allow_phone=False, email_code_provider=mail,
+                allow_phone=False, email_code_provider=email_code,
                 totp_secret=record.get("two_factor") or "",
                 account_password=record.get("account_password") or "",
                 prefer_team=bool(_workspace_id(document)),
                 workspace_id=_workspace_id(document),
+                result_metadata=metadata,
             ), timeout=timeout + 30)
-            if not code or callback_state != state:
+            if not code:
+                error = metadata.get('error_code') or 'oauth_callback_not_found'
+                raise ReauthError("登录授权未完成", evidence={"error_code": error, "token_exchange_started": False})
+            if callback_state != state:
                 raise ReauthError("授权回调不完整", evidence={"error_code": "oauth_callback_invalid", "token_exchange_started": False})
             print("[reauthorize] SG登录授权完成，正在交换新凭据", flush=True)
             tokens = await asyncio.to_thread(_exchange, code, verifier, client_id, REDIRECT_URI)
@@ -176,35 +210,24 @@ async def authorize_document(document: dict, *, timeout: int = 600, on_tokens=No
 def _authorize_protocol(document: dict, record: dict, timeout: int, on_tokens=None, on_progress=None) -> dict:
     from pathlib import Path
     from vendor.reauth_web.config import Settings
-    from vendor.reauth_web.engine import ReauthError, reauth_account
+    from vendor.reauth_web.engine import reauth_account
     from vendor.reauth_web.parsing import AccountLine
 
-    value = document.get("payload", document)
     settings = Settings(data_dir=Path(os.environ.get("REG_FACTORY_DATA_DIR") or "."),
         proxy=production_proxy(), account_timeout_seconds=timeout,
         extra={"workspace_id": _workspace_id(document)})
     account = AccountLine(email=record["email"], password=record["account_password"],
         totp_secret=record["two_factor"], raw="")
-    print("[reauthorize] SG启动原账号密码/TOTP协议授权", flush=True)
+    print("[reauthorize] 按账号选择执行协议授权", flush=True)
     def progress(step, _message):
         if on_progress:
             on_progress(step)
-        # The shared engine's mfa event announces intent before the first HTTP
-        # request. It is not evidence that MFA was reached or accepted.
         if step != "mfa":
             print(f"[reauthorize] SG授权步骤 {'authorize' if step == 'login' else step}", flush=True)
-
     def retry(evidence):
         import json
         print("[reauthorize] " + json.dumps(evidence, sort_keys=True), flush=True)
-
-    try:
-        result = reauth_account(account, settings, on_step=progress, on_retry=retry)
-    except ReauthError as exc:
-        if exc.evidence:
-            import json
-            print("[reauthorize] " + json.dumps(exc.evidence, sort_keys=True), flush=True)
-        raise
+    result = reauth_account(account, settings, on_step=progress, on_retry=retry)
     tokens = dict(result["payloads"]["cpa"])
     if on_tokens:
         on_tokens(tokens)
@@ -227,10 +250,14 @@ def _exchange(code: str, verifier: str, client_id: str, redirect_uri: str) -> di
             "client_id": client_id, "redirect_uri": redirect_uri,
         }, timeout=30)
         if isinstance(response.status_code, int) and 400 <= response.status_code < 500:
-            from common.oauth_errors import account_failure
+            from common.oauth_errors import REFRESH_RELOGIN_CODES, account_failure, error_code
             from vendor.reauth_web.engine import ReauthError, failure_evidence
             try:
-                explicit = account_failure(response.json())
+                payload = response.json()
+                explicit = account_failure(payload)
+                code = error_code(payload)
+                if not explicit and code in REFRESH_RELOGIN_CODES:
+                    explicit = {'error_code': code, 'message': '授权凭据已失效，需要重新登录'}
             except ValueError:
                 explicit = None
             if explicit:

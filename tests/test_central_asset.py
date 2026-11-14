@@ -18,6 +18,16 @@ def jwt(**claims):
 
 
 class CentralExecutionTests(unittest.TestCase):
+    def test_authorize_uses_central_account_mode(self):
+        from unittest.mock import AsyncMock
+        for mode in ('browser', 'protocol'):
+            with self.subTest(mode=mode), patch('tools.chatgpt_reauthorize.authorize_document', new=AsyncMock(return_value={'access_token': 'new-at', 'refresh_token': 'new-rt'})) as authorize:
+                result = execute({'action': 'account.authorize', 'expires_at': time.time()+600}, {
+                    'document': {'email': 'fixture@example.invalid'},
+                    'recovery': {'login': {'password': 'synthetic-login', 'totp_secret': 'synthetic-2fa', 'mode': mode}}})
+                self.assertEqual(result['status'], 'completed')
+                self.assertEqual(authorize.call_args.kwargs['login_mode'], mode)
+
     def test_authorization_retains_explicit_state_but_not_unconfirmed_tokens(self):
         from vendor.reauth_web.engine import ReauthError, failure_evidence
         for code in ('account_banned', 'workspace_deactivated', 'deactivated_workspace', 'mfa_totp_secret_required'):
@@ -52,7 +62,7 @@ class CentralExecutionTests(unittest.TestCase):
         self.assertEqual(document, before)
 
     def test_explicit_account_states_and_generic_401(self):
-        for code, expected in [('account_banned', 'account_banned'), ('account_deactivated', 'account_deactivated'), ('workspace_deactivated', 'workspace_deactivated'), ('deactivated_workspace', 'deactivated_workspace'), ('invalid_grant', 'INVALID_GRANT')]:
+        for code, expected in [('account_banned', 'account_banned'), ('account_deactivated', 'account_deactivated'), ('workspace_deactivated', 'workspace_deactivated'), ('deactivated_workspace', 'deactivated_workspace'), ('invalid_grant', 'INVALID_GRANT'), ('refresh_token_invalidated', 'REFRESH_TOKEN_INVALIDATED')]:
             with self.subTest(code=code), patch('requests.Session') as session:
                 response = Mock(status_code=401, content=b'json')
                 response.json.return_value = {'error': {'code': code}}

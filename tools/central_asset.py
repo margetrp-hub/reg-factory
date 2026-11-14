@@ -18,7 +18,7 @@ from common.proxy_switch import production_proxy
 def execute(context, material):
     from tools.asset_ops import _token_map, _update_oauth_document, _primary_account, OPENAI_TOKEN_URL, OPENAI_CLIENT_ID
     from tools.chatgpt_reauthorize import authorize_document, validate_identity
-    from common.oauth_errors import account_failure, error_code
+    from common.oauth_errors import REFRESH_RELOGIN_CODES, account_failure, error_code
     from vendor.reauth_web.engine import ReauthError
     import requests
     document = json.loads(json.dumps(material['document']))
@@ -44,7 +44,7 @@ def execute(context, material):
         received = {}
         try:
             with contextlib.redirect_stdout(sys.stderr):
-                updates = asyncio.run(authorize_document(primary, timeout=timeout, mailbox=mailbox or None, on_tokens=lambda v: received.update(v)))
+                updates = asyncio.run(authorize_document(primary, timeout=timeout, login_mode=login.get('mode') or 'browser', mailbox=mailbox or None, on_tokens=lambda v: received.update(v)))
         except ReauthError as exc:
             code = exc.evidence.get('error_code') or 'credential_result_incomplete'
             return {'status': 'unknown' if received else 'failed', 'document': None,
@@ -79,7 +79,7 @@ def execute(context, material):
     if explicit:
         return {'status': 'failed', 'document': None, 'error_code': explicit['error_code'].upper()}
     code = error_code(data)
-    if response.status_code in {400, 401} and code in {'invalid_grant', 'invalid_token', 'refresh_token_reused', 'refresh_token_expired', 'refresh_token_revoked'}:
+    if response.status_code in {400, 401} and code in REFRESH_RELOGIN_CODES:
         return {'status': 'failed', 'document': None, 'error_code': code.upper()}
     if response.status_code != 200 or not isinstance(data, dict) or not data.get('access_token'):
         code = 'RATE_LIMIT_EXCEEDED' if response.status_code == 429 else 'OAUTH_SERVICE_UNAVAILABLE' if response.status_code >= 500 else 'OAUTH_RESPONSE_INVALID' if response.status_code == 200 else 'OAUTH_REQUEST_REJECTED'

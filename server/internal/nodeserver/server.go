@@ -351,6 +351,13 @@ func (h *Handler) assetOpArgv(v *Verified) (string, error) {
 		argv = append(argv, "refresh", "--ref", ref)
 		if v.Action == "account.authorize" {
 			argv = append(argv, "--allow-relogin")
+			mode, err := h.st.AccountLoginMode(ref)
+			if err != nil {
+				return "", perr("WORK_ACCOUNT_SOURCE_UNAVAILABLE", 503)
+			}
+			if mode != "" {
+				argv = append(argv, "--login-mode", mode)
+			}
 		}
 	} else {
 		argv = append(argv, "liveness", "--ref", ref)

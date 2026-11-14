@@ -23,6 +23,7 @@ func TestRefreshFailureReceiptReasonAndHistoricalDigest(t *testing.T) {
 		{"unsupported-platform", "account.failure.v2", "platform_authorization_unsupported", "stdout", "WORK_ACCOUNT_PLATFORM_AUTHORIZATION_UNSUPPORTED", 1},
 		{"email-code", "account.failure.v2", "email_otp_not_found", "stdout", "WORK_ACCOUNT_EMAIL_OTP_NOT_FOUND", 1},
 		{"refresh-rejected", "account.failure.v2", "invalid_grant", "stdout", "WORK_ACCOUNT_INVALID_GRANT", 1},
+		{"refresh-invalidated", "account.failure.v2", "refresh_token_invalidated", "stdout", "WORK_ACCOUNT_REFRESH_TOKEN_INVALIDATED", 1},
 		{"worker-exit", "account.failure.v2", "credential_worker_exited", "stdout", "WORK_ACCOUNT_CREDENTIAL_WORKER_EXITED", 1},
 		{"invalid-v2-reason", "account.failure.v2", "provider-private", "stdout", "WORK_ACCOUNT_FAILURE_REASON_INVALID", 1},
 		{"banned", "account.failure.v1", "account_banned", "stdout", "ACCOUNT_BANNED", 1},

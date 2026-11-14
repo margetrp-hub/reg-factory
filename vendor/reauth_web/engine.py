@@ -162,8 +162,9 @@ def _failure_reason(result: dict) -> str:
 
 def failure_evidence(result: dict) -> dict:
     """Allowlisted diagnostics only: never return provider text, URLs or secrets."""
+    from common.oauth_errors import REFRESH_RELOGIN_CODES
     protocol = result.get("oauth_protocol") or {}
-    known = set(ERROR_HINTS) | {
+    known = set(ERROR_HINTS) | REFRESH_RELOGIN_CODES | {
         "oauth_cloudflare_challenge", "oauth_callback_not_found", "oauth_callback_timeout",
         "email_otp_provider_required", "email_otp_verification_failed", "login_continue_failed",
         "mfa_totp_verification_failed", "choose_account_failed", "about_you_failed",

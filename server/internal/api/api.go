@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -158,6 +159,7 @@ func (s *Server) Register(r *gin.Engine) {
 	r.POST("/api/accounts/change-password", s.changePasswords)
 	r.POST("/api/accounts/convert", s.convertAccounts)
 	r.GET("/api/accounts/detail", s.accountDetail)
+	r.POST("/api/accounts/login-options", s.accountLoginOptions)
 	r.GET("/api/accounts/sources", s.accountSources)
 	r.GET("/api/accounts/summary", s.accountSummary)
 	r.GET("/api/accounts", s.listAccounts)
@@ -1331,6 +1333,7 @@ type accountOpRequest struct {
 	Platform     string `json:"platform"`
 	RefreshScan  bool   `json:"refresh_scan"`
 	AllowRelogin bool   `json:"allow_relogin"`
+	LoginMode    string `json:"login_mode"`
 	RequestID    string `json:"request_id"`
 }
 
@@ -1419,6 +1422,10 @@ func (s *Server) accountRefresh(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "invalid_request_id"})
 		return
 	}
+	if (req.LoginMode != "" && req.LoginMode != "browser" && req.LoginMode != "protocol") || (!req.AllowRelogin && req.LoginMode != "") {
+		c.JSON(422, gin.H{"error": "login_mode_invalid", "detail": "请选择有效的登录执行模式；RT刷新不使用登录模式"})
+		return
+	}
 	actor, _ := c.Get("actor")
 	task, created, err := s.queueAccountRefresh(req, toString(actor))
 	if err != nil {
@@ -1456,7 +1463,17 @@ func (s *Server) queueAccountRefresh(req accountOpRequest, actor string) (store.
 	argv := []string{"refresh", "--ref", req.Ref, "--platform", account.Platform}
 	title := "RT 刷新 · "
 	if req.AllowRelogin {
-		argv = append(argv, "--allow-relogin")
+		mode := req.LoginMode
+		if mode == "" {
+			mode, err = s.st.AccountLoginMode(req.Ref)
+			if err != nil {
+				return store.Task{}, false, err
+			}
+		}
+		if mode == "" {
+			mode = "browser"
+		}
+		argv = append(argv, "--allow-relogin", "--login-mode", mode)
 		title = "登录重新授权 · "
 	}
 	raw, _ := json.Marshal(argv)
@@ -1470,6 +1487,52 @@ func (s *Server) queueAccountRefresh(req accountOpRequest, actor string) (store.
 	}
 	task, err = s.st.GetTask(id)
 	return task, created, err
+}
+
+// Reuse Python's actual login-material resolver; never return secrets or probe
+// the upstream when opening the execution-mode selector.
+func (s *Server) accountLoginOptions(c *gin.Context) {
+	var req struct {
+		Refs []string `json:"refs"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || len(req.Refs) == 0 || len(req.Refs) > 100 {
+		c.JSON(422, gin.H{"error": "account_selection_invalid"})
+		return
+	}
+	saved := make(map[string]string, len(req.Refs))
+	for _, ref := range req.Refs {
+		mode, err := s.st.AccountLoginMode(ref)
+		if err != nil {
+			c.JSON(404, gin.H{"error": "account_not_found"})
+			return
+		}
+		saved[ref] = mode
+	}
+	env, err := settings.WorkerEnvironment(s.cfg.EnvFile)
+	if err != nil {
+		c.JSON(503, gin.H{"error": "configuration_unavailable"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 20*time.Second)
+	defer cancel()
+	input, _ := json.Marshal(req.Refs)
+	cmd := exec.CommandContext(ctx, s.cfg.Python, "-u", filepath.Join(s.cfg.AppRoot, "tools", "asset_ops.py"), "login-options")
+	cmd.Dir, cmd.Stdin = s.cfg.AppRoot, strings.NewReader(string(input))
+	cmd.Env = append(env, "REG_FACTORY_DATA_DIR="+s.cfg.DataDir, "PYTHONIOENCODING=utf-8")
+	output, err := cmd.Output()
+	if err != nil {
+		c.JSON(503, gin.H{"error": "login_options_unavailable", "detail": "账号执行资料读取失败，可重新读取"})
+		return
+	}
+	var options map[string]map[string]any
+	if err = json.Unmarshal(output, &options); err != nil {
+		c.JSON(503, gin.H{"error": "login_options_invalid"})
+		return
+	}
+	for ref, option := range options {
+		option["selected_mode"] = saved[ref]
+	}
+	c.JSON(200, gin.H{"accounts": options})
 }
 
 type outlookAuthRequest struct {

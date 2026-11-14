@@ -7,6 +7,13 @@ ACCOUNT_STATES = {
     'deactivated_workspace': 'workspace_deactivated',
 }
 
+# An invalid refresh grant needs a new login, not an account/workspace ban.
+# Local repair and the central executor must classify the same provider codes.
+REFRESH_RELOGIN_CODES = frozenset({
+    'invalid_grant', 'invalid_token', 'refresh_token_reused',
+    'refresh_token_expired', 'refresh_token_revoked', 'refresh_token_invalidated',
+})
+
 
 def error_code(payload):
     if not isinstance(payload, dict):

@@ -10,6 +10,7 @@ from common.oauth_codex import (
     generate_cpa_auth_url,
     submit_cpa_callback,
     _complete_auth_email_login,
+    _complete_authenticator_login,
     _enter_otp,
     _icloud_existing_codes,
     _has_phone_error,
@@ -332,6 +333,54 @@ class OAuthCodexTests(unittest.TestCase):
         provider.assert_awaited_once()
         self.assertIn("fixture-password", str(fill.await_args_list))
         self.assertEqual(page.url, "https://auth.openai.com/codex/consent")
+
+    def test_password_followed_by_mfa_does_not_read_email_otp(self):
+        async def exercise():
+            page = MagicMock(url="https://auth.openai.com/log-in/password")
+            field = MagicMock()
+            field.first = field
+            field.count = AsyncMock(return_value=1)
+            field.is_visible = AsyncMock(return_value=True)
+            page.locator.return_value = field
+            async def advance():
+                page.url = "https://auth.openai.com/mfa-challenge/totp"
+            field.click = AsyncMock(side_effect=advance)
+            mail = AsyncMock(side_effect=AssertionError('MFA is not email OTP'))
+            with patch("common.browser.react_fill", new=AsyncMock(return_value=True)):
+                result = await _complete_auth_email_login(page, "person@example.test",
+                    email_code_provider=mail, account_password="fixture-password")
+            mail.assert_not_awaited()
+            return result
+        self.assertEqual(asyncio.run(exercise()), (True, "ok"))
+
+    def test_authenticator_retries_with_new_codes_and_stops_at_success_or_limit(self):
+        async def exercise(success):
+            page = MagicMock(url="https://auth.openai.com/mfa-challenge/totp")
+            field = MagicMock()
+            field.first = field
+            field.count = AsyncMock(return_value=1)
+            field.is_visible = AsyncMock(return_value=True)
+            page.locator.return_value = field
+            attempts = []
+            def new_code(**kwargs):
+                attempts.append(set(kwargs['exclude_codes']))
+                return ['111111','222222','333333'][len(attempts)-1]
+            def submitted():
+                if success and len(attempts) == 2:
+                    page.url = 'https://auth.openai.com/consent'
+            field.click = AsyncMock(side_effect=submitted)
+            with patch('vendor.reauth_web.totp.TotpMfaClient') as factory, \
+                    patch('common.browser.react_fill', new=AsyncMock(return_value=True)) as fill, \
+                    patch('common.oauth_codex.asyncio.sleep', new=AsyncMock()):
+                factory.return_value.max_attempts = 3
+                factory.return_value.get_mfa_code.side_effect = new_code
+                result = await _complete_authenticator_login(page, 'fixture-secret')
+            self.assertEqual(result[0], success)
+            self.assertEqual(attempts, [set(), {'111111'}] if success else [set(), {'111111'}, {'111111','222222'}])
+            self.assertEqual([c.args[2] for c in fill.await_args_list], ['111111','222222'] if success else ['111111','222222','333333'])
+        for success in (True, False):
+            with self.subTest(success=success):
+                asyncio.run(exercise(success))
 
     def test_phone_retry_treats_navigation_past_add_phone_as_success(self):
         async def exercise():

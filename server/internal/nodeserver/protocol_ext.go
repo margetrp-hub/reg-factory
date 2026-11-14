@@ -120,8 +120,8 @@ func (h *Handler) refreshFailureCode(ticket string) string {
 			case "account_deactivated", "account_banned", "workspace_deactivated", "deactivated_workspace":
 				return strings.ToUpper(result.Code)
 			case "platform_authorization_unsupported", "credential_task_busy", "credential_document_ambiguous",
-				"credential_not_found", "refresh_token_required", "credential_save_failed", "credential_login_material_invalid",
-				"invalid_grant", "invalid_token", "refresh_token_reused", "refresh_token_expired", "refresh_token_revoked",
+				"credential_not_found", "refresh_token_required", "credential_save_failed", "credential_login_material_invalid", "credential_login_mode_invalid",
+				"invalid_grant", "invalid_token", "refresh_token_reused", "refresh_token_expired", "refresh_token_revoked", "refresh_token_invalidated",
 				"oauth_service_unavailable", "oauth_response_invalid", "oauth_request_rejected", "oauth_callback_invalid",
 				"phone_required", "add_phone_failed", "add_phone_requires_sms_client", "email_otp_rejected_429",
 				"email_otp_not_found", "email_otp_provider_required", "email_otp_verification_failed",

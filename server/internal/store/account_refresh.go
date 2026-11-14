@@ -98,12 +98,37 @@ func (s *Store) QueueAccountRefresh(task Task, ref string) (string, bool, error)
 		if _, err = s.ex.ExecTxArgs(tx, UpsertIgnore(s.dialect, `INSERT INTO account_refreshes(task_id,ref) VALUES(?,?)`), old, ref); err != nil {
 			return "", false, err
 		}
+		var argv []string
+		if err = json.Unmarshal([]byte(task.ArgsJSON), &argv); err != nil {
+			return "", false, err
+		}
+		for i := 0; i+1 < len(argv); i++ {
+			if argv[i] == "--login-mode" {
+				// Store only an accepted selection. Replays and coalesced tasks
+				// cannot alter another in-flight task's execution preference.
+				if _, err = s.ex.ExecTxArgs(tx, `INSERT INTO account_login_preferences(platform,identity,mode,updated_at)
+ VALUES(?,?,?,?) ON CONFLICT(platform,identity) DO UPDATE SET mode=excluded.mode,updated_at=excluded.updated_at`, platform, identity, argv[i+1], now()); err != nil {
+					return "", false, err
+				}
+				break
+			}
+		}
 	}
 	// Persist coalesced request IDs too, including after the original finishes.
 	if _, err = s.ex.ExecTxArgs(tx, `INSERT INTO account_refresh_requests(request_id,task_id,args_json,actor) VALUES(?,?,?,?)`, task.ID, old, task.ArgsJSON, task.Actor); err != nil {
 		return "", false, err
 	}
 	return old, created, tx.Commit()
+}
+
+// AccountLoginMode follows the physical account across imported/produced refs.
+// The query returns no credentials; absent choices default to browser at entry.
+func (s *Store) AccountLoginMode(ref string) (string, error) {
+	var mode string
+	err := s.ex.QueryRow(`SELECT COALESCE(p.mode,'') FROM
+ (SELECT platform,(`+accountIdentitySQL+`) AS identity_key FROM accounts WHERE ref=?) a
+ LEFT JOIN account_login_preferences p ON p.platform=a.platform AND p.identity=a.identity_key`, ref).Scan(&mode)
+	return mode, err
 }
 
 // BeginAccountRefresh records the current version immediately before spawning.

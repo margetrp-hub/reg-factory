@@ -90,7 +90,8 @@ def test_refresh_uses_production_route_and_keeps_unrotated_id_token(tmp_path, mo
     assert credentials["refresh_token"] == "fixture-rt"
 
 
-def test_old_reference_uses_last_success_failure_preserves_it_and_retry_advances(tmp_path, monkeypatch):
+@pytest.mark.parametrize('error', ['invalid_grant', {'code':'refresh_token_invalidated', 'message':'private-body'}])
+def test_old_reference_uses_last_success_failure_preserves_it_and_retry_advances(tmp_path, monkeypatch, error):
     monkeypatch.setenv('REG_FACTORY_DATA_DIR', str(tmp_path))
     monkeypatch.setenv('REG_FACTORY_RUN_ID', 'work-first')
     directory = tmp_path / 'assets/chatgpt/oauth'
@@ -100,12 +101,15 @@ def test_old_reference_uses_last_success_failure_preserves_it_and_retry_advances
             'credential_updated_at': stamp, 'payload': {'access_token': ref, 'refresh_token': ref + '-rt',
             'workspace_account_id': 'one'}}))
     response = Mock(status_code=400, content=b'json')
-    response.json.return_value = {'error': 'invalid_grant'}
+    response.json.return_value = {'error': error}
     before = (directory / 'current.json').read_bytes()
     with patch('requests.Session') as factory:
         factory.return_value.post.return_value = response
         result = asset_ops._refresh_chatgpt('old')
         assert factory.return_value.post.call_args.kwargs['data']['refresh_token'] == 'current-rt'
+    assert result['result'] == 'relogin_required'
+    assert result['error_code'] == (error if isinstance(error, str) else error['code'])
+    assert 'private-body' not in json.dumps(result)
     assert asset_ops._emit(result) == 1
     assert (directory / 'current.json').read_bytes() == before
     assert not (tmp_path / 'credential-task-results').exists()

@@ -324,10 +324,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ ref, platform, refresh_scan: refreshScan }),
     }),
-  accountRefresh: (ref: string, platform: string, allowRelogin = false, request_id?: string) =>
+  accountLoginOptions: (refs: string[], signal?: AbortSignal) => request<{accounts:Record<string, {has_refresh_token:boolean; modes:("browser"|"protocol")[]; selected_mode:""|"browser"|"protocol"; reason:string; materials?:{password:boolean;totp:boolean;mailbox:boolean}}>}>("/api/accounts/login-options", {method:"POST", body:JSON.stringify({refs}), signal}),
+  accountRefresh: (ref: string, platform: string, allowRelogin = false, request_id?: string, login_mode?: "browser" | "protocol") =>
     request<{ ok: boolean; task_id: string }>("/api/accounts/refresh", {
       method: "POST",
-      body: JSON.stringify({ ref, platform, allow_relogin: allowRelogin, request_id }),
+      body: JSON.stringify({ ref, platform, allow_relogin: allowRelogin, request_id, login_mode }),
     }),
   accountRefreshDetail: (id: string, signal?: AbortSignal) => request<RefreshDetail>(`/api/accounts/refresh/${encodeURIComponent(id)}`,{signal}),
   reconcileRefresh: (id: string) => request<RefreshDetail>(`/api/accounts/refresh/${encodeURIComponent(id)}/reconcile`,{method:"POST"}),

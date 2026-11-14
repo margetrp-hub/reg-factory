@@ -330,7 +330,7 @@ def _validate(record: dict) -> dict:
         record["provider"] = "icloud"
     if record.get("refresh_token") and not record.get("client_id"):
         record["client_id"] = DEFAULT_GRAPH_CLIENT_ID
-    if not record.get("password") and not record.get("refresh_token") and not is_icloud_email(email) and record.get("provider") != "icmail":
+    if not (record.get("password") or record.get("account_password") or record.get("refresh_token")) and not is_icloud_email(email) and record.get("provider") != "icmail":
         raise ValueError("account record requires a password, Graph refresh token, or iCloud mailbox")
     if record.get("provider") not in {"", "outlook", "graph", "microsoft", "icloud", "icmail"}:
         raise ValueError("unsupported mailbox provider")

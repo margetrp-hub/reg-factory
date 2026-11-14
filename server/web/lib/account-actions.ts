@@ -1,6 +1,8 @@
 import { api, ApiError } from "@/lib/api";
 
 export type CredentialUpdateMethod = "refresh" | "authorize";
+export type LoginMode = "browser" | "protocol";
+export const LOGIN_MODE_LABELS = {browser:"浏览器／邮箱授权", protocol:"密码＋2FA 协议授权"};
 export const UPDATE_LABELS = {refresh:"RT 刷新", authorize:"登录重新授权"};
 export type AccountActionReceipt = { task_id?: string; status?: string; message?: string; method?: CredentialUpdateMethod };
 
@@ -11,7 +13,7 @@ function requestID() {
   return [hex.slice(0,8), hex.slice(8,12), hex.slice(12,16), hex.slice(16,20), hex.slice(20)].join("-");
 }
 
-type PendingUpdate = {id:string; method?:CredentialUpdateMethod};
+type PendingUpdate = {id:string; method?:CredentialUpdateMethod; loginMode?:LoginMode};
 const pendingRefresh = new Map<string, PendingUpdate>();
 
 export function pendingCredentialUpdate(ref: string): PendingUpdate | null {
@@ -61,7 +63,7 @@ export async function startCredentialCheck(platform: string, refs: string[], par
 
 // No credentials are persisted. A lost refresh response resolves the original
 // task before submitting the same request ID again.
-export async function accountAction(ref: string, platform: string, action: "check" | "refresh" | "authorize"): Promise<AccountActionReceipt> {
+export async function accountAction(ref: string, platform: string, action: "check" | "refresh" | "authorize", loginMode?:LoginMode): Promise<AccountActionReceipt> {
   if (action === "check") return api.accountLiveness(ref, platform);
   const key = "sg-account-refresh:" + ref;
   const previous = pendingCredentialUpdate(ref);
@@ -76,11 +78,11 @@ export async function accountAction(ref: string, platform: string, action: "chec
   }
   if (previous?.method && previous.method !== action) throw new Error(`原请求为${UPDATE_LABELS[previous.method]}，请先用原方式恢复提交`);
   const id = previous?.id || requestID();
-  const pending = {id, method:action};
+  const pending = {id, method:action, loginMode:previous?.loginMode || loginMode};
   pendingRefresh.set(key, pending);
   try { sessionStorage.setItem(key, JSON.stringify(pending)); } catch { /* optional storage */ }
   try {
-    const result = await api.accountRefresh(ref, platform, action === "authorize", id);
+    const result = await api.accountRefresh(ref, platform, action === "authorize", id, pending.loginMode);
     pendingRefresh.delete(key);
     try { sessionStorage.removeItem(key); } catch { /* optional storage */ }
     return {...result,method:action};

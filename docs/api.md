@@ -27,6 +27,7 @@ Core的 `X-Admin-API-Key` 和客户开发者Bearer属于Aishop平台，不是SG�
 | POST | `/api/accounts/import`、`/api/accounts/convert`、`/api/accounts/change-password`、`/api/accounts/sync` | 账号资料操作；按各处理器校验输入及执行权限 |
 | POST / GET | `/api/accounts/checks`；`/api/accounts/checks/{id}`（GET） | 创建/查询持久AT检查批次；不刷新RT |
 | POST | `/api/accounts/liveness`、`/api/accounts/refresh` | 账号核验 / 显式凭据刷新 |
+| POST | `/api/accounts/login-options` | 按 refs 读取可用登录资料类型及已保存模式；只读、不请求上游、不返回密码或凭据 |
 | GET / POST | `/api/accounts/refresh/{id}`（GET）；其 `/reconcile`、`/resolve`（POST） | 原刷新查询、核对及证据处理 |
 | GET | `/api/assets`、`/api/assets/{kind}`、`/api/assets/tree`、`/api/assets/results`、`/api/assets/export` | 资产及受权限约束的导出 |
 | POST | `/api/assets/{kind}/claim`、`/api/assets/claims/reset` | 领取及重置，改变领取事实 |
@@ -50,6 +51,8 @@ Core的 `X-Admin-API-Key` 和客户开发者Bearer属于Aishop平台，不是SG�
 账号页的“更新凭据”统一调用 `POST /api/accounts/refresh`，输入 `ref/platform/request_id/allow_relogin`。ChatGPT 的 `allow_relogin=false` 为纯RT刷新，`true` 为登录重新授权；不因RT失败自动切换登录。批量按账号独立受理，保留已受理任务；丢响应先查询 `request-<request_id>`，同编号不能切换方式。原 `/api/accounts/convert` 保留既有明确重新授权契约，前端不再把它命名为笼统“修复凭证”。已领取、已使用和生产历史不禁止本地更新、重新授权、改密或失败后重新发起；仅同一身份正在执行的凭据操作互斥，Work 任务结束后可再次本地发起。成功后的自动 AT 检查也覆盖已领取账号，使用记录保持。
 
 先从 `GET /api/scripts` 取得实际script及参数，再提交：
+
+重新授权还可提交 `login_mode=browser|protocol`：浏览器模式按实际页面完成密码、邮箱或两步验证；协议模式需要账号密码和 2FA。账号页依据实际资料提供可选模式，首次默认浏览器；受理新任务时按平台及账号身份保存选择，同一账号的不同来源和 Work 授权任务共用。重放原请求或合并到在途任务不能覆盖选择。RT 刷新不接收登录模式，`refresh_token_invalidated` 表示刷新授权失效，不表示账号封禁；重新授权按已选模式执行。资料移交携带模式，中央资产执行以本次领取的中央资料为准。
 
 ```http
 POST /api/tasks

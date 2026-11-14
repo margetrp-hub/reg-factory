@@ -805,6 +805,7 @@ async def _click_account(page, account_email=""):
 async def _complete_authenticator_login(page, secret):
     """Submit an authenticator-app challenge without exposing the TOTP value."""
     from common.browser import react_fill
+    from vendor.reauth_web.totp import TotpMfaClient
 
     selector = (
         'input[name="otp"], input[name="totp"], input[name="code"], '
@@ -813,23 +814,29 @@ async def _complete_authenticator_login(page, secret):
     code_input = page.locator(selector).first
     if await code_input.count() == 0 or not await code_input.is_visible():
         return False, "OAuth 2FA 页面没有可见验证码输入框"
-    try:
-        code = _totp_code(secret)
-    except Exception as error:
-        return False, f"OAuth 2FA 密钥无效: {str(error)[:80]}"
-    if not await react_fill(page, selector, code, tries=2, verbose=False):
-        return False, "OAuth 2FA 验证码输入未被页面接受"
     submit = page.locator('button[type="submit"]').first
     if await submit.count() == 0:
         return False, "OAuth 2FA 页面没有提交按钮"
-    before = page.url
-    await submit.click()
-    for _ in range(40):
-        await asyncio.sleep(0.5)
-        if page.url != before:
-            return True, "ok"
-        if await page.locator(selector).count() == 0:
-            return True, "ok"
+    provider = TotpMfaClient(secret)
+    tried_codes = set()
+    for attempt in range(provider.max_attempts):
+        try:
+            code = await asyncio.to_thread(provider.get_mfa_code, timeout=40, exclude_codes=tried_codes)
+        except ValueError:
+            return False, "OAuth 2FA 密钥无效"
+        if not code:
+            return False, "OAuth 2FA 未取得新的动态码"
+        tried_codes.add(code)
+        if not await react_fill(page, selector, code, tries=2, verbose=False):
+            return False, "OAuth 2FA 验证码输入未被页面接受"
+        before = page.url
+        await submit.click()
+        for _ in range(40):
+            await asyncio.sleep(0.5)
+            if page.url != before or await page.locator(selector).count() == 0:
+                return True, "ok"
+        if attempt + 1 < provider.max_attempts:
+            print("  [2fa] 动态码未通过，等待下一时间窗的新码")
     return False, "OAuth 2FA 验证码提交后页面未推进"
 
 
@@ -1030,11 +1037,15 @@ async def drive_authorize(
                 )
                 if on_authenticator and not authenticator_attempted:
                     if not totp_secret:
+                        if isinstance(result_metadata, dict):
+                            result_metadata['error_code'] = 'mfa_totp_secret_required'
                         return None, None, "OAuth 要求验证器 2FA，但账号没有提供 2FA 密钥"
                     authenticator_attempted = True
                     print("  [2fa] 检测到验证器挑战，正在提交动态码...")
                     ok, two_factor_msg = await _complete_authenticator_login(page, totp_secret)
                     if not ok:
+                        if isinstance(result_metadata, dict):
+                            result_metadata['error_code'] = 'mfa_totp_verification_failed'
                         return None, None, two_factor_msg
                     await asyncio.sleep(1.0)
                     continue
@@ -1410,6 +1421,10 @@ async def _complete_auth_email_login(
         'input[name="code"], input[autocomplete="one-time-code"], input[inputmode="numeric"]'
     ).first
     for wait_round in range(120):
+        # Email OTP and authenticator challenges use the same input names.
+        # Return control before inspecting the input when MFA is requested.
+        if any(marker in page.url.lower() for marker in ("/mfa", "multi-factor", "two-factor", "totp", "authenticator")):
+            return True, "ok"
         if await code_input.count() > 0:
             break
         if "/password" in page.url.lower() and not password_submitted:

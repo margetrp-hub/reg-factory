@@ -71,6 +71,13 @@ func (s *Server) sharedSnapshot(ref string, options map[string]any) (map[string]
 		if totp != "" {
 			doc["totp_secret"] = totp
 		}
+		mode, err := s.st.AccountLoginMode(ref)
+		if err != nil {
+			return nil, err
+		}
+		if mode != "" {
+			doc["login_mode"] = mode
+		}
 		if kind == "imported" {
 			kind = "password"
 		}
@@ -110,7 +117,7 @@ func selectHandoffParts(native, options map[string]any) map[string]any {
 	for k, v := range native {
 		credential[k] = v
 	}
-	for _, k := range []string{"registered_platforms", "email", "email_account", "email_password", "email_2fa", "platform_account", "platform_password", "platform_2fa", "sms_enabled", "sms_phone", "status",
+	for _, k := range []string{"registered_platforms", "email", "email_account", "email_password", "email_2fa", "platform_account", "platform_password", "platform_2fa", "login_mode", "sms_enabled", "sms_phone", "status",
 		"password", "totp_secret", "totp", "chatgpt_password", "chatgpt_totp_secret", "recovery", "username", "host", "port", "folder", "ssl", "source_enabled", "endpoint", "api_key", "client_id", "parent_source_ref"} {
 		if v, ok := native[k]; ok {
 			material[k] = v

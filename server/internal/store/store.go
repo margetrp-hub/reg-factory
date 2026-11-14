@@ -236,6 +236,14 @@ CREATE TABLE IF NOT EXISTS account_credentials (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS account_login_preferences (
+  platform TEXT NOT NULL,
+  identity TEXT NOT NULL,
+  mode TEXT NOT NULL CHECK(mode IN ('browser','protocol')),
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(platform,identity)
+);
+
 CREATE TABLE IF NOT EXISTS work_operations (
   operation_id TEXT PRIMARY KEY,
   task_id TEXT NOT NULL,

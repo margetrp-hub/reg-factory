@@ -50,7 +50,7 @@ export default function ProductionIndexPage() {
       {TASK_GROUPS.filter(group => group.slug !== "other" || scripts.some(script => groupOf(script).slug === "other")).map(group => <Link className="sg-mode-card" key={group.slug} href={`/tasks/group/${group.slug}/`}>
         <span className="sg-mode-title">{group.title}<EntryArrow /></span><span className="sg-description">{group.desc}</span><span className="text-xs text-muted-foreground">{scripts.filter(script => groupOf(script).slug === group.slug).length || "—"} 种执行模式</span>
       </Link>)}
-      <Link className="sg-mode-card" href="/accounts/"><span className="sg-mode-title">凭据维护<EntryArrow /></span><span className="sg-description">AT 测试、RT 刷新、登录授权与修复，从原账号发起。</span><span className="text-xs text-muted-foreground">密码＋2FA协议授权 · 浏览器与邮箱授权</span></Link>
+      <Link className="sg-mode-card" href="/accounts/"><span className="sg-mode-title">凭据维护<EntryArrow /></span><span className="sg-description">AT 测试、RT 刷新、登录授权与修复，从原账号发起。</span><span className="text-xs text-muted-foreground">按登录页要求完成密码、邮箱或两步验证</span></Link>
     </div>
     <section className="sg-task-surface"><header className="sg-task-toolbar"><h2 className="text-sm font-semibold">平台账号</h2><span className="sg-description">按平台查看原账号、流程和处理记录</span></header><div className="grid gap-2 px-5 pb-5 sm:grid-cols-3 xl:grid-cols-6">{Object.entries(PLATFORM_TASKS).map(([slug, platform]) => {
       const summary = accounts?.find(item => item.platform === slug);

@@ -10,7 +10,7 @@ const mime={'.html':'text/html','.js':'application/javascript','.css':'text/css'
 const server=createServer(async(req,res)=>{try{let f=path.resolve(root,'out','.'+decodeURIComponent(new URL(req.url,'http://localhost').pathname));assert(f.startsWith(path.join(root,'out')+path.sep));if((await stat(f)).isDirectory())f=path.join(f,'index.html');res.setHeader('Content-Type',mime[path.extname(f)]||'application/octet-stream');res.end(await readFile(f));}catch{res.writeHead(404);res.end();}});
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
 const origin=`http://127.0.0.1:${server.address().port}`,browser=await chromium.launch({headless:true}),page=await browser.newPage({viewport:{width:1536,height:1000},reducedMotion:'reduce'});
-const errors=[],writes=[],reads=[];let imported=false,failRead=false;
+const errors=[],writes=[],reads=[],selectedModes={};let imported=false,failRead=false;
 const accounts=Array.from({length:10},(_,i)=>({ref:`import:new-${i}@example.test`,identity:`new-${i}@example.test`,platform:'chatgpt',kind:'imported',status:'unknown',library_status:'pending',created_at:'2026-11-13T10:47:15Z',imported_at:'2026-11-13T10:47:15Z',import_batch:'import-test',has_credentials:false}));
 Object.assign(accounts[3],{claimed:true,library_status:'used'});
 page.setDefaultTimeout(30000);page.on('pageerror',e=>errors.push(e.message));
@@ -18,7 +18,7 @@ await page.route('**/*',async route=>{
  const request=route.request(),url=new URL(request.url()),p=url.pathname;assert.equal(url.origin,origin);
  if(!p.startsWith('/api/'))return route.continue();
  const json=data=>route.fulfill({json:data});
- if(request.method()!=='GET')writes.push([p,request.postDataJSON()]);else reads.push(p);
+ if(request.method()!=='GET'&&p!=='/api/accounts/login-options')writes.push([p,request.postDataJSON()]);else reads.push(p);
  if(p==='/api/session')return json({ok:true,user:'fixture-admin'});
  if(p==='/api/system')return json({version:'fixture',task_stats:{},memory:{current_mb:1,max_mb:100,used_pct:1}});
  if(p==='/api/accounts/summary')return json({platforms:[{platform:'chatgpt',total:imported?10:0,available:0,abnormal:0,unknown:imported?10:0,used:0,leased:0,source_count:99}]});
@@ -30,7 +30,8 @@ await page.route('**/*',async route=>{
   return json({accounts:rows,total:rows.length,count:rows.length});
  }
  if(p==='/api/accounts/detail')return json({account:accounts.find(a=>a.ref===url.searchParams.get('ref'))});
- if(p==='/api/accounts/refresh')return route.fulfill({status:202,json:{ok:true,task_id:'request-'+request.postDataJSON().request_id,status:'queued'}});
+ if(p==='/api/accounts/login-options')return json({accounts:Object.fromEntries(request.postDataJSON().refs.map(ref=>[ref,{has_refresh_token:!!accounts.find(a=>a.ref===ref)?.has_credentials,modes:['browser','protocol'],selected_mode:selectedModes[ref]||'',reason:''}]))});
+ if(p==='/api/accounts/refresh'){const data=request.postDataJSON();if(data.login_mode)selectedModes[data.ref]=data.login_mode;return route.fulfill({status:202,json:{ok:true,task_id:'request-'+data.request_id,status:'queued'}});}
  if(p==='/api/accounts/checks')return json({page:{tasks:[],total:0,offset:0,limit:50},counts:{}});
  throw Error('Unexpected API '+p);
 });
@@ -96,9 +97,11 @@ try{
  await detail.getByRole('button',{name:'更新凭据',exact:true}).click();
  await update.getByRole('button',{name:'再次更新',exact:true}).click();
  await update.locator('input[value="authorize"]').check();
+ await update.locator('input[value="protocol"]').check();
  await update.getByRole('button',{name:'开始更新',exact:true}).click();
  await update.getByRole('link',{name:'查看运行',exact:true}).waitFor();
  assert.equal(writes.at(-1)[1].allow_relogin,true);
+ assert.equal(writes.at(-1)[1].login_mode,'protocol');
  assert.equal(writes.filter(([endpoint])=>endpoint==='/api/accounts/refresh').length,2);
  assert.equal(await update.getByText('主系统处理',{exact:true}).count(),0);
  await page.screenshot({path:path.join(output,'used-account-update.png'),fullPage:true});
