@@ -103,6 +103,7 @@ PHONE_FAILURES = {
 PHONE_MESSAGE = "该账号被要求手机号验证｜本站不提供手机号，请换其他方式处理"
 
 ERROR_HINTS = {
+    "authorization_browser_error": "授权浏览器启动或运行失败",
     "account_deactivated": "上游明确返回账号封禁/停用，刷新不能恢复账号",
     "account_banned": "上游明确返回账号封禁，刷新不能恢复账号",
     "workspace_deactivated": "上游明确返回空间停用，请核对原工作区",

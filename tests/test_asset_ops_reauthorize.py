@@ -49,6 +49,31 @@ def test_authorize_does_not_replay_old_refresh_grant():
         authorize.assert_called_once_with('original', '', 60, login_mode='browser')
 
 
+def test_browser_start_failure_returns_reason_without_touching_credentials(tmp_path, monkeypatch):
+    monkeypatch.setenv('REG_FACTORY_DATA_DIR', str(tmp_path))
+    directory = tmp_path / 'assets/chatgpt/oauth'
+    directory.mkdir(parents=True)
+    path = directory / 'original.json'
+    path.write_text(json.dumps({'ref': 'import:original', 'payload': {
+        'email': 'original@icloud.com', 'password': 'fixture-password',
+        'access_token': 'original-access', 'refresh_token': 'original-refresh'}}))
+    before = path.read_bytes()
+    with patch('patchright.async_api.async_playwright'), \
+            patch('common.browser.open_and_connect', new=AsyncMock(side_effect=RuntimeError('private browser diagnostic'))), \
+            patch('tools.chatgpt_reauthorize._exchange') as exchange, \
+            patch.object(asset_ops, '_refresh_document_copies') as save:
+        result = asset_ops._reauthorize_chatgpt('import:original')
+    assert result['result'] == 'failed'
+    assert result['error_code'] == 'authorization_browser_error'
+    assert result['evidence']['token_exchange_started'] is False
+    assert result['message'] == '授权浏览器启动或运行失败'
+    assert 'private browser diagnostic' not in json.dumps(result)
+    assert path.read_bytes() == before
+    exchange.assert_not_called()
+    save.assert_not_called()
+    assert asset_ops._emit(result) == 1
+
+
 def test_unknown_provider_result_has_distinct_exit_code(capsys):
     assert asset_ops._emit({'result': 'unknown'}) == 75
     assert json.loads(capsys.readouterr().out)['result'] == 'failed'

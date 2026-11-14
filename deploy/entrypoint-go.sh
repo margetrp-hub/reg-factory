@@ -50,6 +50,9 @@ if [ "$(id -u)" = "0" ]; then
     chown -R "${RUN_USER}:${RUN_USER}" "${DATA_DIR}" 2>/dev/null || true
   fi
   DROP_TO=(setpriv --reuid="${RUN_USER}" --regid="${RUN_USER}" --init-groups --inh-caps=-all --)
+  # setpriv changes UID/GID but keeps root's HOME. Chromium's crash reporter
+  # must use the writable home of the account that actually runs the worker.
+  export HOME="$(getent passwd "${RUN_USER}" | cut -d: -f6)"
 else
   DROP_TO=()
 fi

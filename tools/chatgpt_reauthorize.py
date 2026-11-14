@@ -137,13 +137,19 @@ async def authorize_document(document: dict, *, timeout: int = 600, login_mode: 
     print("[reauthorize] SG开始全新OAuth登录，不复用旧凭据", flush=True)
     async with async_playwright() as playwright:
         try:
-            handle, profile_id, _, context, page = await open_and_connect(
-                name="work_reauthorize_" + secrets.token_hex(6), p=playwright,
-                browser_options=browser_proxy_fields({
-                    "PROXY_MODE": "residential" if proxy else "none",
-                    "REG_FACTORY_PROXY": proxy,
-                }),
-            )
+            try:
+                handle, profile_id, _, context, page = await open_and_connect(
+                    name="work_reauthorize_" + secrets.token_hex(6), p=playwright,
+                    browser_options=browser_proxy_fields({
+                        "PROXY_MODE": "residential" if proxy else "none",
+                        "REG_FACTORY_PROXY": proxy,
+                    }),
+                )
+            except (BrowserError, RuntimeError) as exc:
+                raise ReauthError("授权浏览器启动失败", evidence={
+                    "error_code": "authorization_browser_error", "stage": "browser_start",
+                    "token_exchange_started": False,
+                }) from exc
             if mailbox and mailbox.get('provider') in {'imap', 'qq', 'icloud', 'outlook'}:
                 from aishop_node.mailbox import IMAPMailbox
                 import threading
