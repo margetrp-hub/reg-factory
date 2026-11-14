@@ -110,7 +110,7 @@ ERROR_HINTS = {
     "workspace_deactivated": "上游明确返回空间停用，请核对原工作区",
     "deactivated_workspace": "上游明确返回空间停用，请核对原工作区",
     "mfa_totp_verification_failed": "账号两步验证未通过，请核对当前有效的 2FA 资料",
-    "mfa_challenge_rejected": "账号两步验证请求被拒绝，请核对登录验证方式",
+    "mfa_challenge_rejected": "上游在 2FA 提交环节直接拒绝（403/409），通常为账号停用或受限；请先核对该账号是否被封禁",
     "oauth_tls_handshake_failed": "登录校验连接的 TLS 握手失败，网络重试已用尽",
     "oauth_certificate_verification_failed": "登录校验连接的证书验证失败，请检查出口证书",
     "oauth_network_timeout": "登录校验连接超时，网络重试已用尽",

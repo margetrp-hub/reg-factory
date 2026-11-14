@@ -2014,6 +2014,62 @@ class OAuthClient:
         url_low = str(continue_url or "").lower()
         return "mfa_challenge" in page_low or "mfa-challenge" in url_low
 
+    # Explicit provider account states end a login instead of inviting a retry.
+    # Mirrors common/oauth_errors.ACCOUNT_STATES without importing it so this
+    # module stays importable on its own.
+    _ACCOUNT_STATE_CODES = {
+        "account_deactivated": "account_deactivated",
+        "account_banned": "account_banned",
+        "account_disabled": "account_deactivated",
+        "account_suspended": "account_deactivated",
+        "account_deleted": "account_deactivated",
+        "workspace_deactivated": "workspace_deactivated",
+        "deactivated_workspace": "workspace_deactivated",
+    }
+
+    @classmethod
+    def _account_state_code(cls, data=None):
+        """Return an explicit provider account state, never inferred from HTTP."""
+        if not isinstance(data, dict) and not isinstance(data, list):
+            return ""
+        pending = [data]
+        visited = set()
+        while pending:
+            node = pending.pop(0)
+            if id(node) in visited:
+                continue
+            visited.add(id(node))
+            if isinstance(node, list):
+                pending.extend(item for item in node if isinstance(item, (dict, list)))
+                continue
+            if not isinstance(node, dict):
+                continue
+            for key in ("code", "error_code", "type", "error"):
+                value = node.get(key)
+                if isinstance(value, str):
+                    code = value.strip().lower()
+                    if code in cls._ACCOUNT_STATE_CODES:
+                        return cls._ACCOUNT_STATE_CODES[code]
+                elif isinstance(value, (dict, list)):
+                    pending.append(value)
+            for key in ("detail", "message", "data", "error_description"):
+                value = node.get(key)
+                if isinstance(value, str):
+                    text = value.strip().lower()
+                    for token, mapped in (
+                        ("account has been deactivated", "account_deactivated"),
+                        ("account_deactivated", "account_deactivated"),
+                        ("account has been banned", "account_banned"),
+                        ("account_banned", "account_banned"),
+                        ("workspace_deactivated", "workspace_deactivated"),
+                        ("deactivated_workspace", "workspace_deactivated"),
+                    ):
+                        if token in text:
+                            return mapped
+                elif isinstance(value, (dict, list)):
+                    pending.append(value)
+        return ""
+
     @staticmethod
     def _mfa_factors_from_container(container):
         found = []
@@ -2285,6 +2341,20 @@ class OAuthClient:
 
             # Keep a stable, safe reason through the engine, node receipt and
             # customer projection. Provider error text may contain secrets.
+            if verify_status in (403, 409):
+                # A deactivated account is rejected on the 2FA step with a
+                # non-retryable 403/409. Read the explicit provider state when
+                # the body carries one; otherwise report a rejected challenge
+                # instead of blaming the stored 2FA secret.
+                account_state = self._account_state_code(verify_data)
+                self.last_oauth_status = verify_status
+                self.last_oauth_page_type = "mfa-challenge"
+                if account_state:
+                    self.last_oauth_error = account_state
+                    self._log("上游明确返回账号封禁/停用，停止 2FA 重试")
+                    return ""
+                self.last_oauth_error = "mfa_challenge_rejected"
+                break
             self.last_oauth_error = "rate_limit_exceeded" if verify_status == 429 else "mfa_totp_verification_failed"
             if verify_status == 429:
                 break
