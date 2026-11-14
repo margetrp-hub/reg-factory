@@ -25,9 +25,26 @@ async def _drive_authorization(page, url, **kwargs):
     from common.oauth_codex import drive_authorize
     from common.oauth_errors import account_failure
     from vendor.reauth_web.engine import ReauthError, failure_evidence
-    refused = asyncio.get_running_loop().create_future()
+    loop = asyncio.get_running_loop()
+    refused = loop.create_future()
+    challenge_timer = None
+    def challenge_expired():
+        if not refused.done():
+            refused.set_result(({'error_code': 'oauth_cloudflare_challenge', 'message': '上游安全验证未通过'}, 403))
     async def observe(response):
-        if urlsplit(response.url).hostname not in {'auth.openai.com', 'chatgpt.com'} or not 400 <= response.status < 500:
+        nonlocal challenge_timer
+        if urlsplit(response.url).hostname not in {'auth.openai.com', 'chatgpt.com'}:
+            return
+        if response.status == 403 and response.headers.get('cf-mitigated') == 'challenge':
+            # Allow the provider's automatic check to finish, but repeated
+            # challenge reloads must not occupy the entire login timeout.
+            if challenge_timer is None and response.request.is_navigation_request() and response.frame == page.main_frame:
+                challenge_timer = loop.call_later(min(30, kwargs.get('timeout', 600)), challenge_expired)
+            return
+        if challenge_timer is not None and response.status < 400 and response.request.is_navigation_request() and response.frame == page.main_frame:
+            challenge_timer.cancel()
+            challenge_timer = None
+        if not 400 <= response.status < 500:
             return
         if response.status == 429:
             explicit = {'error_code': 'rate_limit_exceeded', 'message': '授权服务请求过于频繁'}
@@ -48,6 +65,8 @@ async def _drive_authorization(page, url, **kwargs):
         return await drive
     finally:
         page.remove_listener('response', observe)
+        if challenge_timer is not None:
+            challenge_timer.cancel()
         refused.cancel()
         if not drive.done():
             drive.cancel()

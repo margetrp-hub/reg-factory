@@ -78,6 +78,9 @@ func Rebind(query string) string {
 
 		// 单引号字符串：一直吃到下一个未转义的单引号
 		if c == '\'' {
+			// PostgreSQL ordinary strings keep backslashes literal. Only E'...'
+			// escapes a quote; otherwise ESCAPE '\' hides later placeholders.
+			escapedString := i > 0 && (query[i-1] == 'E' || query[i-1] == 'e')
 			b.WriteByte(c)
 			i++
 			for i < length {
@@ -93,8 +96,7 @@ func Rebind(query string) string {
 					}
 					break
 				}
-				// \' 也算转义
-				if ch == '\\' && i < length {
+				if escapedString && ch == '\\' && i < length {
 					b.WriteByte(query[i])
 					i++
 				}

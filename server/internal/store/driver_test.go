@@ -36,6 +36,16 @@ func TestRebind(t *testing.T) {
 			want: "SELECT * FROM t WHERE name LIKE $1",
 		},
 		{
+			name: "标准字符串反斜杠后仍绑定全部参数",
+			in:   `SELECT * FROM tasks WHERE id LIKE ? ESCAPE '\' OR title LIKE ? ESCAPE '\' OR script LIKE ? ESCAPE '\'`,
+			want: `SELECT * FROM tasks WHERE id LIKE $1 ESCAPE '\' OR title LIKE $2 ESCAPE '\' OR script LIKE $3 ESCAPE '\'`,
+		},
+		{
+			name: "E字符串保留转义引号内的问号",
+			in:   `SELECT E'it\'s ?', e'it\'s ?' FROM t WHERE id=?`,
+			want: `SELECT E'it\'s ?', e'it\'s ?' FROM t WHERE id=$1`,
+		},
+		{
 			name: "双引号标识符里的问号",
 			in:   `SELECT * FROM "t?" WHERE a=?`,
 			want: `SELECT * FROM "t?" WHERE a=$1`,

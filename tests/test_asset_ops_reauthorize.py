@@ -41,6 +41,37 @@ def jwt(claims):
     return 'head.' + base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip('=') + '.sig'
 
 
+@pytest.mark.parametrize('passes', [True, False])
+def test_browser_security_check_completes_or_ends_with_its_actual_reason(passes):
+    from tools.chatgpt_reauthorize import _drive_authorization
+    from vendor.reauth_web.engine import ReauthError
+    async def run():
+        callbacks = {}
+        frame = object()
+        page = SimpleNamespace(main_frame=frame, on=lambda event, cb: callbacks.update({event: cb}),
+                               remove_listener=lambda event, cb: callbacks.pop(event))
+        navigation = SimpleNamespace(is_navigation_request=lambda: True)
+        async def drive(*args, **kwargs):
+            await callbacks['response'](SimpleNamespace(url='https://auth.openai.com/oauth/authorize',
+                status=403, headers={'cf-mitigated': 'challenge'}, request=navigation, frame=frame))
+            if passes:
+                await callbacks['response'](SimpleNamespace(url='https://auth.openai.com/log-in',
+                    status=200, headers={}, request=navigation, frame=frame))
+                await asyncio.sleep(.04)
+                return 'code', 'state', ''
+            await asyncio.Future()
+        with patch('common.oauth_codex.drive_authorize', side_effect=drive):
+            if passes:
+                assert await _drive_authorization(page, 'https://auth.openai.com/oauth/authorize', timeout=.02) == ('code', 'state', '')
+            else:
+                with pytest.raises(ReauthError) as caught:
+                    await asyncio.wait_for(_drive_authorization(page, 'https://auth.openai.com/oauth/authorize', timeout=.02), 1)
+                assert caught.value.evidence['error_code'] == 'oauth_cloudflare_challenge'
+                assert caught.value.evidence['token_exchange_started'] is False
+        assert callbacks == {}
+    asyncio.run(run())
+
+
 def test_authorize_does_not_replay_old_refresh_grant():
     args = SimpleNamespace(platform='chatgpt', allow_relogin=True, ref='original', email='', timeout=60, login_mode='browser')
     with patch.object(asset_ops, '_refresh_chatgpt') as refresh, patch.object(asset_ops, '_reauthorize_chatgpt', return_value={'result': 'refreshed'}) as authorize:

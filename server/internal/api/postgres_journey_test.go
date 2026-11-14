@@ -223,6 +223,22 @@ func TestPostgresMailboxAndAssetReceiptJourney(t *testing.T) {
 	if page, err := st.QueryTasks(store.TaskQuery{CredentialPlatform: "chatgpt", CredentialAction: "refresh"}); err != nil || page.Total != 2 {
 		t.Fatalf("refresh history: %+v %v", page, err)
 	}
+	if err = st.CreateTask(store.Task{ID: "literal-history", Script: "asset_ops", Title: `100%_\\original`, ArgsJSON: "[]"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, search := range []string{"fixture-refresh", `100%_\\`, "' OR 1=1 --"} {
+		req := httptest.NewRequest("GET", "/api/tasks?q="+url.QueryEscape(search), nil)
+		req.SetBasicAuth("operator", "fixture-password")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		wantTotal := `"total":1`
+		if search == "' OR 1=1 --" {
+			wantTotal = `"total":0`
+		}
+		if w.Code != 200 || !strings.Contains(w.Body.String(), wantTotal) {
+			t.Fatalf("PG task search %q: %d %s", search, w.Code, w.Body.String())
+		}
+	}
 	checkID, err := st.ScheduleLivenessCheck(time.Now(), time.Hour)
 	if err != nil || checkID == "" {
 		t.Fatalf("local check admission: %v", err)
